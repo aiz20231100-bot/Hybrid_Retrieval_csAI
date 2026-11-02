@@ -1,0 +1,1362 @@
+Conﬂict-Based Search for Explainable Multi-Agent Path Finding
+Justin Kottinger1, Shaull Almagor2, Morteza Lahijanian1,3
+1Department of Aerospace Engineering Sciences, University of Colorado Boulder, USA
+2The Henry and Marilyn Taub Faculty of Computer Science, Technion, Israel
+3Department of Computer Science, University of Colorado Boulder, USA
+{justin.kottinger, morteza.lahijanian}@colorado.edu, shaull@cs.technion.ac.il
+Abstract
+The goal of the Multi-Agent Path Finding (MAPF) problem
+is to ﬁnd non-colliding paths for agents in an environment,
+such that each agent reaches its goal from its initial location.
+In safety-critical applications, a human supervisor may want
+to verify that the plan is indeed collision-free. To this end, a
+recent work introduces a notion of explainability for MAPF
+based on a visualization of the plan as a short sequence of
+images representing time segments, where in each time seg-
+ment the trajectories of the agents are disjoint. Then, the prob-
+lem of Explainable MAPF via Segmentation asks for a set
+of non-colliding paths that admit a short-enough explanation.
+Explainable MAPF adds a new difﬁculty to MAPF, in that it is
+NP-hard with respect to the size of the environment, and not
+just the number of agents. Thus, traditional MAPF algorithms
+are not equipped to directly handle Explainable MAPF. In this
+work, we adapt Conﬂict Based Search (CBS), a well-studied
+algorithm for MAPF, to handle Explainable MAPF. We show
+how to add explainability constraints on top of the standard
+CBS tree and its underlying A∗search. We examine the use-
+fulness of this approach and, in particular, the trade-off be-
+tween planning time and explainability.
+1
+Introduction
+Multi-Agent Path Finding (MAPF) is a fundamental prob-
+lem in AI, in which the goal is to plan paths for several
+agents to reach their targets, such that paths can be taken
+simultaneously without the agents colliding. Applications
+of MAPF are ubiquitous in any area where several moving
+agents are involved, such as air-trafﬁc control, UAVs, ware-
+house robots, autonomous cars, etc. While MAPF is gener-
+ally intractable, the importance of this problem has gener-
+ated a signiﬁcant body of work over the past decade (Stern
+et al. 2019; Standley 2010; Felner et al. 2017; Surynek et al.
+2016; Bartak, Svancara, and Vlk 2018; Cohen et al. 2018;
+Ma et al. 2019a), dealing with various aspects of the prob-
+lem and suggesting increasingly scalable solutions. In par-
+ticular, a well-performing algorithm for MAPF is Conﬂict-
+Based Search (CBS) (Sharon et al. 2015), which is a decen-
+tralized approach, and has extensions with various heuristics
+(Boyarski et al. 2015; Li et al. 2019b,a; Felner et al. 2018).
+Copyright © 2022, Association for the Advancement of Artiﬁcial
+Intelligence (www.aaai.org). All rights reserved.
+(a) Full Plan
+(b) k = [0, 2]
+(c) k = [2, 4]
+(d) k = [4, 8]
+Figure 1: A plan for three agents (a), and a corresponding
+explanation via disjoint decomposition (b)-(d). The circles
+and stars mark the start and goal vertices, respectively.
+A major barrier in adopting such capable MAPF algo-
+rithms in safety-critical applications, as with many algo-
+rithms in AI, is trust (or lack thereof) between the de-
+signers of such algorithms, and their potential user. That
+is, in heavily-regulated applications (e.g., air-trafﬁc control,
+hazardous-materials warehouses), automated planning has
+to be trusted before acting upon in order to maintain le-
+gal and ethical accountability. Designers can gain trust in
+their algorithms through studying, developing, and exhaus-
+tive testing. The same trust building methods may not be
+available for the user. To combat this dilemma in the con-
+text of MAPF, the current practice is to suggest a computed
+plan to a human supervisor, who has to verify the correct-
+ness of it to allow its execution (Fines, Sharpanskykh, and
+Vert 2020). This poses an additional problem in MAPF – ex-
+plainability of plans. In other words, plans must be presented
+to the supervisor in some humanly-understandable manner.
+In particular, the presentation (explanation) should enable
+the supervisor to understand the paths taken by the agents,
+and to easily verify that the agents do not collide, as other-
+wise the supervisor would not necessarily approve the plan.
+This study focuses on the problem of Explainable MAPF
+and aims to develop a scalable algorithm whose solutions to
+the MAPF problem are easily-interpretable and veriﬁable by
+humans.
+Explainable AI (XAI) is an active area of research in re-
+cent years. Many studies focus on explaining decisions made
+by machine learning algorithms, in both categories of classi-
+ﬁcation and regression (Arrieta et al. 2020). In those works,
+various forms of explanations are explored, but visual expla-
+nations seem to be dominant for their ease of interpretability,
+arXiv:2202.09930v2  [cs.AI]  4 Apr 2022
+
+
+especially for classiﬁers (Lapuschkin et al. 2019). In other
+cases, such as fault detection algorithms, explanations are
+typically in the form of witness executions (Mari, Dang, and
+G¨ossler 2021). In the planning community, explanations are
+mostly studied in the context of the single agent problem,
+and they often take a non-visual form. For example, explana-
+tions are given based on alternative plans (Eiﬂer et al. 2019),
+minimal differences between plans (Kambhampati 2019), or
+reasoning on quantitative advantage of one plan over another
+(Fox, Long, and Magazzeni 2017). None of these studies,
+however, focus on the MAPF problem.
+Recent works (Almagor and Lahijanian 2020; Kottinger,
+Almagor, and Lahijanian 2021) propose an explanation
+scheme for MAPF by means of visualization. There, the idea
+is to decompose a non-colliding plan into time segments,
+such that within each segment the paths of the agents are
+disjoint. Then, by depicting each segment separately (see
+Figure 1), it is easy for a human supervisor to verify that the
+agents do not collide. Indeed, recognizing line intersections
+takes place early in the visual cognitive process (Hubel and
+Wiesel 1959; Tang et al. 2018), making it easy to verify that
+the depicted lines in each segment are disjoint. The useful-
+ness of such explanations is also supported by the ﬁndings
+of the survey study (Brandao et al. 2021). While decompo-
+sition can be readily used on any MAPF plan obtained by
+any algorithm, it is not guaranteed that doing so results in a
+small number of segments. In case the number of segments
+is very high, this undermines the explanation scheme. Thus,
+the central problem in Explainable MAPF via Segmentation
+is to ﬁnd a plan for the agents that can be decomposed to a
+small number of segments (and hence can be explained with
+a small number of pictures).
+Unfortunately, Explainable MAPF is much harder than
+standard MAPF, in the sense that, unlike MAPF, it is NP-
+hard already for two agents. In particular, the hardness of
+Explainable MAPF is with respect to the size of the environ-
+ment (as well as the number of agents), rendering the run-
+time of algorithms for Explainable MAPF exponential in the
+size of the environment. In contrast, the complexity of classi-
+cal MAPF is polynomial in size of the environment, making
+the problem much easier, especially with a low number of
+agents. Unsurprisingly, centralized algorithms for Explain-
+able MAPF do not scale well, as shown in (Almagor and
+Lahijanian 2020).
+In this work, we consider a decentralized approach to the
+Explainable MAPF problem. Speciﬁcally, we adapt CBS, a
+two-level algorithm that, in its low-level, plans individually
+for each agent, and in its high-level, identiﬁes collisions be-
+tween the agents and places constraints to resolve them in
+the next low-level iteration (see Section 3.1). Our main con-
+tribution is accordingly split to two levels: at the high-level,
+we show how we can use similar constraints as those used by
+CBS to capture segmentation conﬂicts, namely plans whose
+minimal decompositions have too many segments. We then
+discuss how to adapt CBS to compute and place these con-
+straints during its search, thus obtaining our new algorithm,
+dubbed Explanation-Guided CBS (XG-CBS).
+We then turn our attention to the low-level planner of
+XG-CBS. As we discuss in Section 4, standard A∗seems,
+intuitively, ill-ﬁtted to work with XG-CBS. Indeed, mini-
+mizing the number of disjoint segments of a plan often re-
+quires lengthening the plan, which A∗is reluctant to do
+since it minimizes the path length. Thus, at the low level,
+our contribution focuses on developing appropriate search
+algorithms, that are guided towards plans with small de-
+compositions, which are appropriate for XG-CBS. To this
+end, we propose three low-level search algorithms. The ﬁrst
+algorithm, dubbed XG-A∗(Section 4.1), guides the search
+toward a plan with minimum number of disjoint segments,
+while maintaining the completeness of XG-CBS. Moreover,
+it can be combined with standard A∗to improve perfor-
+mance through a meta-parameter, resulting in the algorithm
+WXG-A∗(Section 4.2).
+We discuss how the optimal value for this parameter is
+highly dependant on the instance of the problem, and hence,
+difﬁcult to choose a priori. Also, both XG-A∗and WXG-
+A∗, due to their completeness, are subject to the inherent
+difﬁculty of Explainable MAPF with respect to the environ-
+ment size. This is manifested by the need to track the his-
+tory of paths within the search space. To address these prob-
+lems, we propose another low-level algorithm, SR-A∗(Sec-
+tion 4.3) that uses the segmentation information in a coarse
+way such that it does not need to track history, yet obtains so-
+lutions with small number of decomposition. Theoretically,
+SR-A∗sacriﬁces completeness, but our experimental results
+(Section 5.2) show that with SR-A∗, XG-CBS has compa-
+rable computation time to vanilla CBS (and even outper-
+forms it), while obtaining plans with much smaller decom-
+positions. This is despite solving a much harder problem.
+Thus, our overall contribution is a decentralized algo-
+rithm for the Explainable MAPF problem. To the best of our
+knowledge, this is the ﬁrst algorithm of its class that scales,
+signiﬁcantly outperforming previous algorithms. We show
+properties of our algorithm and further evaluate it on many
+benchmarks, comprising examples that demonstrate speciﬁc
+intricacies of Explainable MAPF, as well as standard MAPF
+benchmarks. Overall, this work illustrates the unique com-
+putational challenges faced in Explainable MAPF and paves
+the way for further algorithmic exploration of this problem.
+2
+Problem Statement
+Consider n ∈N agents, acting in a directed graph G =
+⟨V, E⟩where each agent i ∈{1, . . . , n} has a source si ∈V
+and a goal gi ∈V . A path in G is a sequence of vertices π =
+v1v2 . . . vm such that (vk, vk+1) ∈E for all 1 ≤k < m.
+Given paths π1 = v1v2 . . . vm and π2 = u1u2 . . . um in
+G for some m > 1, we say that π1 and π2 are non-colliding
+if the following conditions are satisﬁed for all 1 ≤k < m:
+(i) vk̸ = uk (i.e., no vertex collisions),
+(ii) (vk, vk+1)̸ = (uk+1, uk) (i.e., no edge collisions).
+We extend the deﬁnition to paths of different lengths by trun-
+cating the longer path. Intuitively, this means that once a
+path ends, the respective agent “disappears”1.
+1Changing this to have the agents remain at the target location
+does not impact our results in any signiﬁcant way.
+2
+
+
+Given n agents on a graph G and two lists s1, . . . , sn and
+g1, . . . , gn of source and goal vertices, respectively, a plan
+P = {π1, . . . , πn} is a set of non-colliding paths (i.e., πi and
+πj are non-colliding for all i, j ∈{1, . . . , n} and i̸ = j) such
+that πi drives agent i from si to gi for every i ∈{1, . . . , n}.
+The length of the plan is the maximal length of a path in P.
+The classical Multi-Agent Path Finding (MAPF) problem is
+to ﬁnd a plan2 P on G.
+We now turn to recap the deﬁnitions of Explainable
+MAPF via Segmentation from (Almagor and Lahijanian
+2020). Consider a path π = v1 . . . vm and t1 ≤t2. We de-
+ﬁne π[t1, t2] = vt1 . . . vt2 to be the segment of π between t1
+and t2. If either t1 or t2 are not within the range {1, . . . , m},
+we simply disregard the out-of-bounds vertices.
+A set of paths (better thought of as path segments)
+{τ1, . . . , τn} where each τi = vi1 . . . viki is vertex disjoint if
+for all i̸ = j we have {vi1, . . . , viki} ∩{vj1, . . . , vjkj} = ∅.
+Next, consider a plan P = {π1, . . . , πn} as above and let
+K = maxi mi be its length, where mi is the length of
+πi ∈P. A vertex-disjoint decomposition of P is an or-
+dered list of natural numbers 1 = t0 < t1 < . . . < tr =
+K + 1 such that for every 1 ≤k ≤r, the path segments
+{πj[tk−1, tk−1]}n
+j=1 are vertex-disjoint. We refer to r as the
+index of the decomposition. The minimal index of a vertex-
+disjoint decomposition of P is referred to as the index of
+P. As shown in (Almagor and Lahijanian 2020) (and we
+recap in Section 3.2), computing a minimal-index decompo-
+sition can be done in polynomial time using a greedy algo-
+rithm, hence, we only consider minimal index decomposi-
+tions here. We now present the formal deﬁnition of the Ex-
+plainable MAPF via Segmentation problem.
+Problem 1 (Explainable MAPF via Segmentation). Given
+a graph G = ⟨V, E⟩with lists s1, . . . , sn and g1, . . . , gn
+of source and goal vertices, respectively, and bound r ∈N,
+ﬁnd a plan P for the agents with index of at most r or answer
+that the instance is unsolvable – no such plan exists.
+Almagor and Lahijanian (2020) proved that (the decision
+version of) Problem 1 is NP-complete, even for 2 agents (un-
+like MAPF, which is in P for a ﬁxed number of agents). They
+propose a centralized algorithm for the problem, but demon-
+strate that it does not scale. To this end, the goal of this pa-
+per is to develop a decentralized algorithm that is capable of
+solving Problem 1 and scaling to a large number of agents.
+3
+Explanation-Guided CBS
+Our solution to Problem 1 extends from CBS (Sharon et al.
+2015), a decentralized MAPF algorithm. Here, we ﬁrst re-
+view this algorithm and then present our extensions to it to
+obtain Explanation-Guided CBS (XG-CBS).
+3.1
+CBS for MAPF
+CBS is a two-level search on the space of possible plans,
+consisting of a high-level conﬂict-tree search and a low-
+level graph search. At the high-level, CBS keeps track of
+a constraint-tree, in which each node represents a suggested
+2Typically, the plan is required to be optimal with respect to
+some cost function, e.g., makespan or sum-of-costs.
+plan, which might have collisions, referred to as conﬂicts.
+Initially, a root node is obtained by using a low-level graph
+search algorithm, typically A∗with a shortest-path heuristic,
+to ﬁnd a path for each agent from start to goal, ignoring the
+other agents (hence the decentralized nature of the method).
+At each iteration, CBS picks an unexplored node from the
+tree, based on some heuristic. Then, the conﬂicts (namely
+collisions) in the plan corresponding to that node are identi-
+ﬁed. CBS attempts to resolve the conﬂicts by creating child
+nodes based on the conﬂicts, as follows: if Agents i and j
+collide at time t in vertex v, then two children are created
+for the node, one with the constraint that Agent i cannot be
+in vertex v at time t, and the other dually for Agent j. Then,
+in each child node, a low-level search is used to replan a
+path for the newly-constrained agent, given the set of con-
+straints obtained thus far along the branch of the constraint
+tree. This process repeats until either a non-colliding plan is
+found, or no new nodes are created in the constraint tree, at
+which point CBS returns that there is no solution.
+We (partially) demonstrate CBS in Figure 2. In this exam-
+ple, the root node has a colliding plan and hence a constraint
+is placed on the yellow vertex at time 2, so two children are
+created with new plans for each of the two colliding agents.
+CBS performs well for standard MAPF queries. However,
+it is ill-suited for solving Problem 1 due to its lack of regard
+for vertex-disjoint decomposition of the proposed solutions.
+More precisely, CBS is guided toward short plans, whereas
+minimizing the index typically incurs a tradeoff with plan
+length. Below, we build upon CBS to plan for explainability,
+in order to address Problem 1.
+3.2
+CBS for Explainable MAPF
+We modify CBS both at the high-level (constraint tree) and
+low-level (graph search), to obtain a new algorithm dubbed
+Explanation-Guided CBS (XG-CBS). To this end, we ﬁrst in-
+troduce segmentation conﬂicts to the constraint tree. These
+are conﬂicts that occur when the plan is non-colliding, but
+whose index is greater than the bound r. These conﬂicts are
+resolved by placing appropriate constraints, as we detail be-
+low. We elaborate on the low-level search in Section 4.
+We remark that we focus on the classical CBS algorithm,
+as opposed to improvements thereof (e.g., ICBS (Boyarski
+et al. 2015)), as our goal is to study the efﬁcacy of the well-
+understood constraint-tree method to explanations.
+Segmentation Conﬂicts
+Recall that in CBS, whenever a
+plan has collisions, constraints are placed on the colliding
+agents to force one of them away from the collision point.
+We keep these constraints in XG-CBS, and introduce addi-
+tional constraints to handle segmentation. In order to deﬁne
+the new constraints, we recall how vertex-disjoint decompo-
+sitions are computed.
+Consider a plan P = {π1, . . . , πn}. In (Almagor and
+Lahijanian 2020), it is shown that a minimal decomposi-
+tion of P can be found greedily by lengthening the cur-
+rent interval as long as the paths are disjoint, and starting
+a new segment once an intersection occurs. More precisely,
+we set t0 = t1 = 0 and check {π1[t0, t1], . . . , πn[t0, t1]}
+for disjointedness. If it is disjoint, then t1 is incremented by
+3
+
+
+Figure 2: Illustration of XG-CBS with A∗as the low-level
+planner. Yellow and purple colors indicate collision and seg-
+mentation conﬂicts, respectively.
+one. The process continues until the segment is not disjoint,
+at which point we add t1 −1 as a segmentation point, set
+t0 = t1, and start the process again. This continues until the
+entire plan is segmented.
+We use this greedy characterization to deﬁne segmenta-
+tion constraints as follows. For a non-colliding plan P =
+{π1, . . . , πn} of length K, let 1 = t0 < t1 < . . . < tr =
+K + 1 be a vertex-disjoint decomposition found as above.
+It follows that for every 1 ≤ℓ≤r, we cannot extend the
+disjoint segment [tℓ−1, tℓ−1] to time tℓ. That is, there exist
+agents i̸ = j with πi[tℓ, tℓ] ∈πj[tℓ−1, tℓ], where πi[tℓ, tℓ]
+is a single vertex. With each such pair of agents i, j, we as-
+sociate the vertex v = πi[tℓ, tℓ] and the times Ti = tℓand
+Tj to be a time such that πj[Tj, Tj] = v. Intuitively, Ti and
+Tj are the times when Agents i and j, respectively, visit v in
+the segment [tℓ−1, tℓ]. Then, for a node with plan P in the
+constraint tree of XG-CBS, we add two children with the
+following constraints: one child prevents Agent i from visit-
+ing v at time Ti, and the other prevents Agent j from visiting
+v at time Tj. Note that, for a node with multiple segmenta-
+tion conﬂicts, several such pairs of child nodes are added,
+one pair per conﬂict.
+In Figure 2, we depict segmentation conﬂicts as purple
+squares. For example, in the orange node of the tree, the
+plan requires two segments, due to the path intersection in
+the purple node, visited by the blue agent at time 1 and by
+the red agent at time 3. The two children of this node prevent
+each of these visits, and replan for the corresponding agent.
+XG-CBS
+We are now ready to describe the operation of
+XG-CBS, with the caveat that we do not explicitly state the
+implementation of the low-level graph search algorithm. We
+leave this detail to Section 4 and only assume that the low-
+level search algorithm is sound and complete, e.g., A∗.
+XG-CBS algorithm proceeds as follows. Initially, the low-
+level algorithm is called for each agent separately to obtain
+an initial plan. If the initial solution does not have any con-
+ﬂicts (collision nor segmentation), the plan and its decompo-
+sition are returned as the solution. If conﬂicts exist, they are
+resolved by extending the tree according to the constraints
+as above. Once a new node is created with a constraint on
+Agent i, the low-level algorithm is called to replan for Agent
+i. Each new node is assigned a cost (as we discuss below)
+and added to a priority queue. At the next iteration, the min-
+imum cost plan is popped from the queue, and gets evaluated
+for conﬂicts. This process repeats until either a satisfactory
+plan is found or the search is exhausted. We refer the reader
+to the Appendix (Section 7.1) for the pseudocode presenta-
+tion of the XG-CBS algorithm.
+An important remark is that during the low-level plan-
+ning, an upper bound is set on the length of the path. The
+bound originates from the proof of membership in NP of
+Problem 1, and serves to bound the constraint tree.
+A crucial aspect of XG-CBS is the cost function on the
+tree nodes. Recall that a common cost function for the high-
+level CBS is the combined length of all the paths (a.k.a. sum-
+of-costs). This approach, however, tends to conﬂict with op-
+timizing for explainability. Thus, XG-CBS utilizes the index
+of the plan to deﬁne a cost function. Speciﬁcally, the primary
+cost of a proposed plan is the index of the plan, with a small
+tweak. Recall that plans in the constraint tree may contain
+collisions, in which case the index is undeﬁned. We circum-
+vent this by viewing collisions as an end of a segment. Then,
+the combined length of paths is only used as a tie-breaker.
+This cost function enables XG-CBS to prioritize plans with
+a lower number of segments.
+Figure 2 demonstrates a run of XG-CBS where the low-
+level planner is standard A∗, and the index bound r = 1. We
+conclude this section by showing that XG-CBS is complete.
+Theorem 1 (XG-CBS Completeness). XG-CBS always ter-
+minates, and given a solvable instance of Explainable
+MAPF via Segmentation, XG-CBS will terminate with a
+valid solution.
+We refer the reader to the Appendix (Section 7.2) for the
+proof of Theorem 1.
+4
+Low-Level Search
+The low-level search has a twofold impact on the behavior
+of CBS. First, it determines the concrete paths obtained after
+placing constraints. Second, since it is run for every node,
+it has a signiﬁcant impact on the runtime. In this section,
+we study four low-level search algorithms for XG-CBS. We
+start with an overview of our approaches.
+In classical CBS, the goal is to ﬁnd the shortest plan,
+making A∗(with Hamming distance heuristic) a reasonable
+choice. For XG-CBS, however, the typical behavior of A∗
+is ill-ﬁtting. Intuitively, this is because A∗tends to make
+very local changes in plans. Then, a segmentation conﬂict,
+which occurs on an intersection of paths, is likely resolved
+in a way that still intersects the same path in a nearby lo-
+cation or time. To illustrate this, consider the orange node
+in Figure 2, and observe that the segmentation conﬂict for
+the red agent is resolved by going through the blue agent’s
+4
+
+
+origin, creating another segmentation conﬂict. Hence, many
+segmentation conﬂicts are typically required to be able to re-
+duce the index of the plan. Despite this, A∗is very fast, and
+thus allows a rapid exploration of the constraint tree. Thus,
+A∗can be seen as one extreme, where speed is preferred
+over explanation-oriented paths.
+At the other extreme, in order to orient XG-CBS toward
+a minimal-index plan, we propose a low-level search called
+Explanation-Guided A∗(XG-A∗) that uses A∗with a novel,
+segmentation-based heuristic. Intuitively, XG-A∗guides the
+search by minimizing the number of segments, as opposed to
+minizing the length. As we discuss in Section 4.1, XG-A∗is
+highly guided towards minimal explanations but is slow due
+to keeping track of the path history. Our next approach is to
+get the best of both worlds, by combining XG-A∗and A∗in
+a weighted manner. We elaborate on this in Section 4.2.
+The three approaches above maintain the completeness
+of XG-CBS. Our ﬁnal low-level planner, discussed in Sec-
+tion 4.3, sacriﬁces completeness in favor of circumventing
+the need to keep track of the path’s history in XG-A∗, thus
+obtaining a fast, explanation-oriented search (Section 4.3).
+4.1
+XG-A∗– Explanation Guided A∗
+Recall that in CBS, the low-level search A∗ignores the ex-
+isting explanation of other agents when replanning for a
+certain agent. Thus, standard A∗takes as input the graph
+G = ⟨V, E⟩, start and goal vertices s, g ∈V for an agent,
+and the set of constraints C in the current node. In contrast,
+XG-A∗accounts for existing segments, and hence, also re-
+ceives as input the set of paths of the other agents, denoted
+by P−1, and a bound B on the maximal allowed path length
+for the agent. We remark that the bound B is only used to ter-
+minate the search if the plan becomes too long. This assures
+progress so that completeness is retained (c.f., Theorem 1).
+For brevity, in the following, we assume XG-A∗plans
+for Agent 1, and the paths for the other agents are P−1 =
+{π2, . . . , πn}. Intuitively, XG-A∗searches for a path for
+Agent 1 from s to g (that does not violate the constraints
+in C), while maintaining that the index of the decomposition
+of P−1 combined with the planned path so far remains min-
+imal. We demonstrate this before giving the precise details.
+Consider the root node of Figure 2 with the colliding paths
+of the two agents. Once the collision constraint is identiﬁed,
+two children are generated with the respective constraints.
+Now consider XG-A∗planning for the red agent given the
+path of the blue agent. XG-A∗initially attempts to keep the
+index at 1, i.e., to keep the paths of the agents disjoint. To
+this end, XG-A∗arrives at the plan in the green node (bottom
+of Figure 2) before even suggesting the plan in the orange
+node, which the standard A∗does. Indeed, the orange node
+has index 2, and therefore is not explored until all index 1
+plans are exhausted. This example demonstrates how XG-
+A∗directs XG-CBS toward a minimal-index plan.
+We now turn to the details of XG-A∗. The search space
+of XG-A∗consists of nodes of the form (v, t, H, i) where
+v ∈V is the vertex, t ∈N is the timestamp, H is a sequence
+of vertices, representing the history of the path from the last
+segmentation time, and i represents the plan index up to time
+t. XG-A∗performs a search on the graph G from the start
+(a) r = 1 plan exists.
+(b) r = 1 plan does not exist.
+Figure 3: XG-A∗drawback of Remark 2.
+node (s, 0, ∅, 1) guided toward any node corresponding to
+the goal vertex g as long as i ≤¯r, where ¯r is the index of
+P−1. The central element is the heuristic guiding the search.
+A node (v, t, H, i) is assigned two values: the current index
+i, which is the primary heuristic value, and the shortest-path
+metric from v to the goal g in the graph G itself, which is
+used as a tie-breaker. In order to expand a node, a neighbor
+of v is selected on the graph, and t is increased by 1. At this
+point the new vertex and time are checked against the con-
+straints C, and if they are not constrained, H and i are com-
+puted as per the greedy approach described in Section 3.2.
+Thus, XG-A∗starts by exploring all 1-segment plans, and
+only once these are exhausted, moves on to 2-segments, etc.
+We refer the reader to the Appendix (Section 7.3) for the
+pseudocode of XG-A∗and two methods of speeding it up.
+We now make two important observations regarding the
+behavior of XG-A∗.
+Remark 1. Observe that the index of a node depends not
+only on the plan for Agent 1, but also on the decomposition
+of the plan P−1. Therefore, if P−1 alone causes segmenta-
+tion, XG-A∗also increases i in the current node. This causes
+XG-A∗to “synchronize” segmentations. That is, if a path
+intersection in P−1 induces a new segment, the XG-A∗at-
+tempts to make Agent 1 intersect another path at that exact
+time, in order to avoid creating a new segment, which ulti-
+mately leads to a lower index.
+Remark 2. Since the primary heuristic is not guided toward
+the goal g, XG-A∗spends a lot of time covering. For in-
+stance, it exhausts all index-1 plans before incrementing the
+index, even if it is impossible to reach g in 1 segment. This is
+demonstrated in Figure 3, where XG-A∗is used to compute
+a path for the red agent given the existing path of the blue
+agent. In Figure 3a, an index-1 plan exists, and XG-A∗ﬁnds
+it relatively quickly, as it is guided toward the goal within
+the space of index-1 plans (by going around the blue agent).
+In Figure 3b, it is clear that no index-1 plan exists. However,
+XG-A∗ﬁrst has to exhaust all index 1 plans, before attempt-
+ing index 2 (the shortest path). This severe drawback means
+XG-A∗is slow with respect to the size of the graph G, rather
+than the number of agents. As we mention in Section 2, this
+difﬁculty is inherent to Explainable MAPF via Segmentation.
+Since XG-A∗eventually exhausts the space of possible
+plans, ordered by index, and since this space is bounded us-
+ing the bound B, we obtain the following.
+Theorem 2 (XG-A∗Completeness). Given a set of paths
+{π2, . . . , πn}, source and goal vertices s1 and g1, respec-
+tively, a set of constraints C, and a bound B, if there exists a
+path from si to gi of length at most B that does not violate
+5
+
+
+the constraints in C, then XG-A∗will terminate with such a
+path πi that minimizes the index of {π1, . . . , πn}.
+4.2
+WXG-A∗– Weighted Explanation Guided A∗
+As demonstrated in Remark 2, XG-A∗spends a lot of time
+exhausting the plans of a certain index before making any
+progress towards the goal. This occurs because the cost
+function of XG-A∗is the plan index and uses path length
+only as a tie-breaker. Conversely, standard A∗uses path
+length as the cost function and becomes efﬁcient with a
+heuristic (estimate of path length to goal), completely ig-
+noring the plan index. These algorithms are two extremi-
+ties of explanation-guided graph search. To get the best of
+both worlds, we design a general algorithm called weighted
+XG-A∗(WXG-A∗) that combines the two search methods.
+The premise behind WXG-A∗is to simultaneously inherit
+the index-minimization property of XG-A∗and the efﬁcient
+search property of A∗.
+Let fx and fa denote the cost functions of XG-A∗and A∗,
+respectively. We deﬁne the cost function of WXG-A∗to be
+a linear combination of fx and fa, i.e, for node q,
+fw(q) = wfx(q) + (1 −w)fa(q),
+where w ∈(0, 1). The function fw(q) encourages both in-
+dex minimization and efﬁcient graph search. The amount
+that fw tends toward either type of graph-search depends on
+weight w. As w →1, fw biases more towards minimal-
+index paths, and hence, the search becomes exhaustive
+(slower). Conversely, as w →0, the search tends more to-
+wards shortest path length (hence faster). Algorithmically,
+WXG-A∗is simply XG-A∗guided by fw rather than fx.
+We note that careful consideration is needed in choosing
+a value for w. An intuition is that fa (path length) is typ-
+ically much greater than fx (number of segments). Unless
+w is very large, fa is dominant and fx acts more like a tie-
+breaker. In Section 5, we empirically show how varying w
+changes the behavior of XG-CBS. Finally, note that WXG-
+A∗exhausts the same search space as XG-A∗, differing only
+in the order of the search. Therefore, Theorem 2 still holds
+for WXG-A∗, i.e., WXG-A∗is complete.
+4.3
+SR-A∗– Segmentation Respecting A∗
+While WXG-A∗can theoretically provide a good balance
+(trade-off) between efﬁciency and index minimization, it
+suffers from two drawbacks. First, it is difﬁcult to choose
+an appropriate weight w a priori to achieve a good bal-
+ance, since it is highly instance dependent. Second, WXG-
+A∗needs to maintain the history of the path (as in XG-A∗) in
+order to perform segmentation, resulting in a slow search al-
+gorithm. We propose a new low-level algorithm that does not
+keep track of history, thus obtaining a signiﬁcant speedup.
+Recall from Remark 1 that XG-A∗computes paths that
+ﬁt within the existing segmentation of P−1 by keeping track
+of the index of P−1 combined with the new path, which re-
+quires keeping the history of the path from the last segmenta-
+tion point. A coarse way of eliminating the need to keep the
+history is to make sure the planned path completely avoids
+all paths in P−1, and so does not contribute to segmentation.
+This, however, likely results in no plans being found, as it
+amounts to keeping the agents disjoint. Our proposed algo-
+rithm, dubbed segmentation-respecting A∗(SR-A∗), reﬁnes
+this idea, by making sure that the planned path is disjoint
+from all paths within the current segment. Intuitively, SR-A∗
+treats every disjoint segment within P−1 as time dependent
+obstacles. That is, existing paths within a segment become
+obstacles only for the time window of the segment. The re-
+sulting behavior is an efﬁcient graph search algorithm that is
+dedicated to ﬁtting within an existing segmentation.
+Formally, consider a plan P−1 with a disjoint decompo-
+sition t0 < t1 < . . . < tr, and a planning query for Agent
+1. The search space is now modiﬁed by adding a “timed ob-
+stacle” at vertex v at time t as follows. Let 1 ≤i ≤r be
+the segment such that ti ≤t ≤ti+1, then we add a timed
+obstacle if there is a path of P−1 that visits vertex v at the
+interval [ti, ti+1]. For example, if P−1 contains the segment
+v1, v2, v3 at times 3, 4, 5, respectively, then vertices v1, v2
+and v3 are all obstacles at times [3, 5].
+Observe that crucially, if Agent 1 does not intersect with
+any timed obstacle, then it also does not create new seg-
+ments, and hence “respects” the segmentation of P−1. In
+particular, SR-A∗breaks the completeness of XG-CBS. In-
+deed, the restriction of the search space means that some
+paths are never explored. From an efﬁciency perspective,
+however, SR-A∗both limits the search space, and eliminates
+the tracking of history, rendering this search comparable to
+A∗. In Section 5, we demonstrate that SR-A∗performs ex-
+ceedingly well, both in terms of efﬁciency and plan index.
+5
+Case Studies
+We evaluate the performance of XG-CBS on a combination
+of self-designed problems and standard MAPF benchmark
+problems available in (Bose and Markelov 2019). The self-
+designed spaces exhibit interesting behaviors that are unique
+to Problem 1. The results of our benchmarks show the ad-
+vantages and disadvantages of the proposed algorithms in
+various environments and scenarios. All experiments were
+performed on a machine with an AMD Ryzen 7 3.9GHz
+CPU and 64 GB of RAM. Our implementation is available
+on GitHub (Kottinger 2021).
+5.1
+Illustrative Examples
+To gain insight into XG-CBS, we showcase it on settings
+that present unique explanation challenges. Figure 4a shows
+a CBS solution of MAPF, where four agents need to cross an
+intersection. Visually verifying that the plan is collision free
+is difﬁcult. It becomes easy using the explanation scheme,
+which decomposes the plan into two disjoint segments in
+Fig. 4c and 4d. Using XG-CBS, we obtain a plan with index
+1, as depicted in Fig. 4b, which is much easier to verify. This
+demonstrates the trade-off between plan length and explana-
+tions: the shortest plan requires index 2, while index 1 can
+be achieved with a longer plan.
+Performance-wise, XG-CBS with A∗, as proposed in Sec-
+tion 3.2, timed out after a 15 minute threshold, whereas XG-
+CBS with XG-A∗arrived at an index-1 solution in 0.05 sec-
+onds. This difference can be attributed to the facts that the set
+6
+
+
+(a) CBS
+(b) XG-CBS, r = 1
+(c) CBS ∆k = [0, 2]
+(d) CBS ∆k = [2, 5]
+Figure 4: Road crossing: solutions via CBS and XG-CBS
+(a) CBS
+(b) CBS ∆k = [0, 1] (c) CBS ∆k = [1, 2]
+(d) CBS ∆k = [2, 4] (e) CBS ∆k = [4, 8] (f) XG-CBS, r = 1
+Figure 5: Apparent collision in short plan vs. optimal index
+of index-1 plans is comparatively sparse in the set of plans,
+and that index-1 plans greatly deviate from the shortest plan.
+As we discuss in Section 5.2, these factors have a signiﬁcant
+effect on the efﬁcacy of each algorithm.
+Our next use case is depicted in Figure 5a. A human ex-
+amining the plan may notice a possible collision between
+the red and green agents. However, it becomes clear in the
+explanation (Figures 5b-5e) that the red agent does, in fact,
+wait at the ﬁrst vertex, thus avoiding collision. An improved
+explanation can be obtained using XG-CBS with XG-A∗as
+shown in Fig. 5f. This solution was obtained in 0.5 seconds,
+whereas XG-CBS with A∗again timed out. For more case
+studies, we refer the reader to the supplementary material.
+5.2
+Benchmark Evaluation
+We now evaluate XG-CBS with the different low-level algo-
+rithms on a large set of MAPF benchmarks from (Bose and
+Markelov 2019). Our comparison of the algorithms is along
+three axes: computation time, segmentation index, and plan
+length (average cost, i.e., sum-of-costs divided by number of
+agents). We also evaluate CBS as a baseline.
+Our experiments are run as follows. For each benchmark,
+we run CBS. If CBS ﬁnds a plan, we segment it and use the
+index as an upper bound for XG-CBS. We then repeatedly
+lower the bound in XG-CBS, until it times out. We refer to
+the former result as ﬁrst and to the latter as best. In case CBS
+does not terminate, we run XG-CBS with an initial bound of
+∞. We remark that whenever an algorithm times out with-
+out a solution, we do not include this in the computation
+time. Our benchmarks were on grid worlds with the follow-
+ing sizes and number of agents: 9 × 9 with 4, 8, 10, and 12
+agents, 16 × 16 with 5, 10, 15, and 20 agents, and 33 × 33
+with 10, 20, and 30 agents. For each grid size and agent
+number combination, we ran 100 unique experiments. The
+timeout for a single algorithm on a single benchmark was
+5 minutes (while this may seem like a high threshold, re-
+call that Problem 1 is computationally harder than MAPF).
+The results are partially presented in Figures 6 and 17. We
+refer to Section 7 for the full set of benchmark results. For
+33 × 33 environments, XG-A∗and WXG-A∗nearly always
+time out, and hence not evaluated.
+For the most part, the results match our expectations:
+vanilla CBS offers the best tradeoff between plan length and
+computation time, but invariably outputs plans with high in-
+dex. Of the two extremities A∗and XG-A∗, the speed of
+A∗allows it to eventually ﬁnd smaller index plans than XG-
+A∗, with comparable path length. However, XG-A∗, being
+guided towards minimal index plans, often outputs a lower
+index plan initially (c.f., ﬁrst column). Moreover, as the en-
+vironment becomes smaller and more congested (9 × 9, 12
+agents), XG-A∗outperforms A∗. Unfortunately, the history-
+dependence of XG-A∗means that it does not scale to larger
+environments, and times out. In particular, this rules out the
+use of WXG-A∗, which is also history-dependent, for larger
+environments.
+The surprising results come from SR-A∗. Despite be-
+ing theoretically incomplete, in practice it offers an excel-
+lent success-rate (matching CBS), and invariably reduces
+the index of the plan (compared to CBS) by a signiﬁcant
+amount (e.g., for 33 × 33, 30 agents, the reduction is from
+roughly 24 segments to 6 segments!). Moreover, it’s limited
+search space allowes it to match CBS in computation time,
+and sometimes even outperform it. The tradeoff, naturally,
+comes in the path length, which increases.
+Another pleasant surprise comes from A∗, which despite
+the expected increase in computation time, does manage to
+give some decrease in the index, even on larger environ-
+ments. Moreover, since A∗uses the distance to the goal as
+a heuristic, the plans found by A∗are typically shorter than
+those of SR-A∗(but usually have a higher cost, since lower-
+ing the cost eventually causes it to time out).
+On smaller environments, WXG-A∗sometimes ﬁnds
+smaller index plans than XG-A∗on the ﬁrst try. In addi-
+tion, it has a higher success rate (often higher than all other
+versions, including CBS) due to being guided in part by
+A∗. However, since ﬁnding the best weight parameter is
+instance-dependent (c.f., Section 4.2), it is not clear whether
+batch experiments capture the performance of WXG-A∗.
+To summarize the results, on larger environments, if one
+wishes to optimize explainability, then SR-A∗is a clear win-
+ner. On smaller environments, A∗usually works fairly well,
+but XG-A∗can offer smaller index on congested environ-
+ments. Finally, by carefully tuning a combined weight (e.g.,
+by trying different options), one can obtain better explana-
+tions in small environments using WXG-A∗.
+7
+
+
+(a) Plan index for 9 × 9 environments.
+(b) Plan index for 16 × 16 environments.
+(c) Success Rate for 9 × 9 environments.
+(d) Success Rate for 16 × 16 environments.
+Figure 6: Benchmark results for 9 × 9 and 16 × 16 environments.
+Figure 7: Benchmark results for 33 × 33 environment.
+6
+Discussion and Future Work
+In this paper, we introduced a CBS-based decentralized al-
+gorithm for Explainable MAPF via Segmentation. Our tech-
+nical contribution is twofold: ﬁrst, we describe the extension
+XG-CBS, which can be readily implemented on top of ex-
+isting CBS implementations. Second, we describe new low-
+level search algorithms, namely XG-A∗, WXG-A∗and SR-
+A∗oriented toward low index plans. While the former two
+yield a complete algorithm, we study their efﬁcacy and show
+they do not scale well. The latter, despite not being complete,
+scales well and is often as efﬁcient as CBS, while yielding
+easily explainable plans.
+In future research, we will adapt other MAPF algo-
+rithms to the explainable settings, such as Priority-Based
+Search (Ma et al. 2019b), and SAT-based solutions, as well
+as extensions and improvements of “vanilla” CBS. Finally,
+we remark that Explainable MAPF via Segmentation has po-
+tential applications beyond gaining trust. Indeed, disjoint de-
+compositions can be used during the actual execution of the
+plan, in case the agents’ paths must not cross. For example
+in tethered robots (e.g., tethered UAVs), we wish to mini-
+mize tangling of the tethers as they constrain robot motion.
+This essentially means we desire plans with a small index,
+which XG-CBS enables us to achieve. Similarly, in applica-
+tions of MAPF to 3D pipe routing (Belov et al. 2020), small
+segmentations may allow for simpler routing. Other appli-
+cations can be found in multi-layered circuit board design.
+In particular, such applications show that even the reduction
+of one segment from the index may have beneﬁcial ﬁnancial
+applications, which may be signiﬁcant.
+8
+
+
+References
+Almagor, S.; and Lahijanian, M. 2020. Explainable Multi
+Agent Path Finding.
+In Proceedings of the 19th Interna-
+tional Conference on Autonomous Agents and MultiAgent
+Systems, AAMAS ’20, 34–42. Richland, SC: International
+Foundation for Autonomous Agents and Multiagent Sys-
+tems. ISBN 9781450375184.
+Arrieta, A. B.; D´ıaz-Rodr´ıguez, N.; Del Ser, J.; Bennetot, A.;
+Tabik, S.; Barbado, A.; Garc´ıa, S.; Gil-L´opez, S.; Molina,
+D.; Benjamins, R.; et al. 2020. Explainable Artiﬁcial In-
+telligence (XAI): Concepts, taxonomies, opportunities and
+challenges toward responsible AI. Information Fusion, 58:
+82–115.
+Bartak, R.; Svancara, J.; and Vlk, M. 2018.
+A
+Scheduling-Based Approach to Multi-Agent Path Finding
+with Weighted and Capacitated Arcs. In Proceedings of the
+International Joint Conference on Autonomous Agents and
+Multiagent Systems (AAMAS), 748–756.
+Belov, G.; Du, W.; De La Banda, M. G.; Harabor, D.;
+Koenig, S.; and Wei, X. 2020. From multi-agent pathﬁnd-
+ing to 3D pipe routing. In Thirteenth Annual Symposium on
+Combinatorial Search.
+Bose, A.; and Markelov, I. 2019. Multi-Agent Path Plan-
+ning in Python. https://github.com/atb033/multi agent path
+planning.
+Boyarski, E.; Felner, A.; Stern, R.; Sharon, G.; Tolpin,
+D.; Betzalel, O.; and Shimony, E. 2015. ICBS: Improved
+conﬂict-based search algorithm for multi-agent pathﬁnding.
+In Twenty-Fourth International Joint Conference on Artiﬁ-
+cial Intelligence.
+Brandao, M.; Canal, G.; Krivi´c, S.; Luff, P.; and Coles, A.
+2021. How experts explain motion planner output: a prelim-
+inary user-study to inform the design of explainable plan-
+ners. In 2021 30th IEEE International Conference on Robot
+& Human Interactive Communication (RO-MAN), 299–306.
+IEEE.
+Cohen, L.; Koenig, S.; Kumar, S.; Wagner, G.; Choset, H.;
+Chan, D.; and Sturtevant, N. 2018.
+Rapid Randomized
+Restarts for Multi-Agent Path Finding: Preliminary Results.
+In Proceedings of the International Joint Conference on Au-
+tonomous Agents and Multiagent Systems (AAMAS), 1909–
+1911.
+Eiﬂer, R.; Cashmore, M.; Jorg, H.; Magazzeni, D.; and
+Steinmetz, M. 2019. Explaining the Space of Plans through
+Plan-Property Dependencies. Proceedings of the 2nd Work-
+shop on Explainable Planning (XAIP).
+Felner, A.; Li, J.; Boyarski, E.; Ma, H.; Cohen, L.; Kumar,
+T. S.; and Koenig, S. 2018. Adding heuristics to conﬂict-
+based search for multi-agent path ﬁnding. In Proceedings
+of the International Conference on Automated Planning and
+Scheduling, volume 28.
+Felner, A.; Stern, R.; Shimony, E.; Goldenberg, M.;
+Sharon, G.; Sturtevant, N.; Wagner, G.; and Surynek, P.
+2017. Search-Based Optimal Solvers for the Multi-Agent
+Pathﬁnding Problem: Summary and Challenges. In Proceed-
+ings of the Symposium on Combinatorial Search (SoCS),
+28–37.
+Fines, K.; Sharpanskykh, A.; and Vert, M. 2020.
+Agent-
+based distributed planning and coordination for resilient air-
+port surface movement operations. Aerospace, 7(4): 48.
+Fox, M.; Long, D.; and Magazzeni, D. 2017. Explainable
+Planning. arXiv:1709.10256.
+Hubel, D. H.; and Wiesel, T. N. 1959. Receptive ﬁelds of
+single neurones in the cat’s striate cortex. The Journal of
+Physiology, 148(3).
+Kambhampati, S. 2019. Synthesizing Explainable Behav-
+ior for Human-AI Collaboration. In Proceedings of the 18th
+International Conference on Autonomous Agents and Mul-
+tiAgent Systems, 1–2. Richland, SC: International Founda-
+tion for Autonomous Agents and Multiagent Systems. ISBN
+9781450363099.
+Kottinger, J. 2021.
+Explanation-Guided Conﬂict-Based
+Search for Explainable MAPF.
+https://github.com/aria-
+systems-group/Explanation-Guided-CBS.
+Kottinger, J.; Almagor, S.; and Lahijanian, M. 2021. MAPS-
+X: Explainable Multi-Robot Motion Planning via Segmen-
+tation. In Proceedings of the IEEE International Conference
+on Robotics and Automation. Xi’an, China: IEEE.
+Lapuschkin, S.; W¨aldchen, S.; Binder, A.; Montavon, G.;
+Samek, W.; and M¨uller, K.-R. 2019.
+Unmasking Clever
+Hans predictors and assessing what machines really learn.
+Nature Communications, 10(1).
+Li, J.; Felner, A.; Boyarski, E.; Ma, H.; and Koenig, S.
+2019a. Improved Heuristics for Multi-Agent Path Finding
+with Conﬂict-Based Search. In IJCAI, volume 2019, 442–
+449.
+Li, J.; Harabor, D.; Stuckey, P. J.; Felner, A.; Ma, H.;
+and Koenig, S. 2019b.
+Disjoint splitting for multi-agent
+path ﬁnding with conﬂict-based search. In Proceedings of
+the International Conference on Automated Planning and
+Scheduling, volume 29, 279–283.
+Ma, H.; Harabor, D.; Stuckey, P.; Li, J.; and Koenig, S.
+2019a. Searching with Consistent Prioritization for Multi-
+Agent Path Finding. In Proceedings of the AAAI Conference
+on Artiﬁcial Intelligence (AAAI), (in print).
+Ma, H.; Harabor, D.; Stuckey, P. J.; Li, J.; and Koenig, S.
+2019b. Searching with consistent prioritization for multi-
+agent path ﬁnding. In Proceedings of the AAAI Conference
+on Artiﬁcial Intelligence, 7643–7650.
+Mari, T.; Dang, T.; and G¨ossler, G. 2021. Explaining Safety
+Violations in Real-Time Systems. In International Confer-
+ence on Formal Modeling and Analysis of Timed Systems,
+100–116. Springer.
+Sharon, G.; Stern, R.; Felner, A.; and Sturtevant, N. R. 2015.
+Conﬂict-based search for optimal multi-agent pathﬁnding.
+Artiﬁcial Intelligence, 219: 40–66.
+Standley, T. S. 2010. Finding optimal solutions to coopera-
+tive pathﬁnding problems. In Twenty-Fourth AAAI Confer-
+ence on Artiﬁcial Intelligence.
+Stern, R.; Sturtevant, N. R.; Atzmon, D.; Walker, T.; Li, J.;
+Cohen, L.; Ma, H.; Kumar, T. K. S.; Felner, A.; and Koenig,
+S. 2019. Multi-Agent Pathﬁnding: Deﬁnitions, Variants, and
+Benchmarks. Symposium on Combinatorial Search (SoCS),
+151–158.
+9
+
+
+Surynek, P.; Felner, A.; Stern, R.; and Boyarski, E. 2016. An
+Empirical Comparison of the Hardness of Multi-Agent Path
+Finding under the Makespan and the Sum of Costs Objec-
+tives. In Proceedings of the Symposium on Combinatorial
+Search (SoCS), 145–147.
+Tang, S.; Lee, T. S.; Li, M.; Zhang, Y.; Xu, Y.; Liu, F.;
+Teo, B.; and Jiang, H. 2018. Complex pattern selectivity in
+macaque primary visual cortex revealed by large-scale two-
+photon imaging.
+7
+Appendix
+We now present supplementary material that provides addi-
+tional insights to the behavior of our proposed algorithms
+presented in the paper. We begin by outlining the algorithm
+for the high-level of XG-CBS. Then, we present a more ex-
+tensive examples section to further prove the efﬁcacy of our
+proposed explanation scheme and algorithms. We conclude
+with an extensive table that shows all the experiments per-
+formed by our team, further validating the claims made in
+the paper.
+7.1
+XG-CBS Algorithm
+Given an Explainable MAPF instance consisting of a graph
+G, a list of source (si)n
+i=1 = (s1, . . . , sn), a list of goal
+vertices (gi)n
+i=1 = (g1, . . . , gn), an index bound r, and a
+path length bound B, XG-CBS proceeds as follows.
+First, a root node R is initialized with an empty set of
+constraints C. Then, the low-level planner is called to ﬁnd a
+path for each agent. If the graph search fails to generate a
+root plan Pr then XG-CBS returns no solution. If, however,
+a full plan is found, then it is saved in R along with all other
+important information and and added to the priority queue
+Q.
+While the queue is not empty, XG-CBS selects the highest
+priority node N, removes it from the queue, and evaluates
+its plan N.plan for a conﬂict (ai, aj, vi, vj, Ti, Tj) between
+Agent i at (vi, Ti) and Agent j at (vj, Tj). Note that seg-
+mentation conﬂicts are included in this deﬁnition by letting
+vi = vj.
+If no conﬂicts exist for a given nodes plan, then it is re-
+turned as the solution. Otherwise, for every agent in the
+conﬂict, a new node K is added with a new constraint
+(ai, vi, Ti), and the newly constrained agent is re-planned
+for using low level graph search. If successful, the new plan
+and all its information is added to K before it is added Q,
+where it will eventually be evaluated for conﬂicts.
+Algorithm 1 outlines the pseudocode for XG-CBS. Note
+that the graphSearch(·) procedure only utilizes the initial
+plan Pr or existing P−i as the chosen low level planner spec-
+iﬁes. For example, XG-A∗uses the existing plan as outlined
+in the paper. However, using A∗only segments the plan after
+πi is found but before graphSearch(·) returns it.
+7.2
+Completeness of XG-CBS
+We now present the proof of Theorem 1.
+Proof. The proof is a small variation on the completeness
+proof of standard CBS. Consider a solvable instance of Ex-
+plainable MAPF, namely G = ⟨V, E⟩, lists s1, . . . , sn and
+Algorithm 1: XG-CBS(G, (si)n
+i=1, (gi)n
+i=1, r, B)
+1 R.C, Q, Pr ←∅;
+2 for every agent do
+3
+Pr.add( graphSearch(G, si, gi, R.C, Pr, B) )
+4 if Pr.size() < n then
+5
+return no solution
+6 R.plan, R.index, R.cost ←Pr;
+7 Q.add(R);
+8 while Q not empty do
+9
+N ←Q.highestPriority();
+10
+Q.pop(N); c ←conﬂictCheck(N.plan, r);
+11
+if c is empty then
+12
+return N.plan
+13
+for every agent ai ∈c do
+14
+K.C ←N.C ∪(ai, v, Ti);
+15
+P−i ←K.plan \ πi ;
+16
+πi ←graphSearch(G, si, gi, K.C, P−i, B);
+17
+if πi exists then
+18
+Pnew ←P−i ∪πi;
+19
+K.plan, K.index, K.cost ←Pnew;
+20
+Q.add(K);
+g1, . . . , gn, and a bound r. Since this instance is solvable,
+there exists a plan P = {π1, . . . , πn} with index at most r.
+We obtain from the plan P a maximal set Cmax of con-
+straints for all the agents, by adding, for each agent i, every
+constraint the prevents agent i from being at vertex v at time
+t, for every v, t such that πi[t, t]̸ = v. Intuitively, the only
+paths allowed under Cmax prescribe P exactly.
+We claim that as long as no solution is found by XG-
+CBS, there exists a branch in the constraint tree whose set
+of constraints is a subset of Cmax, and that this path has an
+unexplored node. This is easily proved by induction on the
+constraint tree: the root node does not have any constraints,
+and ∅⊆Cmax. If the root is not a solution, then it has chil-
+dren obtained by conﬂicts. This completes the base case. For
+the induction step, consider the aforementioned branch, and
+consider the unexplored leaf node. If the plan represented in
+the leaf is not a solution, then it has children obtained by
+new constraints. We claim that at least one of these children
+adds a constraint from Cmax. Indeed, P does not have any
+conﬂicts, and so any conﬂict must produce at least two con-
+straints, one of which is not in Cmax (otherwise, Cmax allows
+a conﬂict, which is a contradiction). So we are done.
+Therefore, unless XG-CBS terminates with a solution ear-
+lier, at least one branch will be expanded toward P. To
+complete the argument, we observe that the constraint tree
+of XG-CBS is bounded, since the lengths of the plans are
+bounded. It follows that every branch will eventually be ex-
+plored. In particular, P will be reached.
+Finally, if the instance is not solvable, then eventually ev-
+ery possible constraint is placed, and the constraint tree is no
+longer updated, thus terminating the search.
+10
+
+
+Algorithm 2: XG-A∗(G, si, gi, C, P−i, B)
+1 Q ←{si};
+2 while Q not empty do
+3
+c ←Q.highestPriority();
+4
+if c.loc = gi then
+5
+return πi ←c.Path()
+6
+else
+7
+Q.pop(c); N ←expand(c, G, C, B);
+8
+for every n ∈N do
+9
+n.index ←Segment(n.Path(), P−i);
+10
+if n.index ≤n.parent.index then
+11
+n.gScore ←n.parent.gScore+1;
+12
+Q.add(n);
+13
+else
+14
+if n.parent.gScore+1 ≤n.gScore then
+15
+n.gScore ←n.parent.gScore+1;
+16
+Q.add(n);
+7.3
+XG-A∗Algorithm and Speedups.
+The algorithm for XG-A∗is shown in Algorithm 2. Below,
+we present some basic observations that help mitigate the
+limitation presented in Remark 4.
+Speeding Up XG-A∗
+As demonstrated in Remark 4, XG-
+A∗may spend a lot of time exhausting the plans of a certain
+index before making any progress. As we now show, we can
+alleviate some of the computational cost, using simple ob-
+servations.
+Eliminating Cycles
+Assume that the graph G allows
+agents to stay in place, i.e., has self-loops. This is typi-
+cal in, e.g., warehouse robots. Now, consider a plan P =
+{π1, . . . , πn} such that in its vertex-disjoint decomposition,
+Agent i makes a cycle that is contained entirely within a cer-
+tain segment. Since paths within a segment are disjoint, we
+can eliminate this cycle and replace it with Agent i waiting
+in place for the duration of the cycle. Moreover, we can shift
+this waiting by a wait in the initial vertex of the segment.
+Thus, we observe that any plan can be put in a “normal
+form” where within each segment, no agent makes a cycle,
+and staying in place is allowed only on the initial vertex. We
+use this to speed up XG-A∗by limiting the search space to
+comply with this condition: it is easy to check whether an
+agent has a cycle within a segment (except for looping in the
+initial vertex), as H, the history of the segment, is part of the
+information of each node.
+Shortest Path after Segment Bound
+Recall that XG-A∗
+exhausts all the plans with index i before moving to index
+i + 1. We propose a speed up, whereby when the index
+reaches the bound ¯r (index of P−1), the remaining search
+is performed using standard A∗, i.e., searching for the short-
+est path to the target, rather than exhausting the remaining
+plans. Technically, this modiﬁcation retains the complete-
+ness of the algorithm, and hence Theorem 5 is still valid.
+Intuitively, this offers a speed up since if we already reached
+(a) CBS
+(b) XG-CBS, r = 1
+(c) CBS ∆k = [0, 1]
+(d) CBS ∆k = [1, 8]
+Figure 8: Example of 1-segment solution with XG-CBS
+an index beyond the given bound, it is unlikely that planning
+for the current agent helps to reduce segmentation. There-
+fore, we terminate the search as quickly as possible and al-
+low for further exploration of the conﬂict tree. We ﬁnd that
+empirically, this heuristic speeds up the algorithm.
+7.4
+Extended Case Studies
+Illustrative Examples (extended)
+We now further show-
+case XG-CBS in many settings. We begin by showing how
+XG-CBS XG-A∗outperforms XG-CBS with A∗for exam-
+ples where the optimal explanation requires careful tuning
+of the plan. Then, we incrementally increase the space size,
+agent number, and solution complexity to show the capabil-
+ities of XG-CBS.
+Figure 8a shows an example of four agents in a 9 × 9 grid
+world. Notice that the shortest plan results in a sub-optimal
+explanation. XG-CBS with XG-A∗easily returns the opti-
+mal explanation shown in Figure 8b in 0.04 seconds. Note
+that XG-CBS with A∗ﬁnds a 2-segment solution almost im-
+mediately but fails to return the preferred 1-segment solution
+given a 15 minute planning time threshold. This is due to the
+increase in path length when attempting to untangle the red
+and yellow agents.
+We now turn to a more interesting example, shown in Fig-
+ure 9. The shortest plan produces a 6-segment solution due
+to the natural leader-follower behavior that appears in the
+shortest plan. Inspecting the full plan in Figure 9a makes
+it difﬁcult to validate the plan is collision free. The expla-
+nation (Figures 9b-9g) clearly shows a collision free plan.
+However, there are many segments compared to the small
+example. XG-CBS is capable of producing a much more ex-
+plainable plan, shown in Figure 9h. Forcing the green agent
+to wait and the purple agent to take a longer path enables
+11
+
+
+(a) CBS
+(b) CBS, ∆k = [0, 0]
+(c) CBS, ∆k = [0, 1]
+(d) CBS, ∆k = [1, 2]
+(e) CBS, ∆k = [2, 3]
+(f) CBS, ∆k = [3, 4]
+(g) CBS, ∆k = [4, 7]
+(h) XG-CBS, r = 2
+(i) XG-CBS, ∆k = [0, 3]
+(j) XG-CBS, ∆k = [3, 8]
+Figure 9: Example of 2-segment solution with XG-CBS
+a 2-segment plan (Figures 9i-9j) that is much easier to ex-
+plain. We note here that XG-CBS with XG-A∗found the
+2-segment plan in 128.1 seconds while the XG-CBS using
+classical A∗once again failed to return a 2-segment solution
+after a maximum of 15 minutes of planning.
+We see one example where XG-CBS with classical A∗
+performs signiﬁcantly better than XG-CBS with XG-A∗in
+Figure 10. Here, XG-CBS with XG-A∗does not return a
+2-segment solution within 15 minutes. However, XG-CBS
+with A∗returns the preferred solution in 0.44 seconds. No-
+tice that the 6-segment plan returned by CBS (Figure 10a)
+and the 2-segment plan returned by XG-CBS with A∗(Fig-
+ure 10h) look very similar. This is different from earlier ex-
+amples we have seen thus far, where decreasing segments
+requires a heavy deviation from the shortest paths for indi-
+vidual agents. Experiments show that in examples like these,
+where we can greatly simplify the explanation with minor
+tweaking of the shortest path plan, that XG-CBS with A∗
+outperforms XG-CBS with XG-A∗. We attribute this to the
+fact that using A∗quickly makes minor changes to the short-
+est paths while XG-A∗enables large deviations from short-
+est paths but suffers from computation time as a result.
+We witness an opposite behavior in the example shown in
+Figure 11. The shortest path plan generated by CBS in Fig-
+ure 11a shows many paths overlapping each other, suggest-
+ing a high number of segments. Indeed, the plan requires ﬁve
+disjoint segments. Overlapping paths also suggest that large
+deviations are required by the agents to drastically decrease
+segmentation. XG-CBS with XG-A∗returns the plan shown
+in Figure 11g in 113.9 seconds. As expected, XG-CBS with
+A∗did not ﬁnd a solution in 15 minutes of planning.
+The decreasing segments becomes increasingly important
+as the number of agents rises. For example, the CBS solution
+to a nine agent MAPF problem in a 26 × 26 grid world (Fig-
+ure 12a) requires 8 segments to explain (Figure 12b-12i).
+More interestingly, many of the segments show tiny inter-
+vals of the plan. XG-CBS with XG-A∗returns an alternative
+solution, shown in Figure 12j, that mitigates the length of
+the explanation scheme. It presents a plan that only requires
+two segments (Figure 12k-12l).
+Continuing to scale upwards, we now consider the exam-
+ple in Figure 13 with ten agents in a 33 × 33 grid world. In
+14 seconds, XG-CBS with A∗cuts the explanation by ap-
+proximately 65%, making it much simpler for a human user
+to validate the plan.
+We conclude this section by testing our algorithms on a
+MAPF instance consisting of twelve agents in a 33 × 33
+grid world. The results are shown in Figure 14. Notice that
+the plan returned by CBS (Figure 14a) requires thirteen seg-
+ments (Figure 14b-14n). However, planing with XG-CBS
+using A∗, we get the plan shown in Figure 14o which only
+requires ﬁve segments, shown in Figure 14p-14t.
+Benchmark Evaluation (extended)
+Our benchmarks
+were on grid worlds with the following sizes and number
+of agents: 9 × 9 with 4, 8, 10, and 12 agents, 16 × 16 with
+5, 10, 15, and 20 agents, and 33 × 33 with 10, 20, and 30
+agents. For each grid size and agent number combination,
+we ran 100 unique experiments, where each experiment con-
+sisted of CBS, followed by XG-CBS with each of the low-
+level algorithms. The timeout for a single algorithm on a
+single benchmark was 5 minutes (while this may seem like
+a high threshold, recall that Explainable MAPF is compu-
+tationally harder than MAPF). The complete results appear
+in Figures 15, 16, and 17 and contain a comparison of com-
+putation time, plan length, segmentation index and success
+rate.
+As can be seen from the trend in computation times, for
+XG-A∗the computation time is already high for 16 × 16
+environments, with a low success rate. This trend carries on
+to larger environments, rendering XG-A∗with an extremely
+low success rate. We therefore do not evaluate XG-A∗and
+its derivative – WXG-A∗on 33 × 33 environments.
+12
+
+
+(a) CBS
+(b) CBS, ∆k = [0, 3]
+(c) CBS, ∆k = [3, 4]
+(d) CBS, ∆k = [4, 5]
+(e) CBS, ∆k = [5, 6]
+(f) CBS, ∆k = [6, 20]
+(g) CBS, ∆k = [20, 22]
+(h) XG-CBS, r = 2
+(i) XG-CBS, ∆k = [0, 6]
+(j) XG-CBS, ∆k = [6, 22]
+Figure 10: Example of XG-CBS with 2-segment solution vs 6-segment solution of CBS
+13
+
+
+(a) CBS
+(b) CBS, ∆k = [0, 3]
+(c) CBS, ∆k = [3, 8]
+(d) CBS, ∆k = [8, 10]
+(e) CBS, ∆k = [10, 19]
+(f) CBS, ∆k = [19, 30]
+(g) XG-CBS, r = 2
+(h) XG-CBS, ∆k = [0, 6]
+(i) XG-CBS, ∆k = [6, 38]
+Figure 11: Example of XG-CBS reducing a 5-segment solution of CBS to a 2-segment plan.
+14
+
+
+(a) CBS
+(b) CBS, ∆k = [0, 2]
+(c) CBS, ∆k = [2, 4]
+(d) CBS, ∆k = [4, 5]
+(e) CBS, ∆k = [5, 6]
+(f) CBS, ∆k = [6, 11]
+(g) CBS, ∆k = [11, 14]
+(h) CBS, ∆k = [14, 20]
+(i) CBS, ∆k = [20, 33]
+(j) XG-CBS, r = 2
+(k) XG-CBS, ∆k = [0, 13]
+(l) XG-CBS, ∆k = [13, 43]
+Figure 12: Example of XG-CBS, reducing 7-segment plan of CBS to a 2-segment plan.
+15
+
+
+(a) CBS
+(b) CBS, ∆k = [0, 3]
+(c) CBS, ∆k = [3, 4]
+(d) CBS, ∆k = [4, 5]
+(e) CBS, ∆k = [5, 6]
+(f) CBS, ∆k = [6, 7]
+(g) CBS, ∆k = [7, 8]
+(h) CBS, ∆k = [8, 11]
+(i) CBS, ∆k = [11, 12]
+(j) CBS, ∆k = [12, 14]
+(k) CBS, ∆k = [14, 15]
+(l) CBS, ∆k = [15, 17]
+(m) CBS, ∆k = [17, 19]
+(n) CBS, ∆k = [19, 20]
+(o) CBS, ∆k = [20, 22]
+(p) CBS, ∆k = [22, 23]
+(q) CBS, ∆k = [23, 26]
+(r) CBS, ∆k = [26, 42]
+(s) XG-CBS, r = 6
+(t) XG-CBS, ∆k = [0, 5]
+(u) XG-CBS,
+∆k = [5, 9]
+(v) XG-CBS,
+∆k = [9, 16]
+(w) XG-CBS,
+∆k = [16, 21]
+(x) XG-CBS,
+∆k = [21, 23]
+(y) XG-CBS,
+∆k = [23, 43]
+Figure 13: Example of XG-CBS reducing 18-segment plan of CBS to a 6-segment plan.
+16
+
+
+(a) CBS
+(b) CBS, ∆k = [0, 0]
+(c) CBS, ∆k = [0, 1]
+(d) CBS, ∆k = [1, 2]
+(e) CBS, ∆k = [2, 3]
+(f) CBS, ∆k = [3, 4]
+(g) CBS, ∆k = [4, 5]
+(h) CBS, ∆k = [5, 9]
+(i) CBS, ∆k = [9, 11]
+(j) CBS, ∆k = [11, 12]
+(k) CBS, ∆k = [12, 14]
+(l) CBS, ∆k = [14, 16]
+(m) CBS, ∆k = [16, 23]
+(n) CBS, ∆k = [23, 41]
+(o) XG-CBS, r = 5
+(p) XG-CBS, ∆k = [0, 5]
+(q) XG-CBS, ∆k = [5, 10]
+(r) XG-CBS, ∆k = [10, 16]
+(s) XG-CBS, ∆k = [16, 25]
+(t) XG-CBS, ∆k = [25, 41]
+Figure 14: Example of XG-CBS solution with 5-segments vs 13-segments solution of CBS.
+.
+17
+
+
+Figure 15: Benchmark results for 9 × 9 environments.
+18
+
+
+Figure 16: Benchmark results for 16 × 16 environments.
+19
+
+
+Figure 17: Benchmark results for 33 × 33 environments.
+20

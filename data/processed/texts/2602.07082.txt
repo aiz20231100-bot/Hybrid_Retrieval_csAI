@@ -1,0 +1,2321 @@
+MOSAICTHINKER:
+ON-DEVICE
+VISUAL
+SPATIAL
+REASONING FOR EMBODIED AI VIA ITERATIVE CON-
+STRUCTION OF SPACE REPRESENTATION
+Haoming Wang* & Qiyao Xue* & Weichen Liu & Wei Gao
+Department of Electrical and Computer Engineering
+University of Pittsburgh
+Pittsburgh, PA 15261, USA
+{haw200, qix63, weichenliu, weigao}@pitt.edu
+∗
+ABSTRACT
+When embodied AI is expanding from traditional object detection and recogni-
+tion to more advanced tasks of robot manipulation and actuation planning, visual
+spatial reasoning from the video inputs is necessary to perceive the spatial rela-
+tionships of objects and guide device actions. However, existing visual language
+models (VLMs) have very weak capabilities in spatial reasoning due to the lack
+of knowledge about 3D spatial information, especially when the reasoning task
+involve complex spatial relations across multiple video frames. In this paper, we
+present a new inference-time computing technique for on-device embodied AI,
+namely MosaicThinker, which enhances the on-device small VLM’s spatial rea-
+soning capabilities on difficult cross-frame reasoning tasks. Our basic idea is to
+integrate fragmented spatial information from multiple frames into a unified space
+representation of global semantic map, and further guide the VLM’s spatial rea-
+soning over the semantic map via a visual prompt. Experiment results show that
+our technique can greatly enhance the accuracy of cross-frame spatial reasoning
+on resource-constrained embodied AI devices, over reasoning tasks with diverse
+types and complexities.
+1
+INTRODUCTION
+In embodied AI applications, a physical device captures visual views of the physical world into video
+streams, which are perceived by on-device AI models for proper device actions Li et al. (2025);
+Wang et al. (2025). Compared to cloud-based solutions Duan et al. (2022); Driess et al. (2023);
+Wang et al. (2024), on-device AI models protects data privacy and ensures prompt device actions
+that are important in many mission-critical domains. Currently, the existing on-device AI models
+mostly focus on appearance-based object detection and recognition based on visual features such as
+texture, color and shape. For example in Figure 1(a), semantic segmentation models can label every
+pixel to an object Kirillov et al. (2023), and detection models draw bounding boxes for objects Liu
+et al. (2024). By further applying these visual inputs to an on-device Visual Language Model (VLM)
+Hurst et al. (2024); Chu et al. (2024), natural language queries can be answered by being grounded
+in visual perceptions Pi et al. (2024); Yang et al. (2024). These AI models have been applied to
+many embodied AI domains Das et al. (2018), to drive tasks including object recognition in robotics
+Zheng et al. (2025); Levine et al. (2018) and visual assistance in augmented reality Lin et al. (2023).
+Recently, the scope of embodied AI is further expanding to more advanced tasks such as robotic
+manipulation Yuan et al. (2024); Vuong et al. (2024) and actuation planning Zhang et al. (2025);
+Mao et al. (2024). In these tasks, VLMs also need to be capable of spatial reasoning in the 3D
+space, such as comprehending the spatial relationships (e.g., orientation and relative position) of
+objects, to correctly interpret the spatial contexts and guide device actions Jia et al. (2025); Ma
+et al. (2024); Ogezi and Shi (2025). For example, in Figure 1(b), to identify the correct box to
+retrieve, a robot translates the allocentric input command into egocentric actions, requiring correct
+understanding of the spatial relationships across different viewpoints (camera’s view and robot’s
+∗*The first two authors contributed equally to this work.
+1
+arXiv:2602.07082v1  [cs.CV]  6 Feb 2026
+
+
+view). Similarly, a wearable assistant estimates the object’s 3D dimensions to determine whether
+it fits into the elevator, and a search-and-rescue drone builds a 3D map of an unknown area to
+report the survivor’s location relative to the surrounding landmarks. Unfortunately, the existing
+VLMs perform very poorly in spatial reasoning tasks Fu et al. (2024); Wang et al. (2024), espe-
+cially from RGB video captures where spatial information is only contained in an implicit manner1.
+Object detection 
+Tactile sensation
+Q: Is the room empty?
+Q: What is the material 
+at the point of contact?
+A: Seems like a 
+soft fabric
+A: Someone is 
+in the room
+Knowledge-based 
+recognition
+Find all edible objects.
+(a) Traditional visual tasks of object detection
+and recognition
+Retrieve the 3rd box 
+from the left in the 
+camera’s perspective
+Can the furniture I 
+saw before fit into 
+this elevator?
+Robotics
+Wearables
+Drones
+Mapping the global 
+location to local operation
+(b) Visual spatial reasoning tasks
+Figure 1: Different tasks in embodied AI appli-
+cations
+The existing VLMs fail in spatial reasoning due
+to the following reasons. First, current VLMs
+are mostly designed and trained to take 2D im-
+ages as inputs, and inherently lack knowledge
+about 3D spatial information. These models en-
+code visual inputs as flat feature maps or token
+sequences, without perceiving the object-centric
+3D dimensions and spatial relationships. Hence,
+they can only capture simple spatial relations
+based on pixel coordinates (e.g., the relative po-
+sition in camera view), but struggle with more
+complex relations that involve viewpoint trans-
+formations across multiple frames and require
+good alignment over frames. Such cross-frame
+alignment is challenging because spatial infor-
+mation across different views presents as mul-
+tiple egocentric observations, which are partial
+and fragmented You et al. (2024); Zhang et al.
+(2024) (section 2.2). We verified that VLM’s
+ability of spatial reasoning scales with parameter size (section 2.1), and such ability of small on-
+device VLMs is even weaker.
+An intuitive solution to these challenges is to redesign a VLM for spatial reasoning tasks, and train
+the VLM with 3D spatial data. However, model redesign and training are expensive, and this data-
+driven approach has poor generalizability in different task domains that differ in scene layouts and
+instruction distributions Sun et al. (2024); Zitkovich et al. (2023).
+View 1
+View 2
+View 4
+Sofa
+TV
+Table
+Window
+Task Question: From the viewpoint presented in View 4, 
+what is to the right of the sneaker? A. TV    B. Sofa.  C. Table
+Video Frames
+Semantic Map
+Sneaker
+4
+3
+2
+1
+View 3
+Figure 2: Construction of semantic map as the
+unified space representation
+Rather than retraining VLMs, in this paper we
+present a new inference-time computing tech-
+nique, namely MosaicThinker, which properly
+structures the available spatial information and
+accordingly guides the VLM’s process of spatial
+reasoning. To ensure good cross-frame align-
+ment, our key idea in MosaicThinker is to inte-
+grate fragmented spatial information from mul-
+tiple frames into a unified space representa-
+tion. Being different from traditional methods
+of dense representations such as bird’s-eye view
+(BEV) maps Qi et al. (2025) that are hard for
+small on-device VLMs to perceive, in Mosaic-
+Thinker we construct a sparse representation as
+a global semantic map. As shown in Figure 2, the semantic map represents rich spatial information
+about locations of camera and all the task-related objects across different frames as a sparse grid,
+rather than an image of dense top-down pixels. As a result, we can enable effective cross-frame spa-
+tial reasoning by instructing the small on-device VLMs to perceive the semantic map via a carefully
+crafted visual prompt (section 3.4). For example in Figure 2, the task-related object (i.e., the object
+right to the sneaker) is missing in the current view (view 4), but using the semantic map allows easy
+VLM reasoning, as the VLM can reference the object’s global position on the map relative to the
+camera’s current pose.
+For small on-device VLMs with limited representation power, it is hard to construct the semantic
+map by directly prompting the VLM to retrieve the spatial information from frames and establish
+1RGB video captures are the only usable visual modality on many low-cost embodied AI devices with
+limited local resources. See section 2.3 for details.
+2
+
+
+cross-frame spatial correlations. Instead, we first use specialized AI models to extract spatial in-
+formation from individual frames, and then iteratively aligns such information across consecutive
+frames by matching objects in different views (section 3.2). In this way, this alignment fuses the
+per-frame spatial information into a unified global coordinate system, from which the semantic map
+can be coherently constructed with all the objects’ locations (section 3.2).
+Intuitively, all frames in the input video could be used for constructing the semantic map, but doing
+so is not only computationally expensive but also semantically noisy, as the semantic map may
+improperly contain irrelevant objects that affect reasoning on task-related objects. Instead, we only
+involve a set of key frames relevant to the reasoning task in construction of semantic map. To
+efficiently identify the most proper set of key frames, MosaicThinker samples the video frames in
+multiple iterations, and progressively refines its sampling distribution in each iteration to focus on
+the most informative video segments (section 3.3).
+To our best knowledge, MosaicThinker is the first training-free method that enables complicated
+cross-frame visual spatial reasoning on small on-device VLMs. We implemented MosaicThinker on
+on-device AI platforms, including NVidia Jetson Orion, Meta AR Glass and OnePlus 12R smart-
+phone. We evaluated MosaicThinker with multiple spatial reasoning benchmarks that cover differ-
+ent indoor scenes (e.g., residential homes, offices, libraries, etc), focusing on various types of spatial
+reasoning tasks about object relationship, location identification and camera movement estimation.
+From our experiment results, we have the following conclusions:
+• MosaicThinker significantly improves the accuracy of difficult cross-frame spatial reason-
+ing tasks. Compared to competitive baselines of video understanding and spatial reasoning,
+it can improve the reasoning accuracy by up to 40% on various types of tasks.
+• MosaicThinker is highly adaptive. The proposed method of semantic map construction can
+well adapt to different types of indoor scenes and object complexity with possible occlusion
+and partial visibility.
+• MosaicThinker is lightweight. When deployed with off-the-shelf VLMs on embodied AI
+devices, it retains high compute efficiency and incurs a small amount of extra compute
+overhead.
+2
+BACKGROUND AND MOTIVATION
+2.1
+SPATIAL REASONING ON SMALL VLMS
+Appearance-based recognition task
+Spatial reasoning task
+Frame 1
+Frame 2
+Q: From Frame 1 to Frame 2, in which direction is the camera rotating 
+A: The staircase railing, next to the futon in the first image, is pushed to the far-
+right edge of the frame in the second. This happens when a camera pans right.
+Q: Describe the scene
+A: The images show a living room with a red sectional sofa in foreground. The 
+sofa has several pillows on it, including a large one near the back and smaller ones 
+near the front. On the left side of sofa, there is a small table with a few items on it …
+Figure 3: The existing VLM’s performance discrep-
+ancy between appearance-based and spatial reasoning
+tasks. Outputs are generated by Qwen-2.5-VL-32B.
+VLMs exhibit near-human performance in
+appearance-based tasks such as semantic
+understanding and open-vocabulary recog-
+nition, but they struggle with spatial rea-
+soning tasks that are relatively easy for
+humans Yang et al. (2025;), as exempli-
+fied in Figure 3. This discrepancy arises
+from the fact that current VLMs learn pri-
+marily from static texts and 2D images,
+which rarely contain explicit information
+about the 3D space that humans continu-
+ously perceive. Moreover, cognitive sci-
+ence has verified that the human brain per-
+ceives the space by converting the ego-
+centric 3D perceptions into an allowcen-
+tric mental map, and hence facilitates rea-
+soning from multiple viewpoints Johnson-
+Laird (1980; 1983). In contrast, VLMs process texts and visual features in sequential tokens without
+an explicit representation of 3D space, limiting their ability of spatial reasoning. We are hence in-
+spired to construct a semantic map as a 3D space representation that encodes objects’ positions,
+orientations and spatial relationships, to mimic the human brain’s reasoning on the mental map.
+In addition, the spatial reasoning ability of VLMs also scales with the model size Yang et al. (2025;).
+Existing studies show that, on relatively simple tasks such as estimating the object sizes, a state-of-
+3
+
+
+the-art VLM (e.g., Gemini-2.5-pro) can achieve human-level performance, but a small VLM with
+3B parameters barely outperforms a random guess Fu et al. (2024); Wang et al. (2024). As shown in
+Figure 4, larger VLMs usually encode visuospatial commonsense knowledge such as the typical size
+of a chair, and can hence reason about the sizes of other objects by comparing their relative scale.
+Smaller VLMs, in contrast, contain only limited knowledge about such commonsense. Clearly,
+deploying a large VLM on embodied AI devices is impractical, and this constraint motivates us
+to improve the spatial reasoning capability of small on-device VLMs beyond their representation
+power.
+2.2
+CROSS-FRAME SPATIAL REASONING
+Small on-device VLM (Qwen-2.5-VL-7B)
+Large cloud-based VLM (Gemini-2.5-pro)
+Frame 1
+Frame 2
+A: Based on a visual comparison of the two frames, the table under the mirror 
+(the fireplace mantelpiece) is longer based on the following reasons:
+• Instrument Identification: The instrument is not a piano, but rather a
+• reed organ, typically more compact than a full-sized piano
+• Using the Wallpaper for Scale: The fireplace mantelpiece in the first image
+ appears to span more of the vertical stripes ….
+A: The piano appears to cover more horizontal space compared to 
+the table, which is more compact in its vertical orientation
+Q: Which is longer, the piano or the table under the mirror?
+Figure 4: The VLM’s spatial reasoning capability re-
+duces with the model size
+One common approach to enhancing the
+VLM’s capability of spatial reasoning is
+to extract 3D spatial information using a
+3D foundation model and inject it into
+the VLM, either explicitly through a depth
+map or implicitly via high-level features
+Wu et al. (2025); Huang et al. (2025);
+Zheng et al. (2025); Wang et al. (2025).
+Some existing methods proposed more
+fine-grained injection, e.g., segmenting
+task-related objects and encoding them as
+separate spatial tokens Yu et al. (2025), or
+dividing the scene into regions and focus-
+ing on those most relevant to the task Zhi
+et al. (2025). However, these methods still
+struggle with complicated reasoning tasks
+across multiple frames, because the task-related objects may separately appear in different frames or
+be partially occluded across frames, as shown in Figure 5. In these cases, partial observations across
+frames cannot be well integrated into a coherent space representation, and the reasoning process
+hence remains fragmented and error-prone. Tackling this type of challenging spatial reasoning tasks
+will be the main focus of this paper.
+Frame 1
+Frame 2
+Frame 3
+Q: What is the spatial relationship between the bowl and the wineglass in Frame 2
+A: In Frame 2, the bowl is not visible. However, using the other frames to understand the 
+layout of the scene, we can determine their spatial relationship.
+• In Frame 1, we can see both objects. The large black bowl is located behind and
+slightly to the right of the stemmed glass.
+• Frame 2 is a direct, frontal view of the stemmed glass.
+• Therefore, in the context of the scene as viewed in Frame 2 , the bowl is positioned
+directly behind the stemmed glass, which is why it is completely obscured from view.
+Figure 5:
+Incorrect cross-frame spatial reasoning
+where task-related objects are occluded or separately
+appear in frames. Outputs are generated by Gemini-
+2.5-Pro.
+Recently, some research efforts aim to ad-
+dress this challenge by unifying the space
+representations from multiple frames. For
+example,
+generating a bird’s-eye view
+(BEV) map has been effective in consis-
+tently marking objects across frames, when
+being applied to large VLMs Qi et al.
+(2025). However, this approach performs
+poorly for small on-device VLMs Qi et al.
+(2025), because the BEV map is a dense
+representation of the 3D space, which is
+hard for small VLMs with limited repre-
+sentation power to interpret. Instead, some
+existing work suggests to use Scene Graph
+Reconstructions as the sparse representa-
+tion Gao et al. (2022); Yang et al. (2023),
+which however, requires dense supervision, closed-set labels and task-specific architectures, hence
+lacking generalizability. These limitations, then, motivates us to design semantic-based methods of
+space representation, for better sparsity and generalizability.
+2.3
+OTHER VISUAL MODALITIES
+Another approach to enhancing cross-frame spatial reasoning is to incorporate additional visual
+modalities, such as depth map Zhu et al. (2024) and point clouds Linghu et al. (2024). Dedicated
+hardware can provide these visual inputs, but devices with sufficient accuracy are often too expensive
+for low-cost embodied AI devices such as small robots and AR/VR headsets Simon and Majumdar
+(2023); Skurowski et al. (2024). Specialized AI models can also estimate these visual modalities
+4
+
+
+Likelihood Score
+List of task-
+related objects
+Object 
+Detector
+Updated sampling 
+distribution
+Current sampling 
+distribution
+……
+……
+Depth 
+estimation
+3D point cloud with semantics
+Aligned
+Next unaligned
+Image 
+Matching
+Transformation 
+Estimate
+Integrate
+Per-Frame Extraction
+Cross-frame Alignment
+Key Frame Selection
+Iterative Construction of Semantic Map
+Gaussian 
+kernels
+Iterative 
+Temporal 
+Search
+Input 
+Video 
+Frames
+Selected key 
+frames
+High
+scores
+Aligned point 
+cloud across 
+frames
+Semantic Map
+Figure 6: Overview of MosaicThinker design
+from RGB captures Yang et al. (2024); Bochkovskii et al. (2024), but their estimation accuracy
+substantially degrades in the far field Jiao et al. (2018); Zhan et al. (2025). For instance, experiments
+in Zhan et al. (2025) show that errors of depth estimation largely rises once the normalized depth
+range exceeds 60%. Due to this discrepancy, rather than directly using the raw depth estimations to
+calculate object locations in the semantic map, in MosaicThinker we iteratively align depth estimates
+(from RGB video captures) across frames, and only use the aligned depth point to construct the
+semantic map.
+Furthermore, even when accurate depth maps or point clouds are available, they cannot be directly
+used as visual input to small on-device VLMs, which are not trained to interpret these modalities.
+For example, if we apply the depth map to VLMs as a RGB image, small VLMs with 3B-7B pa-
+rameters can only extract coarse-grained depth information for categorizing the object’s position
+(e.g., foreground, midground or background) Mukhopadhyay et al. (2024); Rahmanzadehgervi et al.
+(2024). This deficiency is another motivation for us to instead construct a sparse spatial representa-
+tion of semantic map, to better guide VLM’s reasoning through carefully designed visual prompts.
+3
+MOSAICTHINKER DESIGN
+MosaicThinker targets spatial reasoning tasks that takes an egocentric video of the scene as visual
+input and answers a user’s question in natural language, as exemplified in Figure 3, and consider
+a “cold start” scenario, where the VLM has no prior knowledge in any form about the scene to be
+reasoned. MosaicThinker focuses on cross-frame reasoning of object-centric spatial relationships
+(e.g., left/right/front/behind, containing, supporting, adjacent to, etc), rather than measurements of
+dimensions and distances Chen et al. (2024); Jia et al. (2025); Ogezi and Shi (2025). We consider
+indoor scenes with moderate camera motions and occasional occlusions in video captures, as rapid
+camera motions cause motion blurs in videos and result in corrupted video frames, and frequent
+occlusions could significantly reduce the amount of available spatial information about task-related
+objects in the scene, making the spatial reasoning practically infeasible.
+As shown in Figure 6, MosaicThinker consists of two major components: (1) Iterative Construc-
+tion of Semantic Map, which incrementally builds a unified 3D space representation that contains
+rich spatial information about task-related objects; and (2) Key Frame Selection, which identify a
+minimum yet sufficient set of video frames as visual inputs for constructing the semantic map. Mo-
+saicThinker then uses the semantic map as input to on-device VLM, and uses a carefully crafted
+visual prompt to instruct the VLM’s reasoning over the semantic map.
+3.1
+PREPROCESSING
+Given a reasoning task, MosaicThinker first obtains the list of task-related objects in natural lan-
+guage, by grounding the task question using a VLM. As shown in Figure 7, instead of text parsing
+or applying the entire video to VLM, we prompt the VLM with the task question and a few ran-
+domly sampled video frames, to disambiguate object aliases and scene context. The VLM is then
+instructed to output a list of object names in natural language, ranked by their relevance to the ques-
+tion and likelihoods of appearance in the video, based on joint understanding of question semantics
+and visual priors inferred from the sampled frames.
+5
+
+
+This list is expected to include 1) target objects that are explicitly mentioned in the question (e.g.,
+“book with blue cover”), and 2) cue objects that serve as contextual hints or landmarks to facili-
+tate spatial reasoning (e.g., “bookshelf”). Since this grounding relies solely on appearance-based
+recognition, an on-device VLM is sufficient.
+Considering these frames sampled from a video, generate the list of 
+target and cue objects with significance weights, for answering the task 
+question: <Task Question>. The target objects are the ones that are 
+explicitly mentioned in the ask question, and cue objects serve as 
+contextual hints or landmarks to help search the target objects. Weights 
+of target objects should be significantly higher than those of cue objects.
+Sampled 
+Frames
+Prompt 
+template
+Task 
+Question
+Where can I find a book with blue cover?
+Answer
+{ "target_objects": 
+      [ { "book with blue cover” : 1.0 } ],
+   "cue_objects": 
+[ { "Bookshelf" : 0.5 }, { "Table" : 0.45 }, { "Nightstand" :"weight": 0.4 }, 
+  { "Couch" : 0.3 }, { "TV Stand" : 0.2 }, { "Kitchen Counter" : 0.1} ]
+}
+Figure 7: An example of task grounding generated
+by Gemini-2.5-pro
+Besides, for better efficiency of reasoning, we
+also preprocess the input video frames to de-
+tect and remove redundant frames that are
+identical or highly similar. Such redundancy
+can be calculated as the pairwise similarity be-
+tween frames using various metrics such as
+pixel-wise difference Zhu et al. (2013) or his-
+togram correlation Zweng et al. (2011), but
+is highly expensive if applied to all frames.
+To improve the compute efficiency, we adopt
+lightweight filtering techniques, by first apply-
+ing uniform down-sampling and motion-based
+keypoint tracking with ORB/SIFT Rublee
+et al. (2011) to sequentially identify candidate changes, and then performing more costly similarity
+checks (e.g., SSIM Wang et al. (2004)) only on this subset.
+3.2
+ITERATIVE CONSTRUCTION OF SEMANTIC MAP
+Construction of the semantic map is to decide the locations and orientations of camera and all objects
+in the scene, and map them into a global sparse grid. One method is to directly prompt the VLM
+to output such information given the video frames, in a structured format. However, small on-
+device VLMs lack sufficient representation power to accurately infer 3D measurements and relative
+positions from 2D images. As shown in Figure 8, the list of objects generated by the VLM is
+incomplete, and the reported locations are clearly wrong.
+Instruction
+Output (Qwen-2.5-VL-3B)
+Image 1
+Image 2
+['```json\n[\n\t{"bbox_2d": [1, 247, 253, 633], "label": "table"}\n]\n```']
+Analyze the given indoor scene image and identify all distinct objects. For each 
+object, provide its name and relative location to the camera in 2D coordinates, 
+with the origin (0,0) at the camera position and the positive x-axis to the right, 
+positive y-axis forward.
+Figure 8: Ineffective generation of the semantic map
+by directly prompting the small on-device VLM
+Another alternative is to explicitly extract
+such spatial information using specialized
+AI models. For each frame, we can first
+use a segmentation model to identify indi-
+vidual objects, and then use a depth esti-
+mation model to construct a 3D point cloud
+of the scene, from which the locations and
+orientations of objects in the frame can
+be computed.
+In practice, many exist-
+ing open-sourced models can be used for
+such extraction with sufficient accuracy.
+For example, a lightweight segmentation
+model like MobileSAM with 1B parame-
+ters can achieve 75% mIoU (Intersection
+over Union) on the COCO dataset Zhang
+et al. (2023), and a small depth estimation model like ZoeDepth-N with 3.4B parameters can achieve
+a relative error of 0.05 on the NYU Depth V2 benchmark Bhat et al. (2023).
+Constructing the semantic map using the extracted spatial information, however, is still challenging,
+because the location and orientation of the same object in different frames may be different (e.g., the
+red sofa shown in Figure 8). Cross-frame alignment is hence needed to coherently place all objects
+into a global coordinate system. Intuitively, this global coordinate system could be set as the local
+coordinate system of the video frame that is most likely to contain the target object, to ensure that
+the constructed semantic map is centered at the target object, as shown in Figure 3.
+To align visual information across frames, the first step is to estimate the camera transformation
+matrix Ti→j ∈SE(3) between a pair of frames i and j, where SE(3) denotes the space of 3D rigid
+transformations Spong et al. (2006) containing translation and rotation information. Specifically, the
+transformation can be decomposed as:
+Ti→j =
+Ri→j
+it→j
+0⊤
+1
+
+,
+6
+
+
+where Ri→j ∈SO(3) is the rotation matrix and ti→j ∈R3 is the camera translation between
+frames. Then, by applying these transformations, points observed in the local coordinate system of
+any frame can be projected into a unified global coordinate system, thereby fusing fragmented views
+into a coherent cognitive map.
+The transformation matrix Ti→j ∈SE(3) could be computed using traditional iterative closest
+point (ICP) algorithms for point cloud matching Dai et al. (2016), but these methods would be inac-
+curate when being applied to on-device deployment with limited compute power, which only allows
+a limited number of video frames for segmentation and depth estimation. In these cases, overlapping
+regions between these frames are often small, resulting in inaccurate matching. Instead, we perform
+matching directly to RGB images using a pretrained image matching model such as MatchAnything
+He et al. (2025). Since the same object observed from different viewpoints usually retain consistent
+color patterns, a simple pixel-based similarity metric would be sufficient, and the low compute costs
+of image matching hence allows us to perform matching over all the given video frames. More de-
+tails about such matching-based computation of the transformation matrix are presented in Section
+4.1.
+To integrate pairwise estimates of frame alignment into a unified global coordinate system, we re-
+place naive sequential integration, which is susceptible to cumulative drift and fails when temporally
+adjacent frames lack visual similarity, with a topology-aware alignment strategy. More specifically,
+we organize video frames into a tree structure rooted at a central “global anchor” frame, and edges
+between nodes in the tree represent the maximum visual overlap between frames. By computing
+the global poses via the unique paths to the root rather than the frames’ chronological order in the
+video, we ensure that transformations are derived exclusively from high-confidence pairs, effec-
+tively preventing error propagation and isolating outliers to the branches’ ends. More details of such
+multi-frame alignment are in Section 4.2.
+Another challenge that may affect the matching accuracy is the possible occlusion or partial visibil-
+ity of objects, which often prevents the segmentation model from detecting them. To address this
+challenge, after having aligned all the frames, we estimate the global pose (including location and
+orientation) of the camera for each frame, based on the calculated transformation matrix. Using the
+camera parameters, we can infer which objects should fall within the current field of view (FoV) but
+were missed by segmentation. The current matching results are then used to guide the segmentation
+model to recover these occluded or partially visible objects. More details are provided in Section
+4.3.
+3.3
+KEY FRAME SELECTION
+Intuitively, the semantic map can be constructed with all video frames. However, doing so is not only
+expensive but also semantically noisy, because long stretches of irrelevant frames can overweight
+unimportant task-irrelevant information (e.g., scene backgrounds and irrelevant objects) and affect
+reasoning on task-related objects. Instead, we construct the semantic map using only a set of key
+frames relevant to the reasoning task. These key frames should contain as many task-related objects
+as possible, and each frame’s likelihood of containing these objects is independently calculated as
+the weighted sum of detection confidence scores over these objects, calculated by a pre-trained
+object detector such as GroundingDINO Liu et al. (2024) and Yolo-World Cheng et al. (2024). An
+intuitive approach to key frame selection, then, is to calculate the likelihood scores of all frames and
+select the frames with the highest scores. However, this approach needs to score every frame and is
+computationally expensive.
+Instead, we select key frames via an iterative process of temporal search. As shown in Figure
+6, in each iteration, we only score a small set of frames following a sampling distribution, and
+select them as key frames if their scores are higher than a pre-defined threshold. This sampling
+distribution is initialized as uniform, and then iteratively refined based on the temporal locality of
+object appearance among frames. That is, if a frame has a high likelihood score, other frames that
+are temporally close could also possibly have high likelihood scores, due to the continuity of camera
+movement in the video Manasyan et al. (2025); Zhang and Chen (2025); Wu et al. (2025). More
+specifically, for every frame that has been scored, we apply a Gaussian kernel to this frame’s index
+in the sampling distribution, with the Gaussian kernel’s amplitude and standard deviation decided
+by the similarity between frames, to boost up the chances of other frames before or after this frame
+to be sampled and scored. More details of such sampling distribution are in Section 5.1.
+7
+
+
+In practice, we pre-define the number of key frames, based on the available on-device compute
+power and the required latency of reasoning. The efficiency of key frame selection also depends on
+the number of iterations and the threshold of likelihood score used in each iteration. These details
+of key frame selection are in Section 5.2.
+3.4
+SPATIAL REASONING VIA VISUAL PROMPTS
+    {"object": "couch.", "x": -1.269, 
+ 
+"y": -2.898},
+    {"object": "appliance1.", "x": -0.142,
+ 
+"y": 2.515},
+    {"object": "thrashcan", "x": -0.385, 
+ 
+"y": 1.243},
+    {"object": "pillow.", "x": -1.221, 
+ 
+"y": -3.055},
+    {"object": "dinning table.", "x": 1.191, 
+"y": -1.720},
+    
+Aligned 3D point cloud
+(bird eye view)
+Semantic map
+Text descriptions
+Extract
+Visual Prompt
+Figure 9: Crafting the visual prompt from the aligned 3D point
+cloud
+The constructed semantic map is
+provided as input to the VLM,
+which is guided by a carefully
+crafted visual prompt to support
+spatial reasoning.
+As shown in
+Figure 9, the visual prompt rep-
+resents the semantic map as a top-
+down grid with simple symbols il-
+lustrating the relative locations of
+objects from a BEV view, and is
+also accompanied by textual de-
+scriptions about the absolute loca-
+tion of each task-related object’s
+bounding box2 in the semantic map. These bounding boxes are computed from the point cloud with
+semantics as extracted in Section 3.2, and each is assigned with a unique color for the VLM to
+distinguish between objects.
+All matched pixels 
+Pixels in object bounding box 
+Filter
+Figure 10: Pixels pairs found by the image matching
+model
+Note that, the semantic map can also be
+provided to the VLM in other ways, in-
+cluding plain text descriptions about lo-
+cations of objects and camera, or dense
+point clouds rendered from a BEV view.
+However, these methods are usually too
+ambiguous for the small on-device VLM
+to correctly interpret. More details about
+these different design choices are dis-
+cussed in Appendix A.
+4
+REASONING WITH ITERATIVE VISUAL CORRELATIONS
+4.1
+CROSS-FRAME ALIGNMENT
+Source 
+Target
+ICP based 
+alignment
+Our alignment 
+method
+Source 
+Source after 
+transformation 
+Target
+Source after 
+transformation 
+Figure 11: Comparison between ICP based alignment
+and our alignment emthod
+As described in Section 3.2, to efficiently
+compute the transformation matrix, we
+adopt deep feature-based image matching
+models to establish pixel correspondences
+in RGB images and subsequently align the
+3D coordinates of the matched points. To
+further reduce alignment error, rather than
+using all pixel correspondences identified
+by the image matching model, we retain
+only those within the pre-computed bound-
+ing boxes of task-related objects, as shown
+in Figure 10. In this way, as shown Fig-
+ure 11, we can effectively avoid involving
+irrelvant background regions such as walls
+and floors, hence ensuring accurate alignment.
+However, image matching models can only process a single pair of frames per inference. If each
+unaligned frame is matched against all previously aligned frames, the computational cost would
+grow quadratically with the number of frames. To further improve the compute efficiency, we instead
+2Here, we use bounding boxes rather than contours to eliminate the ambiguity in the BEV semantic map.
+8
+
+
+match each unaligned frame to the most similar aligned frames. Assuming that the same target
+object maintains consistent structural patterns when captured from different viewpoints, we employ
+lightweight similarity measures such as PSNR or SSIM Wang et al. (2004), and results in Table 1
+show that accuracy of alignment using these simple metrics well approximate that of using expensive
+neural-based metrics such as FID Heusel et al. (2017); Zhang et al. (2018).
+PSNR
+SSIM
+Hist
+Selection Acc (%)
+95.5
+97.3
+94.2
+Table 1: Performance of alignment, compared to that of using FID Heusel et al. (2017) as the
+similarity metric
+4.2
+MULTI-FRAME ALIGNMENT
+To integrate these pairwise alignments into a globally consistent map, a naive approach is sequential
+integration, which iteratively estimates the transformation Tt→t+1 between consecutive time steps.
+Under this scheme, the global coordinates of a point pt are derived by chaining transformations:
+pglobal
+t+k = Tt+k−1→t+k · · · Tt→t+1pt.
+(1)
+CLIP score
+0.65
+Frame 55
+Frame 53
+Frame 116
+Frame 120
+CLIP score
+0.87
+Low visual similarity
+Pixel matching
+Pixel matching
+Alignment
+Alignment
+High visual similarity
+RGB point clouds
+RGB point clouds
+3D coordinates of 
+matched points
+3D coordinates of 
+matched points
+Figure 12: Comparison of pairwise alignment results with
+different visual similarities
+However, this sequential method suf-
+fers from two critical limitations.
+First, as shown in the left side of Fig-
+ure 12, temporal adjacency of frames
+in a sparsely sampled video does not
+guarantee sufficient visual similarity
+for accurate registration. If the cam-
+era moves significantly between two
+selected frames, the transformation
+estimation may fail. Second, this ap-
+proach is highly susceptible to the cu-
+mulative error (drift). A single inac-
+curate estimation can propagate the
+estimation error through the transfor-
+mation chain, causing the global rep-
+resentation of subsequent frames to
+diverge and an incoherent semantic
+map being rendered.
+To overcome these limitations, we
+propose a topology-aware alignment
+strategy. Instead of integrating pair-
+wise alignments of frames sequentially, we organize the video frames into a similarity tree structure,
+maximizing the visual overlap between connected nodes, each of which represents a frame. This for-
+mulation ensures that global alignment relies exclusively on the estimates between visually similar
+frames with sufficient feature overlap. Furthermore, this topology provides inherent error isolation,
+because frames that lack similarity with the all other frames naturally correspond to leaf nodes in
+the tree. As a result, any estimation errors associated with these outliers remain localized and do not
+propagate to corrupt the alignment of other frames.
+Specifially, let V = {1, . . . , N} be the set of indices for the selected key frames. We define a fully
+connected similarity graph G = (V, E). To minimize computational overhead, the weight wij of
+an edge (i, j) ∈E is defined as the cosine similarity between the CLIP embeddings of frame i
+and frame j. This metric provides a computationally efficient proxy for semantic overlap prior to
+detailed geometric matching. We then construct a Tree T from G to determine the optimal alignment
+path. This process consists of three steps, as described below:
+1. Root Selection. We identify a global anchor frame (root), denoted as r, which serves as the
+origin of the global coordinate system. The root is selected as the frame with the highest aggregate
+9
+
+
+similarity to all other frames, ensuring maximal centrality:
+r = argmax
+i∈V
+X
+j∈V,j̸=i
+wij.
+(2)
+2. Tree Construction. To ensure that transformations are estimated exclusively between visually
+similar pairs, we construct T as the Maximum Spanning Tree (MST) of G. The tree topology is
+optimized to maximize the sum of edge weights:
+T = argmax
+T ′⊆G
+X
+(i,j)∈E(T ′)
+wij,
+(3)
+0.65
+0.87
+0.84
+0.76
+0.83
+0.78
+0.88
+Root
+Frame 117
+Frame 116
+Frame 53
+Frame 55
+Frame 60
+Frame 65
+Frame 65
+Frame 122
+Frame 121
+Frame 119
+0.89
+0.83
+Figure 13:
+An example of the constructed
+frame similarity tree
+where E(T ′) denotes the edge set of a candi-
+date tree. We implement this optimization using
+Kruskal’s algorithm (O(N 2 log N)), which itera-
+tively adds the edges with the highest similarity
+scores that do not form cycles. This structure en-
+sures that every frame connects to the graph via
+its most reliable visual connections, while frames
+with low overall similarity are naturally pushed
+to the leaves of the tree. Figure 13 illustrates an
+example of the constructed similarity tree, where
+Frame 55 is positioned as a leaf node due to its low
+similarity with other frames. If we utilize the naive
+sequential alignment scheme, an inaccurate trans-
+formation estimation between Frames 53 and 55
+would propagate errors to all subsequent frames;
+our tree topology prevents this cascade.
+3. Global Transformation Computation. For
+any frame i, there exists a unique path in T con-
+necting it to the root r. Let this path be represented
+as a sequence of nodes Pi→r = (v0, v1, . . . , vm),
+where v0 = i and vm = r. The global transforma-
+tion matrix Mi ∈SE(3), which maps points from the local frame i to the global coordinate system
+(frame r), is computed by compounding the pairwise transformations along this path:
+Mi = Tvm−1→vm · Tvm−2→vm−1 · · · Tv0→v1,
+(4)
+where Tu→v is the relative transformation matrix derived from image matching between adjacent
+nodes u and v in the tree. By strictly following the path of maximum similarity, this formulation
+isolates errors from outlier frames at the branches’ ends and prevents drift propagation.
+4.3
+TACKLING OCCLUSION AND PARTIAL VISIBILITY OF OBJECTS
+Frame B in FOV
+Couch found in 
+Frame A
+Part of couch 
+should appear in 
+Frame B but missed
+Frame A
+Frame B
+Re-segment by 
+pixel location
+Retrieve 
+matching results
+Figure 14: Refinement stage for missing objects
+To address occlusion and partial visibility of ob-
+jects in the scene, our approach is to introduce an
+extra refinement stage following the completion
+of cross-frame alignment.
+Once the transfor-
+mation matrices are calculated, we use the cal-
+ibrated camera intrinsics and extrinsics to iden-
+tify objects that are geometrically expected to
+fall within the current frame’s FoV but are miss-
+ing from the segmentation results. In such cases,
+cross-frame pixel correspondences established
+during earlier alignment steps provide candidate
+locations for the undetected object. These pixel
+locations, then, are used to guide the segmenta-
+tion model, to recover the partially occluded or
+fragmented objects.
+10
+
+
+For example, as illustrated in Figure 14, if an object is successfully segmented in Frame A, then
+based on the constructed scene and estimated camera pose, its corresponding pixels should also
+appear in Frame B. If the object is not detected in Frame B, we search for pixel correspondences
+between the segmented region in Frame A and the unsegmented regions in Frame B. The matched
+pixels are subsequently used as priors to guide the segmentation model to recover the missing object
+in Frame B.
+5
+OPTIMIZING THE SELECTION OF KEY FRAMES
+To make the semantic map construction and the spatial reasoning more computationally efficient, as
+described in Section 3.3, we introduce a key frame selection framework, which aims to identify a
+minimal yet sufficient subset of frames that maximizes the coverage of spatial information for the
+specific reasoning task. We first propose a Gaussian kernel-based update mechanism that leverages
+the temporal locality of object appearance to progressively refine the sampling distribution around
+high-confidence detections (section 5.1). Afterwards, we analyze critical design choices that op-
+timize the trade-off between the frame selection accuracy and on-device computational efficiency
+(section 5.2).
+5.1
+APPLYING THE GAUSSIAN KERNEL
+When updating the sampling distribution of key frame selection, we enforce the temporal locality
+by applying a Gaussian kernel to each scored frame, so that other frames that are temporally close
+to this scored frames will have higher chances to be scored. More specifically, letting the input
+video frames be indexed as 1, 2, ...N in time, the Gaussian kernel applied to a scored frame i can be
+written as
+GAUSSIANKERNEL(x; Ii, σ2
+i ) = exp
+
+−(x −Ii)2
+2σ2
+i
+
+,
+(5)
+where Ii is the likelihood score of frame i, and the kernel width σi (i.e., the standard deviation) is
+adaptively determined by the average normalized similarity score (si), measured by histogram-based
+metrics Swain and Ballard (1991); Zhao et al. (2019), between frame i and other frames within a
+time window centered at i. In practice, the proper size of time window depends on the specific
+characteristics of temporal locality between frames, which is scene dependent. To further verify
+the temporal locality and quantize such time window, we conducted a small-scale benchmark study
+using the VSI-Bench benchmark that depicts indoor scenes Yang et al. (2025). Based on results in
+Appendix B, we set the size of time window (r) as 3, to ensure that the Gaussian kernel can capture
+short-range temporal correlations while avoiding other frames with weak semantic relevance.
+To ensure alignment between the kernel spread and the window, we define the minimum and maxi-
+mum standard deviations as
+σmin = 1
+k ,
+σmax = r
+k ,
+(6)
+where k =
+√
+2 erf−1(Ii; α) and α ∈(0, 1) specifies the desired fraction of probability mass within
+[Ii −kσi, Ii + kσi]. For example, setting α = 0.6827 recovers k ≈1 (the 1σi band), while
+α = 0.9545 yields k ≈2 (the 2σi band). Given these bounds, we interpolate the variance as
+σi(si) = σmin +
+ σmax −σmin
+
+si,
+si ∈[0, 1]
+(7)
+By setting k = 2, we obtain σi(si) ∈
+ 1
+2, r
+2
+
+, which ensures that when frame similarity is low in
+the window, the kernel collapses towards a narrow peak around i within the adjacent frame index,
+restricting influence to adjacent frames; conversely, when the frame similarity is high, the kernel
+allocates most of its mass across the entire window, facilitating evidence propagation among seman-
+tically similar frames.
+5.2
+DESIGN CHOICES IN KEY FRAME SELECTION
+Principally, MosaicThinker only selects a small set of key frames for constructing the semantic
+map. In practice, we pre-define the number of key frames before selection, based on the available
+on-device compute power and the required latency of reasoning. For example, in scenarios of daily
+assistance with robotic helpers, the end-to-end latency should be within 1 second Liu et al. (2019);
+11
+
+
+Satyanarayanan (2017). If it takes 40ms to decide if a frame contains task-related objects, we can
+have 25 key frames for reasoning, and more key frames can be involved on stronger embodied AI
+platforms such as autonomous vehicles.
+Threshold of likelihood score. As we described in Section 3.3, a frame is selected as the key frame
+if its likelihood score of containing task-related objects is higher than a threshold, which controls the
+tradeoff between recall and precision in key frame selection: a low threshold tends to include more
+key frames, possibly improving the coverage of task-related objects and also risking redundancy.
+Conversely, a high threshold makes it more difficult to select key frames, and also more likely to
+miss frames that contain task-related objects with occlusion or low confidence.
+Method
+Threshold
+Precision
+Recall
+F1
+Uniform sampling
+-
+0.29
+0.33
+0.31
+Retrieval-based
+-
+0.61
+0.79
+0.69
+VideoAgent
+-
+0.58
+0.66
+0.63
+Iterative search (ours)
+1
+0.55
+0.78
+0.67
+Iterative search (ours)
+1.5
+0.65
+0.76
+0.70
+Iterative search (ours)
+2
+0.66
+0.67
+0.66
+Table 2: The impact of different values of the likelihood score threshold in key frame selection
+To further quantify the impact of this threshold on key frame selection, over the LV-HAYSTACK
+dataset that contains 1,102 video clips with a total length of 450 hours Ye et al. (2025). Results in
+Table 2 show that this threshold critically shapes the aforementioned tradeoff as we expect. With all
+values of threshold, our approach of iterative temporal search constantly approaches the performance
+of the naive Retrieval-based method which scores and ranks all frames for frame selection, and
+outperforms naive sampling methods, including (1) Uniform sampling, which selects frames at fixed
+intervals; and 2) LLM-based search methods such as VideoAgent Wang et al. (2024), which leverage
+LLM for key frame selection in videos. In practice, this advantage allows users to flexibly decide
+the specific value of threshold based on the application requirement, and a medium value of 1.5
+generally balances between aspects of recall and precision.
+# of iterations
+Precision
+Recall
+F1
+Sampled Frame (%)
+100
+0.57
+0.66
+0.63
+10.2
+33
+0.62
+0.71
+0.66
+25.6
+20
+0.65
+0.76
+0.70
+26.1
+14
+0.65
+0.72
+0.68
+30.7
+11
+0.63
+0.70
+0.67
+37.2
+Table 3: Performance of key frame selection with different numbers of iterations in temporal search
+Number of iterations. The number of iterations in temporal search determines the granularity of
+key frame selection. More iterations updates the sampling distribution more frequently and hence
+improves adaptivity, but more iterations also incur higher compute costs. Conversely, fewer iter-
+ations is more computationally efficient, but increases the chance of involving redundancy in key
+frames. As shown in Table 3 where we tested the performance of key frame selection on the LV-
+HAYSTACK dataset, a moderate number of iterations (e.g., 20 iterations) achieves the performance
+in precision, recall and F1 score.
+6
+EXPERIMENT SETTINGS
+We deployed MosaicThinker on various types of mobile and embedded AI platforms, including
+NVidia Jetson Orion and Oneplus Ace 3 Pro smartphone. We then select VLMs with various param-
+eter sizes to match the compute power constraints of each device: Qwen3-VL-32B-4bit Bai et al.
+(2025) and InternVL3-8B Chen et al. (2024) on NVidia Jetson Orion and Qwen-2.5-VL-3B Bai et al.
+(2025) on the smartphone.
+System setup. On NVidia Jetson Orion, VLM inference was operated using PyTorch with Ten-
+sorRT acceleration, enabling optimized execution on the device GPU. This configuration leverages
+12
+
+
+mixed-precision computation to reduce latency and improve throughput while maintaining accu-
+racy. To deploy VLMs and run VLM inference on the smartphone, we used the ONNX Runtime
+onn for Android, leveraging its NNAPI backend to enable hardware acceleration using the device’s
+heterogeneous computing units. This setup automatically switches between GPU and CPU exe-
+cution based on workload characteristics, ensuring optimal performance while maintaining energy
+efficiency.
+Standing at table, gazing at chair, where should books be?
+What is the length of the longest dimension (length, width, or height) of the 
+heater, measured in centimeters?
+VSI-bench
+ViewSpatial
+-bench
+How many chairs are by the table? A … B ….
+Metro-
+Spatial-QA
+Figure 15: Example of data samples from benchmark
+datasets
+Benchmarks. Our evaluations use three
+categories of spatial reasoning tasks, in-
+cluding 1) Metric Measurement (encom-
+passing absolute/relative distance, object
+size, and object location) to verify the
+model’s understanding of scale and depth;
+2) Perspective-Dependent Reasoning (cov-
+ering relative direction and object count-
+ing) to test the ability to perform “mental
+rotation”; and 3) Spatiotemporal Tracking
+(identifying the appearance order of ob-
+jects in video) to assess whether the model
+can maintain a persistent memory of object
+locations. These tasks have been widely
+considered as representing the most fun-
+damental spatial reasoning capabilities that
+are transferrable to real-world application
+scenarios Brown et al. (2025).
+In our experiments, we selected multiple benchmark datasets that cover these three categories of
+tasks across various room types. Details of these benchmark datasets are described as below, and
+images of data samples in these benchmarks are in Figure 15.
+• VSI-Bench Yang et al. (2025): This benchmark comprises over 5,000 question–answer
+(QA) pairs from 288 real-world videos of indoor scenes. It includes 8 question types, of
+which we select 5 that are the most relevant to spatial reasoning for on-device embodied
+AI: absolute distance (A. D.), object size (O. S.), relative distance (R. Dt), object count (O.
+C.), relative direction (R. Dr.) and appearance order (Ap. Or.).
+• STI-Bench Li et al. (2025): This benchmark contains 300 videos and over 2,000 QA pairs
+designed for spatio-temporal video understanding. It includes 8 question types, of which
+we select 2 for spatial reasoning: dimensional measurements (Dim. Mea.), and 3D video
+grounding (Grd.).
+• Metro-Spatial-QA: The above two benchmarks cover only limited room types (residential
+homes and offices). To address this gap, we built a new dataset, namely Metro-Spatial-QA,
+which comprises 40 egocentric video clips that are recorded in 5 diverse indoor settings,
+including supermarkets, libraries, museums, restaurants and classrooms. These video clips
+are then paired with two types of manually annotated spatial reasoning tasks: measure-
+ments and perspective taking, yielding 160 spatial reasoning QA samples (4 questions for
+each video). Since these scenes are specifically designed to capture the complexity of real-
+world activities, they feature challenging variables such as dynamic object distributions,
+varying lighting conditions, and frequent occlusions, which provide new aspects of evalu-
+ating visual spatial reasoning and cross-frame understanding. More details are in Appendix
+C.
+In these benchmarks, most spatial reasoning tasks are formulated as multi-choice questions, and
+we are hence able to evaluate the accuracy of spatial reasoning as the percentage of correct answer
+choices. For some other types of reasoning tasks such as deciding the absolute distance and object
+size, the answers are numerical and we instead evaluate the performance of spatial reasoning using
+the Mean Relative Accuracy.
+Baselines. Since MosaicThinker is designed as an inference-time technique that does not require
+any model training efforts, we exclude other training-based spatial reasoning methods Chen et al.
+(2024;); Yang et al. (2025); Hong et al. (2023) from evaluation, but instead compared MosaicThinker
+13
+
+
+against against 5 representative training-free baselines to evaluate its effectiveness in enhancing
+spatial reasoning capability of off-the-shelf VLMs. These baselines are described as below:
+• Direct input: It is a naive baseline that directly downsamples the video and feeds the
+sampled video frames into the VLM for spatial reasoning.
+• Video-COT prompting Hu et al. (2025): It is a prompting method for video understand-
+ing, which treats the selection of video shots as an optimization problem. It uses a binary
+video summary to identify task-relevant shots and a co-reasoning module to pair these rele-
+vant shots with irrelevant ones, effectively guiding the model to focus on the most important
+content.
+• Scene graph reconstruction Chu et al. (2025): It models long videos with an en-
+tity–relation graph, where an LLM tracks entities and their evolving interactions over time.
+• APC (Mental imagery simulation) Lee et al. (2025): It is a framework that enables VLMs
+to reason from arbitrary viewpoints by converting a 2D image into a coarse 3D abstraction,
+mathematically transforming that abstraction into a target coordinate frame, and prompting
+the model with the resulting perspective-aware data.
+• Ground truth semantic map: With VSI-Bench and STI-Bench benchmarks, we also eval-
+uated the VLM performance using ground truth semantic maps, which are derived from
+the 3D point clouds and segmentation masks included in the indoor scene datasets they
+used (e.g., ScanNet Dai et al. (2017)). This serves as an explicit validation of the semantic
+maps generated by MosaicThinker; a smaller performance gap indicates higher accuracy
+and fewer errors in our constructed maps.
+Note that, when we use the ground truth semantic map in spatial reasoning, we achieve the best
+spatial reasoning performance that can be possibly achieved among using all types of spatial in-
+formation input. In practice, even in this case, VLMs could still make significant errors in spatial
+reasoning, especially when VLMs with small parameter sizes are used for on-device deployment.
+However, these errors arise from limitations of VLMs’ model architecture and representation power,
+which call for model redesign that is out of the scope of this paper. Our focus, instead, is to validate
+that MosaicThinker can effectively approximate to such best possible performance by providing
+sufficiently accurate semantic map via iterative integration and construction.
+Method
+VSI-Bench
+STI-Bench
+Metro-Spatial-QA
+A.D.
+O.S.
+R.Dt.
+R.Dr
+O.C.
+Ap.Or.
+Avg
+D.Meas.
+Grd.
+Avg.
+Meas.
+Pers.
+Avg.
+Direct Input
+27.3
+35.1
+35.9
+33.2
+23.5
+30.1
+30.2
+25.8
+27.4
+26.2
+37.3
+37.5
+37.4
+Video-CoT
+25.9
+31.9
+36.8
+31.5
+22.8
+28.6
+28.7
+26.5
+27.9
+27.8
+37.8
+38.3
+38.1
+Scene Graph Reconstruction
+27.4
+35.0
+37.1
+33.7
+23.3
+28.7
+29.8
+27.6
+28.4
+28.0
+38.4
+38.1
+38.2
+APC
+26.8
+34.4
+37.0
+34.4
+23.0
+29.5
+31.1
+29.1
+30.2
+29.6
+40.7
+38.9
+39.3
+MosaicThinker
+29.4
+36.6
+38.9
+33.5
+28.3
+32.2
+33.4
+30.8
+31.8
+31.6
+45.5
+40.1
+42.8
+Ground Truth Semantic Map
+30.3
+37.7
+39.5
+34.0
+31.7
+32.4
+34.6
+31.3
+32.9
+32.1
+-
+-
+-
+Table 4: Performance comparison on the Oneplus 12R Smartphone with Qwen-2.5-VL-3B
+7
+PERFORMANCE EVALUATION
+7.1
+SPATIAL REASONING ACCURACY
+We conduct evaluations on three benchmarks with various quantitative spatial reasoning tasks, cov-
+ering small, medium, and relatively large vision-language backbones that can be deployed on em-
+bodied AI devices. The results are in Table 4, Table 5, and Table 6, respectively. Evaluations across
+models of different sizes confirm that MosaicThinker consistently enhances spatial reasoning ac-
+curacy, with different VLMs and benchmark settings. With larger VLMs on the MetroSpatial-QA
+benchmark, such accuracy enhancement can be up to 11%. In comparison, baselines like Video-
+CoT and Scene Graph Reconstruction show minimal improvement; lacking explicit 3D information,
+their extended context windows often overwhelm the model’s reasoning capabilities, occasionally
+degrading performance. While APC incorporates 3D data, it presents it frame-by-frame, and cur-
+rent models struggle to integrate such fragmented information, resulting in only marginal gains.
+In contrast, MosaicThinker excels by stitching multiview data into a coherent global semantic map,
+driving significant improvements in tasks like object counting and relative distance estimation where
+single-frame visibility is limited.
+14
+
+
+Method
+VSI-Bench
+STI-Bench
+Metro-Spatial-QA
+A.D.
+O.S.
+R.Dt.
+R.Dr
+O.C.
+Ap.Or.
+Avg
+D.Meas.
+Grd.
+Avg.
+Meas.
+Pers.
+Avg.
+Direct Input
+32.2
+44.5
+42.8
+37.7
+67.8
+47.2
+42.0
+28.5
+34.9
+31.8
+40.1
+41.2
+40.7
+Video-CoT
+31.9
+43.7
+42.7
+38.6
+68.5
+46.1
+44.1
+29.1
+35.0
+32.5
+41.5
+41.6
+41.5
+Scene Graph Reconstruction
+32.4
+44.5
+42.4
+38.5
+70.7
+46.5
+43.7
+29.2
+35.1
+32.2
+42.2
+42.3
+42.2
+APC
+32.0
+43.8
+42.0
+39.4
+67.1
+47.1
+46.8
+31.1
+35.7
+34.4
+44.8
+46.1
+45.4
+MosaicThinker
+36.6
+51.2
+48.2
+39.7
+76.1
+49.3
+50.8
+35.3
+38.9
+38.1
+51.9
+50.7
+51.2
+Ground Truth Semantic Map
+37.3
+51.6
+49.9
+40.2
+85.6
+49.2
+52.9
+36.8
+39.0
+38.3
+-
+-
+-
+Table 5: Performance comparison on NVidia Jetson Orion with InternVL3-8B
+Method
+VSI-Bench
+STI-Bench
+Metro-Spatial-QA
+A.D.
+O.S.
+R.Dt.
+R.Dr
+O.C.
+Ap.Or.
+Avg
+D.Meas.
+Grd.
+Avg.
+Meas.
+Pers.
+Avg.
+Direct Input
+47.7
+76.3
+58.7
+47.2
+67.4
+44.1
+56.4
+29.5
+32.2
+30.8
+45.6
+47.3
+45.9
+Video-CoT
+46.1
+77.4
+59.7
+47.9
+68.4
+44.9
+57.7
+30.0
+31.8
+30.9
+44.2
+48.0
+46.1
+Scene Graph Reconstruction
+44.5
+76.5
+59.1
+48.0
+70.2
+42.7
+58.6
+30.7
+31.9
+31.3
+44.7
+49.2
+47.3
+APC
+48.7
+75.9
+62.2
+49.4
+66.3
+43.3
+62.5
+32.0
+30.8
+31.4
+45.4
+50.6
+48.2
+MosaicThinker
+53.2
+79.3
+64.4
+51.8
+77.2
+45.0
+67.1
+36.4
+33.9
+34.8
+49.2
+54.0
+52.6
+Ground Truth Semantic Map
+55.2
+80.5
+65.1
+53.6
+87.4
+45.2
+68.3
+37.5
+34.4
+35.9
+-
+-
+-
+Table 6: Performance comparison on Jetson with Qwen3VL-32B-4bit
+Although a small performance gap still remains compared to the “perfect” ground-truth map, due to
+depth estimation noise, the oracle’s superior results validate our core hypothesis: providing VLMs
+with an explicit, unified 3D representation is essential for achieving better and robust spatial intelli-
+gence.
+7.2
+ON-DEVICE COMPUTE EFFICIENCY
+In addition to the reasoning accuracy, Figure 16 presents the compute latency and memory cost of
+different spatial reasoning methods when being deployed on the NVidia Jetson Orion and Smart-
+phones, which are critical considerations for deployment in embodied AI settings.
+Direct Input
+CoT
+Scene Graph
+APC
+Ours
+0
+100
+200
+300
+400
+500
+600
+Latency (s)
+303
+309
+315
+       OOM
+498
+Latency (s)
+Mem(GB)
+0
+2
+4
+6
+8
+10
+12
+14
+Mem(GB)
+10.2
+11.8
+11.4
+ 
+11.2
+(a) Qwen-2.5-VL-3B on Smartphone
+Direct Input
+CoT
+Scene Graph
+APC
+Ours
+0
+100
+200
+300
+400
+500
+600
+Latency (s)
+204
+225
+248
+536
+509
+Latency (s)
+Memory (GB)
+0
+10
+20
+30
+40
+50
+60
+Memory (GB)
+34.7
+38.5
+36.2
+50.3
+36.9
+(b) Intern-VL3-8B on Jetson Orion
+Direct Input
+CoT
+Scene Graph
+APC
+Ours
+0
+100
+200
+300
+400
+500
+600
+700
+Latency (s)
+235
+247
+249
+561
+524
+Latency (s)
+Memory (GB)
+0
+10
+20
+30
+40
+50
+Memory (GB)
+32.2
+34.5
+34.1
+42.7
+34.6
+(c) Qwen3VL-32B-4bit on Jetson Orion
+Figure 16: Compute efficiency on different devices
+As shown in Figure 16, MosaicThinker demonstrates robust feasibility on resource-constrained de-
+vices where the most competitive baseline (i.e., APC) fail. On the Smartphone (Fig. 16(a)), the
+APC method runs out of memory due to its inefficient incorporation of spatial information, whereas
+our approach successfully executes with 11.2GB memory usage, comparable to lighter baselines like
+Video-CoT. On the NVidia Jetson platform (Figs. 16(b) and 16(c)), MosaicThinker also significantly
+outperforms APC in resource efficiency, reducing memory consumption by over 26% (from 50.3GB
+to 36.9GB on the 8B model) while also achieving faster inference (509s vs. 536s). While our method
+incurs higher latency than other baselines, these inferior baselines trade the reasoning accuracy for
+speed, whereas MosaicThinker achieves much higher reasoning accuracy with a moderate amount
+of extra compute cost.
+7.3
+PERFORMANCE OVER DIFFERENCE LEVELS OF SCENE COMPLEXITIES
+To evaluate the robustness of our method against in different environmental conditions, we analyze
+how the scene complexity affects the VLM’s spatial reasoning performance on InternVL3-8B. We
+define the scene complexity along three aspects: (1) object number measured by the number of
+15
+
+
+objects in the scene, (2) spatial scale measured by the room size, and (3) temporal duration mea-
+sured by the length of video clip. For each factor, we stratify the test cases into three distinct levels:
+Low, Medium, and High.
+We conduct these experiments using two complementary data sources to ensure both realism and
+precise controllability. While real-world datasets provide the necessary physical validity, they often
+suffer from inherent correlations among different complexity factors. For instance, larger physical
+spaces in real videos typically contain higher object counts and require longer durations to traverse.
+This entanglement makes it difficult to isolate the specific cause of performance degradation. There-
+fore, we also utilize synthetic data to decouple these variables.
+• Real-world data: We utilize the VSI-Bench dataset Yang et al. (2025) which provides
+segmentation results of indoor scenes. We analyze the meta data to calculate scene statistics
+and categorize the existing test samples into the complexity levels specified above.
+• Synthetic Data: To rigorously control for confounding variables, we also used a synthetic
+generation pipeline based on InfiniBench Wang et al. (2025). As shown in Figure 17,
+this allows us to parametrically generate scenes with specific complexity configurations,
+render corresponding egocentric videos, and automatically generate valid spatial reasoning
+questions using their pipeline.
+Low
+High
+Object Number
+Spatial Scale
+Figure 17: Example of synthetic data samples
+with controlled complexity.
+We compared our approach against two baselines:
+the standard Direct Input method and APC, which
+was the most competitive baseline identified in the
+previous subsection. For each experimental config-
+uration, we report the average accuracy achieved by
+each method.
+Tables 7 and 8 reveal that Object Number is the pri-
+mary bottleneck; as the spatial reasoning accuracy
+drops sharply for all methods in cluttered scenes.
+However, MosaicThinker still performs better than
+the baselines. Crucially, MosaicThinker shows gen-
+eralizability to Spatial Scale, outperforming base-
+lines in large environments where all the baselines
+struggle. This confirms that our semantic map effec-
+tively integrates fragmented views, preserving spa-
+tial relationships in large space that are otherwise
+lost. Temporal Duration had the minimal impact,
+indicating that the key frame selection method is effective to retrieve necessary frames for spatial
+reasoning no matter the video length. Moreover, as shown in Figure 18, the computational cost
+of MosaicThinker remains stable across different complexity levels; increased complexity does not
+introduce additional overhead.
+Object Number
+Spatial Scale
+Temporal Duration
+Method
+Low
+Med.
+High
+Low
+Med.
+High
+Low
+Med.
+High
+Direct Input
+53.2
+47.8
+32.5
+50.3
+48.9
+35.1
+33.1
+35.7
+32.6
+APC
+54.6
+47.7
+32.2
+52.1
+47.2
+34.3
+33.5
+35.3
+31.8
+MosaicThinker
+60.2
+53.9
+39.2
+62.5
+54.8
+41.6
+41.2
+39.9
+38.4
+Table 7: Experiment results of VSI-Bench on different levels of scene complexity
+Object Number
+Spatial Scale
+Temporal Duration
+Method
+Low
+Med.
+High
+Low
+Med.
+High
+Low
+Med.
+High
+Direct Input
+67.9
+44.8
+37.1
+52.0
+51.1
+46.8
+63.8
+66.9
+65.3
+APC
+69.8
+43.9
+36.0
+52.9
+51.2
+48.0
+62.5
+67.0
+65.5
+MosaicThinker
+79.7
+54.2
+42.7
+61.5
+58.1
+55.2
+71.2
+70.5
+69.3
+Table 8: Experiment results of InfiniBench on different levels of scene complexity
+16
+
+
+Low
+Medium
+High
+0
+200
+400
+600
+Latency (s)
+502
+506
+503
+Latency (s)
+Memory (GB)
+0
+10
+20
+30
+40
+50
+Memory (GB)
+36.7
+36.9
+36.0
+(a) Object Number
+Low
+Medium
+High
+0
+200
+400
+600
+Latency (s)
+507
+507
+509
+Latency (s)
+Memory (GB)
+0
+10
+20
+30
+40
+50
+Memory (GB)
+36.7
+36.1
+36.9
+(b) Spatial Scale
+Low
+Medium
+High
+0
+200
+400
+600
+800
+Latency (s)
+506
+514
+519
+Latency (s)
+Memory (GB)
+0
+10
+20
+30
+40
+50
+Memory (GB)
+36.3
+37.0
+36.6
+(c) Temporal Duration
+Figure 18: Compute efficiency of MosaicThinker under different complexities
+7.4
+ABLATION STUDIES
+Impact of Keyframe Selection Strategy. To validate the effectiveness of our iterative temporal
+search, we compare it against two baselines: (1) processing all frames (at 1 FPS) and (2) uniform
+sampling, on Jetson Orion with Inverl-VL3-8B and Qwen3VL-32B-4bit using VSI-bench. As shown
+in Table 9, processing all frames results in Out-of-Memory; even in simulation on high-memory
+hardware, accuracy degrades due to the excessively long context window. Conversely, while uniform
+sampling is computationally feasible, it suffers from lower accuracy by missing critical, task-relevant
+frames. Our iterative approach achieve the optimal balance between accuracy and computational
+cost by concentrating resources on semantically significant frames.
+Intern-VL3-8B
+Accuracy
+Latency
+All frames (1 FPS)
+43.2%
+OOM
+Uniform sampling
+46.0%
+389 s
+Ours (Iterative)
+58.7%
+501 s
+Qwen3VL-32B-4bit
+Accuracy
+Latency
+All frames (1 FPS)
+59.5%
+OOM
+Uniform sampling
+62.0%
+409 s
+Ours (Iterative)
+73.3%
+524 s
+Table 9: Ablation studies on different keyframe selection strategies.
+Efficacy of Visual Prompting Methods. We further investigate the impact of different prompting
+methods on VLM reasoning performance. Table 10 compares the prompting methods used in Mo-
+saicThinker (Semantic map + Text) against two alternatives: projecting dense point clouds directly
+as visual inputs and using pure text-based coordinate descriptions. The experiments were conducted
+using InternVL3-8B and Qwen3VL-32B-4bit on the Jetson Orin with the VSI-Bench dataset. The
+results indicate that the semantic map is the most effective input format. It significantly outperforms
+text descriptions which VLMs struggle to interpret spatially, and dense point clouds which can intro-
+duce visual noise. Our method enhances reasoning accuracy without imposing a substantial latency
+overhead compared to simpler baselines.
+Intern-VL3-8B
+Accuracy
+Latency
+Dense Points (BEV)
+46.1%
+172 s
+Text Description
+45.2%
+169 s
+Semantic map + text
+58.7%
+172 s
+Qwen3VL-32B-4bit
+Accuracy
+Latency
+Dense Points (BEV)
+61.3%
+202 s
+Text Description
+61.0%
+187 s
+Semantic map + text
+73.3%
+201 s
+Table 10: Ablation studies on different formats for VLM prompting.
+8
+RELATED WORK
+Embodied Spatial Intelligence. Besides language intelligence that has been well supported by
+LLMs, spatial intelligence has recently emerged as a research frontier at the intersection of computer
+vision, AI, robotics and mobile systems Yamada et al. (2023); Sharma (2023); Yang et al. (2025);
+Bhandari et al. (2023). Unlike traditional AI systems that operate on abstract symbolic inputs with-
+out physical grounding, embodied spatial intelligence focuses on spatial perception and understand-
+ing within the 3D world. It enables agents to acquire and process spatial information to construct
+internal representations, and to use these representations to guide navigation, task execution, and
+decision-making Feng et al. (2025). Recent advances have driven progress in applications of robotic
+navigation, manipulation, AR/VR, and autonomous driving Lin et al. (2023); Feng et al. (2025).
+However, despite these achievements, existing methods still struggle with constructing robust spa-
+17
+
+
+tial representations Yang et al. (2025). To address this, in this paper, we propose MosaicThinker, a
+framework that reconstructs a semantic map to serve as an effective spatial representation.
+Training-based approaches to spatial reasoning. In this paper, we focus on training-free ap-
+proaches to improving capabilities of spatial reasoning. If users are willing to incur additional
+computational cost and accept a potential loss in generalizability, they may fine-tune the model on
+spatial data enriched with additional modalities, such as depth maps, or employ architectures specif-
+ically designed for spatial reasoning Zheng et al. (2025); Yu et al. (2025); Wu et al. (2025); Chen
+et al. (2024); Yang et al. (2025). Notably, in MosaicThinker, the generated semantic map can itself
+serve as supervision for model fine-tuning, further enhancing performance by teaching the model to
+construct and interpret semantic maps Qi et al. (2025); Yin et al. (2025).
+9
+DISCUSSIONS
+Spatial reasoning tasks in other forms. With the given visual inputs, in this paper we target spatial
+reasoning tasks with questions in natural language, but these tasks can also be specified in other
+ways. For example, the tasks are not necessarily QA, but could also be descriptions of required
+actions or sequences of actions. Similarly, the VLM’s outputs, as the outcomes of task completion,
+are not necessarily answers in text, but could also be multimodal such as bounding boxes, image
+patches, or robotic actuations Yang et al. (2022); Zitkovich et al. (2023). MosaicThinker can also
+be applied to these tasks, by adapting its output decoder to generate structured data directly, or
+mapping its internal spatial representations to specific formats like coordinates, image patches, or
+action primitives.
+Spatial reasoning in large-scale environments. While the experiments in this paper focus on
+spatial reasoning in small-scale indoor environments, MosaicThinker can scale up by design. In
+large-scale environments, such as warehouses and hospitals, MosaicThinker can continuously build
+a comprehensive spatial memory as the robot explores. By leveraging techniques such as Retrieval-
+Augmented Generation (RAG) to retrieve question-relevant portions of this memory Xie et al.
+(2024); Booker et al. (2024), we can answer complex spatial queries, navigate efficiently, and adapt
+its behavior based on accumulated knowledge of the environment.
+10
+CONCLUSION
+In this paper, we focus on enhancing the ability of small on-device VLMs on cross-frame visual
+spatial reasoning tasks, which are the key enabler of emerging embodied AI applications such as
+robotic manipulation and actuation planning. We present a new inference-time computing tech-
+nique, namely MosaicThinker, which integrates the fragmented spatial information from multiple
+video frames into a unified space representation of global semantic map. This semantic map is used
+as VLM input for spatial reasoning, guided by a carefully crafted visual prompt. Experiment re-
+sults on multiple embodied AI devices and spatial reasoning benchmarks show that MosaicThinker
+largely outperforms the competitive baselines, in various types of indoor scenes and spatial reason-
+ing tasks.
+REFERENCES
+[1] Open neural network exchange. https://github.com/onnx/onnx.
+[2] S. Bai, K. Chen, X. Liu, J. Wang, W. Ge, S. Song, K. Dang, P. Wang, S. Wang, J. Tang, et al.
+Qwen2. 5-vl technical report. arXiv preprint arXiv:2502.13923, 2025.
+[3] P. Bhandari, A. Anastasopoulos, and D. Pfoser. Are large language models geospatially knowl-
+edgeable?
+In Proceedings of the 31st ACM International Conference on Advances in Geo-
+graphic Information Systems, pages 1–4, 2023.
+[4] S. F. Bhat, R. Birkl, D. Wofk, P. Wonka, and M. M¨uller. Zoedepth: Zero-shot transfer by
+combining relative and metric depth. arXiv preprint arXiv:2302.12288, 2023.
+[5] A. Bochkovskii, A. Delaunoy, H. Germain, M. Santos, Y. Zhou, S. R. Richter, and
+V. Koltun. Depth pro: Sharp monocular metric depth in less than a second. arXiv preprint
+arXiv:2410.02073, 2024.
+18
+
+
+[6] M. Booker, G. Byrd, B. Kemp, A. Schmidt, and C. Rivera. Embodiedrag: Dynamic 3d scene
+graph retrieval for efficient and scalable robot task planning. arXiv preprint arXiv:2410.23968,
+2024.
+[7] E. Brown, A. Ray, R. Krishna, R. Girshick, R. Fergus, and S. Xie.
+Sims-v: Simulated
+instruction-tuning for spatial video understanding. arXiv preprint arXiv:2511.04668, 2025.
+[8] B. Chen, Z. Xu, S. Kirmani, B. Ichter, D. Sadigh, L. Guibas, and F. Xia. Spatialvlm: Endowing
+vision-language models with spatial reasoning capabilities. In Proceedings of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition, pages 14455–14465, 2024.
+[9] S. Chen, X. Chen, C. Zhang, M. Li, G. Yu, H. Fei, H. Zhu, J. Fan, and T. Chen. Ll3da:
+Visual interactive instruction tuning for omni-3d understanding reasoning and planning. In
+Proceedings of the IEEE/CVF conference on computer vision and pattern recognition, pages
+26428–26438, 2024.
+[10] Z. Chen, W. Wang, Y. Cao, Y. Liu, Z. Gao, E. Cui, J. Zhu, S. Ye, H. Tian, Z. Liu, et al.
+Expanding performance boundaries of open-source multimodal models with model, data, and
+test-time scaling. arXiv preprint arXiv:2412.05271, 2024.
+[11] T. Cheng, L. Song, Y. Ge, W. Liu, X. Wang, and Y. Shan.
+Yolo-world: Real-time open-
+vocabulary object detection. In Proceedings of the IEEE/CVF conference on computer vision
+and pattern recognition, pages 16901–16911, 2024.
+[12] M. Chu, Y. Li, and T.-S. Chua. Understanding long videos via llm-powered entity relation
+graphs. arXiv preprint arXiv:2501.15953, 2025.
+[13] X. Chu, L. Qiao, X. Zhang, S. Xu, F. Wei, Y. Yang, X. Sun, Y. Hu, X. Lin, B. Zhang,
+et al. Mobilevlm v2: Faster and stronger baseline for vision language model. arXiv preprint
+arXiv:2402.03766, 2024.
+[14] A. Dai, M. Nießner, M. Zollh¨ofer, S. Izadi, and C. Theobalt.
+Bundlefusion: Real-time
+globally consistent 3d reconstruction using online surface re-integration.
+arXiv preprint
+arXiv:1604.01093, 2016.
+[15] A. Dai, A. X. Chang, M. Savva, M. Halber, T. Funkhouser, and M. Nießner. Scannet: Richly-
+annotated 3d reconstructions of indoor scenes. In Proc. Computer Vision and Pattern Recog-
+nition (CVPR), IEEE, 2017.
+[16] A. Das, S. Datta, G. Gkioxari, S. Lee, D. Parikh, and D. Batra. Embodied question answering.
+In Proceedings of the IEEE conference on computer vision and pattern recognition, pages
+1–10, 2018.
+[17] D. Driess, F. Xia, M. S. Sajjadi, C. Lynch, A. Chowdhery, A. Wahid, J. Tompson, Q. Vuong,
+T. Yu, W. Huang, et al. Palm-e: An embodied multimodal language model. 2023.
+[18] J. Duan, S. Yu, H. L. Tan, H. Zhu, and C. Tan. A survey of embodied ai: From simulators to
+research tasks. IEEE Transactions on Emerging Topics in Computational Intelligence, 6(2):
+230–244, 2022.
+[19] J. Feng, J. Zeng, Q. Long, H. Chen, J. Zhao, Y. Xi, Z. Zhou, Y. Yuan, S. Wang, Q. Zeng,
+et al. A survey of large language model-powered spatial intelligence across scales: Advances
+in embodied agents, smart cities, and earth science. arXiv preprint arXiv:2504.09848, 2025.
+[20] X. Fu, Y. Hu, B. Li, Y. Feng, H. Wang, X. Lin, D. Roth, N. A. Smith, W.-C. Ma, and R. Krishna.
+Blink: Multimodal large language models can see but not perceive. In European Conference
+on Computer Vision, pages 148–166. Springer, 2024.
+[21] K. Gao, L. Chen, Y. Niu, J. Shao, and J. Xiao. Classification-then-grounding: Reformulating
+video scene graphs as temporal bipartite graphs. In Proceedings of the IEEE/CVF conference
+on computer vision and pattern recognition, pages 19497–19506, 2022.
+[22] X. He, H. Yu, S. Peng, D. Tan, Z. Shen, H. Bao, and X. Zhou. Matchanything: Universal cross-
+modality image matching with large-scale pre-training.
+arXiv preprint arXiv:2501.07556,
+2025.
+19
+
+
+[23] M. Heusel, H. Ramsauer, T. Unterthiner, B. Nessler, and S. Hochreiter. Gans trained by a two
+time-scale update rule converge to a local nash equilibrium. Advances in neural information
+processing systems, 30, 2017.
+[24] Y. Hong, H. Zhen, P. Chen, S. Zheng, Y. Du, Z. Chen, and C. Gan. 3d-llm: Injecting the 3d
+world into large language models. Advances in Neural Information Processing Systems, 36:
+20482–20494, 2023.
+[25] J. Hu, Z. Cheng, C. Si, W. Li, and S. Gong. Cos: Chain-of-shot prompting for long video
+understanding. arXiv preprint arXiv:2502.06428, 2025.
+[26] X. Huang, J. Wu, Q. Xie, and K. Han. Mllms need 3d-aware representation supervision for
+scene understanding. arXiv preprint arXiv:2506.01946, 2025.
+[27] A. Hurst, A. Lerer, A. P. Goucher, A. Perelman, A. Ramesh, A. Clark, A. Ostrow, A. Welihinda,
+A. Hayes, A. Radford, et al. Gpt-4o system card. arXiv preprint arXiv:2410.21276, 2024.
+[28] M. Jia, Z. Qi, S. Zhang, W. Zhang, X. Yu, J. He, H. Wang, and L. Yi. Omnispatial: To-
+wards comprehensive spatial reasoning benchmark for vision language models. arXiv preprint
+arXiv:2506.03135, 2025.
+[29] J. Jiao, Y. Cao, Y. Song, and R. Lau. Look deeper into depth: Monocular depth estimation
+with semantic booster and attention-driven loss. In Proceedings of the European conference
+on computer vision (ECCV), pages 53–69, 2018.
+[30] P. N. Johnson-Laird. Mental models in cognitive science. Cognitive science, 4(1):71–115,
+1980.
+[31] P. N. Johnson-Laird. Mental models: Towards a cognitive science of language, inference, and
+consciousness. Number 6. Harvard University Press, 1983.
+[32] A. Kirillov, E. Mintun, N. Ravi, H. Mao, C. Rolland, L. Gustafson, T. Xiao, S. Whitehead,
+A. C. Berg, W.-Y. Lo, et al. Segment anything. In Proceedings of the IEEE/CVF international
+conference on computer vision, pages 4015–4026, 2023.
+[33] P. Y. Lee, J. Je, C. Park, M. A. Uy, L. Guibas, and M. Sung. Perspective-aware reasoning
+in vision-language models via mental imagery simulation. arXiv preprint arXiv:2504.17207,
+2025.
+[34] X. Lei, Z. Yang, X. Chen, P. Li, and Y. Liu. Scaffolding coordinates to promote vision-language
+coordination in large multi-modal models. arXiv preprint arXiv:2402.12058, 2024.
+[35] S. Levine, P. Pastor, A. Krizhevsky, J. Ibarz, and D. Quillen. Learning hand-eye coordination
+for robotic grasping with deep learning and large-scale data collection.
+The International
+journal of robotics research, 37(4-5):421–436, 2018.
+[36] X. Li, H. Qiu, L. Wang, H. Zhang, C. Qi, L. Han, H. Xiong, and H. Li. Challenges and trends
+in egocentric vision: A survey. arXiv preprint arXiv:2503.15275, 2025.
+[37] Y. Li, Y. Zhang, T. Lin, X. Liu, W. Cai, Z. Liu, and B. Zhao. Sti-bench: Are mllms ready for
+precise spatial-temporal world understanding? arXiv preprint arXiv:2503.23765, 2025.
+[38] J. Lin, H. Gao, X. Feng, R. Xu, C. Wang, M. Zhang, L. Guo, and S. Xu. Advances in embodied
+navigation using large language models: A survey. arXiv preprint arXiv:2311.00530, 2023.
+[39] X. Linghu, J. Huang, X. Niu, X. S. Ma, B. Jia, and S. Huang. Multi-modal situated reasoning
+in 3d scenes. Advances in Neural Information Processing Systems, 37:140903–140936, 2024.
+[40] B. Liu, Y. Dong, Y. Wang, Y. Rao, Y. Tang, W.-C. Ma, and R. Krishna. Coarse correspondence
+elicit 3d spacetime understanding in multimodal language model. arXiv e-prints, pages arXiv–
+2408, 2024.
+[41] L. Liu, H. Li, and M. Gruteser. Edge assisted real-time object detection for mobile augmented
+reality. In The 25th annual international conference on mobile computing and networking,
+pages 1–16, 2019.
+20
+
+
+[42] S. Liu, Z. Zeng, T. Ren, F. Li, H. Zhang, J. Yang, Q. Jiang, C. Li, J. Yang, H. Su, et al.
+Grounding dino: Marrying dino with grounded pre-training for open-set object detection. In
+European conference on computer vision, pages 38–55. Springer, 2024.
+[43] Y. Ma, Z. Song, Y. Zhuang, J. Hao, and I. King. A survey on vision-language-action models
+for embodied ai. arXiv preprint arXiv:2405.14093, 2024.
+[44] A. Manasyan, M. Seitzer, F. Radovic, G. Martius, and A. Zadaianchuk. Temporally consistent
+object-centric learning by contrasting slots. In Proceedings of the Computer Vision and Pattern
+Recognition Conference, pages 5401–5411, 2025.
+[45] W. Mao, W. Zhong, Z. Jiang, D. Fang, Z. Zhang, Z. Lan, H. Li, F. Jia, T. Wang, H. Fan,
+et al. Robomatrix: A skill-centric hierarchical framework for scalable robot task planning and
+execution in open-world. arXiv preprint arXiv:2412.00171, 2024.
+[46] S. Mukhopadhyay, A. Rajgaria, P. Khatiwada, V. Gupta, and D. Roth. Mapwise: Evaluating
+vision-language models for advanced map queries. arXiv preprint arXiv:2409.00255, 2024.
+[47] M. Ogezi and F. Shi. Spare: Enhancing spatial reasoning in vision-language models with
+synthetic data. arXiv preprint arXiv:2504.20648, 2025.
+[48] R. Pi, L. Yao, J. Gao, J. Zhang, and T. Zhang. Perceptiongpt: Effectively fusing visual per-
+ception into llm. In Proceedings of the IEEE/CVF conference on computer vision and pattern
+recognition, pages 27124–27133, 2024.
+[49] Z. Qi, Z. Zhang, Y. Fang, J. Wang, and H. Zhao. Gpt4scene: Understand 3d scenes from videos
+with vision-language models. arXiv preprint arXiv:2501.01428, 2025.
+[50] P. Rahmanzadehgervi, L. Bolton, M. R. Taesiri, and A. T. Nguyen. Vision language models
+are blind. In Proceedings of the Asian Conference on Computer Vision, pages 18–34, 2024.
+[51] E. Rublee, V. Rabaud, K. Konolige, and G. Bradski. Orb: An efficient alternative to sift or
+surf. In 2011 International conference on computer vision, pages 2564–2571. Ieee, 2011.
+[52] M. Satyanarayanan. The emergence of edge computing. Computer, 50(1):30–39, 2017.
+[53] M. Sharma. Exploring and improving the spatial reasoning abilities of large language models.
+arXiv preprint arXiv:2312.01054, 2023.
+[54] N. Simon and A. Majumdar. Mononav: Mav navigation via monocular depth estimation and re-
+construction. In International Symposium on Experimental Robotics, pages 415–426. Springer,
+2023.
+[55] P. Skurowski, D. Myszor, M. Paszkuta, T. Moro´n, and K. A. Cyran. Energy demand in ar
+applications—a reverse ablation study of the hololens 2 device. Energies, 17(3):553, 2024.
+[56] M. W. Spong, S. Hutchinson, M. Vidyasagar, et al. Robot modeling and control, volume 3.
+Wiley New York, 2006.
+[57] J. Sun, J. Wu, Z. Ji, and Y.-K. Lai. A survey of object goal navigation. IEEE Transactions on
+Automation Science and Engineering, 22:2292–2308, 2024.
+[58] M. J. Swain and D. H. Ballard. Color indexing. International journal of computer vision, 7(1):
+11–32, 1991.
+[59] A. D. Vuong, M. N. Vu, B. Huang, N. Nguyen, H. Le, T. Vo, and A. Nguyen. Language-driven
+grasp detection. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+Recognition, pages 17902–17912, 2024.
+[60] F. Wang, X. Fu, J. Y. Huang, Z. Li, Q. Liu, X. Liu, M. D. Ma, N. Xu, W. Zhou, K. Zhang,
+et al. Muirbench: A comprehensive benchmark for robust multi-image understanding. arXiv
+preprint arXiv:2406.09411, 2024.
+[61] H. Wang, Q. Xue, and W. Gao. Infinibench: Infinite benchmarking for visual spatial reasoning
+with customizable scene complexity. arXiv preprint arXiv:2511.18200, 2025.
+21
+
+
+[62] H. Wang, Y. Zhao, T. Wang, H. Fan, X. Zhang, and Z. Zhang. Ross3d: Reconstructive visual
+instruction tuning with 3d-awareness. arXiv preprint arXiv:2504.01901, 2025.
+[63] T. Wang, X. Mao, C. Zhu, R. Xu, R. Lyu, P. Li, X. Chen, W. Zhang, K. Chen, T. Xue, et al. Em-
+bodiedscan: A holistic multi-modal 3d perception suite towards embodied ai. In Proceedings of
+the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 19757–19767,
+2024.
+[64] X. Wang, Y. Zhang, O. Zohar, and S. Yeung-Levy. Videoagent: Long-form video understand-
+ing with large language model as agent. In European Conference on Computer Vision, pages
+58–76. Springer, 2024.
+[65] X. Wang, Z. Tang, J. Guo, T. Meng, C. Wang, T. Wang, and W. Jia. Empowering edge intel-
+ligence: A comprehensive survey on on-device ai models. ACM Computing Surveys, 57(9):
+1–39, 2025.
+[66] Z. Wang, A. C. Bovik, H. R. Sheikh, and E. P. Simoncelli. Image quality assessment: from
+error visibility to structural similarity. IEEE transactions on image processing, 13(4):600–612,
+2004.
+[67] D. Wu, F. Liu, Y.-H. Hung, and Y. Duan. Spatial-mllm: Boosting mllm capabilities in visual-
+based spatial intelligence. arXiv preprint arXiv:2505.23747, 2025.
+[68] Y. Wu, Z. Qi, J. Sun, Y. Wang, Q. Huang, and S. Wang. Video language model pretraining
+with spatio-temporal masking. In Proceedings of the Computer Vision and Pattern Recognition
+Conference, pages 8557–8567, 2025.
+[69] Q. Xie, S. Y. Min, P. Ji, Y. Yang, T. Zhang, K. Xu, A. Bajaj, R. Salakhutdinov, M. Johnson-
+Roberson, and Y. Bisk. Embodied-rag: General non-parametric embodied memory for retrieval
+and generation. arXiv preprint arXiv:2409.18313, 2024.
+[70] Y. Yamada, Y. Bao, A. K. Lampinen, J. Kasai, and I. Yildirim. Evaluating spatial understanding
+of large language models. arXiv preprint arXiv:2310.14540, 2023.
+[71] J. Yang, W. Peng, X. Li, Z. Guo, L. Chen, B. Li, Z. Ma, K. Zhou, W. Zhang, C. C. Loy,
+et al. Panoptic video scene graph generation. In Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition, pages 18675–18685, 2023.
+[72] J. Yang, X. Chen, S. Qian, N. Madaan, M. Iyengar, D. F. Fouhey, and J. Chai. Llm-grounder:
+Open-vocabulary 3d visual grounding with large language model as an agent. In 2024 IEEE
+International Conference on Robotics and Automation (ICRA), pages 7694–7701. IEEE, 2024.
+[73] J. Yang, S. Yang, A. W. Gupta, R. Han, L. Fei-Fei, and S. Xie. Thinking in space: How
+multimodal large language models see, remember, and recall spaces. In Proceedings of the
+Computer Vision and Pattern Recognition Conference, pages 10632–10643, 2025.
+[74] L. Yang, B. Kang, Z. Huang, Z. Zhao, X. Xu, J. Feng, and H. Zhao. Depth anything v2.
+Advances in Neural Information Processing Systems, 37:21875–21911, 2024.
+[75] S. Yang, J. Liu, R. Zhang, M. Pan, Z. Guo, X. Li, Z. Chen, P. Gao, H. Li, Y. Guo, et al.
+Lidar-llm: Exploring the potential of large language models for 3d lidar understanding. In
+Proceedings of the AAAI Conference on Artificial Intelligence, volume 39, pages 9247–9255,
+2025.
+[76] S. Yang, R. Xu, Y. Xie, S. Yang, M. Li, J. Lin, C. Zhu, X. Chen, H. Duan, X. Yue, et al. Mmsi-
+bench: A benchmark for multi-image spatial intelligence. arXiv preprint arXiv:2505.23764,
+2025.
+[77] S. Yang, J. Yang, P. Huang, E. Brown, Z. Yang, Y. Yu, S. Tong, Z. Zheng, Y. Xu, M. Wang,
+et al. Cambrian-s: Towards spatial supersensing in video. arXiv preprint arXiv:2511.04670,
+2025.
+[78] Z. Yang, Z. Gan, J. Wang, X. Hu, F. Ahmed, Z. Liu, Y. Lu, and L. Wang. Unitab: Unifying
+text and box outputs for grounded vision-language modeling. In European Conference on
+Computer Vision, pages 521–539. Springer, 2022.
+22
+
+
+[79] J. Ye, Z. Wang, H. Sun, K. Chandrasegaran, Z. Durante, C. Eyzaguirre, Y. Bisk, J. C. Niebles,
+E. Adeli, L. Fei-Fei, et al. Re-thinking temporal search for long-form video understanding. In
+Proceedings of the Computer Vision and Pattern Recognition Conference, pages 8579–8591,
+2025.
+[80] B. Yin, Q. Wang, P. Zhang, J. Zhang, K. Wang, Z. Wang, J. Zhang, K. Chandrasegaran,
+H. Liu, R. Krishna, et al.
+Spatial mental modeling from limited views.
+arXiv preprint
+arXiv:2506.21458, 2025.
+[81] Y. You, Y. Li, C. Deng, Y. Wang, and L. Guibas. Multiview equivariance improves 3d corre-
+spondence understanding with minimal feature finetuning. arXiv preprint arXiv:2411.19458,
+2024.
+[82] H. Yu, W. Li, S. Wang, J. Chen, and J. Zhu. Inst3d-lmm: Instance-aware 3d scene understand-
+ing with multi-modal instruction tuning. In Proceedings of the Computer Vision and Pattern
+Recognition Conference, pages 14147–14157, 2025.
+[83] H. Yuan, B. Zhou, Y. Fu, and Z. Lu. Cross-embodiment dexterous grasping with reinforcement
+learning. arXiv preprint arXiv:2410.02479, 2024.
+[84] M. Zhan, L. Zhang, X. Chu, and B. Wang.
+Vistadepth: Frequency modulation with bias
+reweighting for enhanced long-range depth estimation.
+arXiv preprint arXiv:2504.15095,
+2025.
+[85] C. Zhang, D. Han, S. Zheng, J. Choi, T.-H. Kim, and C. S. Hong. Mobilesamv2: Faster
+segment anything to everything. arXiv preprint arXiv:2312.09579, 2023.
+[86] J. Zhang, G. Zhu, S. Li, X. Liu, H. Song, X. Tang, and C. Feng. Multiview scene graph.
+Advances in Neural Information Processing Systems, 37:17761–17788, 2024.
+[87] R. Zhang, P. Isola, A. A. Efros, E. Shechtman, and O. Wang. The unreasonable effectiveness
+of deep features as a perceptual metric. In Proceedings of the IEEE conference on computer
+vision and pattern recognition, pages 586–595, 2018.
+[88] W. Zhang, M. Wang, G. Liu, X. Huixin, Y. Jiang, Y. Shen, G. Hou, Z. Zheng, H. Zhang, X. Li,
+et al.
+Embodied-reasoner: Synergizing visual search, reasoning, and action for embodied
+interactive tasks. arXiv preprint arXiv:2503.21696, 2025.
+[89] Y. Zhang and Z. Chen.
+Continuous space-time video resampling with invertible motion
+steganography. In Proceedings of the Computer Vision and Pattern Recognition Conference,
+pages 2116–2126, 2025.
+[90] H. Zhao, W.-J. Wang, T. Wang, Z.-B. Chang, and X.-Y. Zeng. Key-frame extraction based
+on hsv histogram and adaptive clustering. Mathematical Problems in Engineering, 2019(1):
+5217961, 2019.
+[91] D. Zheng, S. Huang, Y. Li, and L. Wang. Learning from videos for 3d world: Enhancing mllms
+with 3d vision geometry priors. arXiv preprint arXiv:2505.24625, 2025.
+[92] D. Zheng, S. Huang, and L. Wang. Video-3d llm: Learning position-aware video representation
+for 3d scene understanding. In Proceedings of the Computer Vision and Pattern Recognition
+Conference, pages 8995–9006, 2025.
+[93] Y. Zheng, L. Yao, Y. Su, Y. Zhang, Y. Wang, S. Zhao, Y. Zhang, and L.-P. Chau. A survey
+of embodied learning for object-centric robotic manipulation. Machine Intelligence Research,
+pages 1–39, 2025.
+[94] H. Zhi, P. Chen, J. Li, S. Ma, X. Sun, T. Xiang, Y. Lei, M. Tan, and C. Gan. Lscenellm:
+Enhancing large 3d scene understanding using adaptive visual preferences. In Proceedings of
+the Computer Vision and Pattern Recognition Conference, pages 3761–3771, 2025.
+[95] C. Zhu, T. Wang, W. Zhang, J. Pang, and X. Liu. Llava-3d: A simple yet effective pathway to
+empowering lmms with 3d-awareness. arXiv preprint arXiv:2409.18125, 2024.
+23
+
+
+[96] X. Zhu, C. C. Loy, and S. Gong. Video synopsis by heterogeneous multi-source correlation. In
+Proceedings of the IEEE International Conference on Computer Vision, pages 81–88, 2013.
+[97] B. Zitkovich, T. Yu, S. Xu, P. Xu, T. Xiao, F. Xia, J. Wu, P. Wohlhart, S. Welker, A. Wahid,
+et al. Rt-2: Vision-language-action models transfer web knowledge to robotic control. In
+Conference on Robot Learning, pages 2165–2183. PMLR, 2023.
+[98] A. Zweng, T. Rittler, and M. Kampel. Evaluation of histogram-based similarity functions
+for different color spaces. In International Conference on Computer Analysis of Images and
+Patterns, pages 455–462. Springer, 2011.
+24
+
+
+A
+REPRESENTING THE SEMANTIC MAP TO VLM
+    { "couch.", "x": -1.269, "y": 
+        -2.898},
+    {"appliance1.", "x": -0.142, "y": 
+2.515},
+    {"thrashcan", "x": -0.385, "y": 
+        1.243},
+    {"pillow.", "x": -1.221, "y": 
+        -3.055},
+    {"dinning table.", "x": 1.191, 
+      "y": -1.720},
+    … …
+Semantic map + Text
+Text only
+    { "couch.", "x": -1.269, 
+ 
+"y": -2.898},
+    {"appliance1.", "x": -0.142, 
+ 
+"y": 2.515},
+    {"thrashcan", "x": -0.385, 
+ 
+"y": 1.243},
+    {"pillow.", "x": -1.221, 
+ 
+"y": -3.055},
+    {"dinning table.", "x": 1.191, 
+ 
+"y": -1.720},
+ 
+… …    
+Dense point cloud
+(BEV view)
+Figure 19: Different formats of space representation as inputs
+to VLMs
+With the semantic map, we still
+need to determine the most ef-
+fective representation of the se-
+mantic map as the input to VLM.
+Representing the semantic map
+directly in structured text (e.g.,
+JSON) has been proved to per-
+form poorly on small VLMs (80),
+since the VLM has to internally
+translate numerical values into a
+visual representation, which is
+a shortcoming of most language
+models nowadays. For example,
+a statement such as “Object A is 2 meters to the north of Object B, facing east” is immediately
+apparent in a map, but would be verbose and less intuitive in JSON. This difficulty motivates us to
+instead adopt visual prompting techniques (34; 40) by plotting the semantic map as an image, as
+illustrated in Figure 19.
+B
+TEMPORAL LOCALITY AMONG VIDEO FRAMES
+Figure 20: Histogram frame similarity with different
+temporal distances between frames
+Our proposed approach of iterative tempo-
+ral search for key frame selection in Sec-
+tion 3.3 builds on the temporal locality
+of object appearance among video frames.
+That is, if a frame is highly likely to con-
+tain an object, other frames that are tempo-
+rally close could also have high likelihoods
+to contain the same object, due to the con-
+tinuity of camera movement in the video.
+To experimentally validate such local-
+ity, we randomly sampled 100 videos
+from the VSIBench benchmark that de-
+pict indoor scenes (73), randomly selected
+10% frames from each video as reference
+frames, and computed the average his-
+togram similarity (98) between each refer-
+ence frame and its subsequent frames at different temporal distances. As shown in Figure 20, the
+frame similarity remains high in the first 2-3 frames, and then rapidly decays to a low level. This
+result suggests strong temporal locality within the range of 2-3 frames, which supports our approach
+of iterative temporal search, and is also used in Section 5.1 to decide the width of the Gaussian
+kernel to be applied when updating the sampling distribution over iterations.
+C
+DETAILS OF THE METRO-SPATIAL-QA DATASET
+We collect a new egocentric video dataset containing 40 egocentric video clips, covering a diverse
+set of indoor environments commonly encountered in daily activities. As shown in Figure 21, the
+dataset spans five categories of places: supermarkets, libraries, museums, restaurants and class-
+rooms. These environments exhibit substantial variation in spatial layout, object distribution, light-
+ing conditions, and levels of human activity, providing rich visual and contextual cues for spatial
+understanding from egocentric video streams. For each clip, we manually annotated 4 spatial rea-
+soning questions, yielding 160 spatial reasoning tasks in total. The collected scenes are intentionally
+diverse in both structure and complexity, ranging from highly organized spaces such as restaurants
+to cluttered and dynamic environments such as supermarkets and museums. In addition, classroom
+and laboratory settings introduce semi-structured layouts with functional objects and equipment
+arranged for specific tasks. This diversity leads to challenging spatial configurations involving oc-
+clusions, long-range relationships, and viewpoint changes across frames. Consequently, the dataset
+25
+
+
+Supermarkets
+libraries
+museums
+Restaurants
+classrooms
+Figure 21: Data samples from Metro-Spatial-QA
+provides a realistic and challenging testbed for evaluating visual spatial reasoning and cross-frame
+understanding in real-world indoor environments.
+26

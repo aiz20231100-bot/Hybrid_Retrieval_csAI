@@ -1,0 +1,654 @@
+Petri Net Induced Heuristic Search
+for Resource Constrained Scheduling
+Ido Lublin, Dor Atzmon, Izack Cohen
+Faculty of Engineering
+Bar-Ilan University
+Ramat Gan, Israel
+{ido.lublin, dor.atzmon, izack.cohen}@biu.ac.il
+Abstract
+We formulate the Resource-Constrained Project Scheduling
+Problem (RCPSP) as optimal search over the reachability
+graph of a Timed Transition Petri Net with Resources, us-
+ing relative-delay tokens so that scheduling decisions cor-
+respond to transition firings in the induced state space. We
+solve the resulting problem with A∗guided by a heuristic
+that combines Critical Path and resource-based lower bounds,
+and prove that it is consistent under our token-based time se-
+mantics. Experiments on the PSPLIB benchmarks show that
+the approach outperforms strong exact Mixed-Integer Linear
+Programming (MIP) baselines (SCIP, CBC) in both success
+rate and solve time. Per-instance analysis shows that heuris-
+tic search and MIP degrade along independent axes, resource
+tightness for A∗and formulation size for MIP, with resource
+strength mediating which solver benefits from scale.
+Introduction
+The Resource-Constrained Project Scheduling Problem
+(RCPSP) asks how to schedule precedence-constrained ac-
+tivities under limited shared resources so as to minimize
+completion time (Herroelen, De Reyck, and Demeule-
+meester 1998; Brucker et al. 1999; Hartmann and Briskorn
+2022). As a strongly NP-hard generalization of classical
+scheduling problems (Blazewicz, Lenstra, and Kan 1983),
+RCPSP is a fundamental problem at the intersection of
+scheduling, combinatorial search, and resource-bounded
+reasoning. It also arises in temporal planning, robotic task
+coordination, spacecraft mission scheduling, multiproces-
+sor scheduling, and project management. RCPSP has long
+served as a benchmark for exact and approximate methods,
+yet no single method dominates across all instance classes.
+The leading exact solution approach is Mixed-Integer Lin-
+ear Programming (MIP), typically solved by branch-and-
+cut (Dorndorf, Pesch, and Phan-Huy 2000; Kon´e et al.
+2011; Artigues et al. 2015). While MIP provides optimal-
+ity guarantees, it scales poorly, and strong solvers such as
+SCIP (Achterberg 2009) often fail to solve benchmark in-
+stances within practical time limits. Metaheuristics (Pellerin,
+Perrier, and Berthaut 2020) improve scalability at the cost
+of optimality, and hybrid methods seek a middle ground,
+Copyright © 2026, Association for the Advancement of Artificial
+Intelligence (www.aaai.org). All rights reserved.
+yet no existing approach reliably achieves both. A natu-
+ral exact alternative is heuristic search (Hart, Nilsson, and
+Raphael 1968). Bell and Park (1990) applied A∗to RCPSP
+through conflict sequencing, but the method becomes in-
+tractable on highly resource-constrained instances. Zamani
+and Shue (1998) introduced the activity-dispatch state space
+and applied A∗via SLA*, improving performance but re-
+quiring multiple search trials to reach optimality. In both
+cases, the lack of a consistent heuristic prevents safe dupli-
+cate pruning and causes redundant re-expansion of equiv-
+alent scheduling states–we tackle this issue in the current
+work. More broadly, a recent survey (Huang et al. 2023)
+highlights the promise of heuristic search over reachabil-
+ity graphs for balancing solution quality and computational
+effort. Related Petri-net-based ideas have been explored in
+project and manufacturing scheduling (Mejia et al. 2016;
+Mejia and Odrey 2005), directed heuristic search over Petri
+net reachability graphs has been studied in the model check-
+ing context (Edelkamp and Jabbar 2006), and simulation has
+been used to estimate RCPSP project duration (Wu et al.
+2009). Yet, to the best of our knowledge, no prior work has
+applied optimal heuristic search to the induced reachability
+graph of an RCPSP formulation.
+This paper develops a new RCPSP formulation as an op-
+timal search over the reachability graph induced by a Timed
+Transition Petri Net with Resources (TTPNR), making lo-
+cal scheduling decisions explicit and representing time uni-
+formly through token delays. This yields an exact search for-
+mulation with admissible heuristics, safe duplicate pruning,
+and efficient treatment of zero-cost transitions. We prove
+that the combined Critical Path and resource-based heuris-
+tic is consistent, and show on standard PSPLIB benchmarks
+that the resulting approach is competitive with strong exact
+MIP baselines, including SCIP and CBC.
+RCPSP Problem Definition
+RCPSP is characterized by the tuple (A, E, R, C, U, τ):
+• A = {0, 1, . . . , n, n + 1}: set of activities, where 0 and
+n + 1 are dummy start and finish.
+• E ⊂A × A: precedence constraints, where (i, j) ∈E
+means j cannot start before i completes. Let •j = {i |
+(i, j) ∈E} be the set of immediate predecessors of j.
+arXiv:2605.15983v1  [cs.AI]  15 May 2026
+
+
+• R = {r1, . . . , rk}: renewable resource types with capac-
+ities C = {c1, . . . , ck}.
+• uj,i: demand of activity j for resource ri.
+• τj: duration of activity j.
+As in standard RCPSP formulations, the dummy activities
+have zero duration (τ0 = τn+1 = 0) and zero resource de-
+mand (u0,i = un+1,i = 0 for all ri ∈R).
+A project schedule assigns a start time Sj ≥0 to each
+activity j ∈A. A feasible schedule satisfies two constraints:
+1. Precedence: An activity cannot start until all of its pre-
+decessors complete (for every (i, j) ∈E, Sj ≥Si + τi).
+2. Resource: At any time t, the total amount of each re-
+source type ri ∈R allocated to ongoing activities cannot
+exceed its available capacity ci ∈C.
+The objective is to find a schedule with minimal
+makespan, that is, the start time of the dummy finish activity:
+min Sn+1. The interaction between precedence and resource
+constraints creates a highly constrained combinatorial prob-
+lem, which we later formulate both as a reachability graph
+and as a MIP. We use the next example throughout the paper.
+Example 1. Consider an RCPSP instance with activities
+A = {0, 1, 2, 3, 4, 5} (denote by 0 ≡a, 1 ≡b, 2 ≡c, etc.).
+a and f are the dummy start and finish activities. The prece-
+dence set is E = {(a, b), (a, d), (b, c), (d, e), (c, f), (e, f)},
+forming two parallel chains a →b →c →f and a →
+d →e →f. There is one renewable resource r with capac-
+ity c1 = 2. Each non-dummy activity requires one unit, i.e.,
+ub,1 = uc,1 = ud,1 = ue,1 = 1, and ua,1 = uf,1 = 0. The
+durations are τa = τf = 0,
+τb = 3,
+τc = 1,
+τd =
+3,
+τe = 2. An optimal schedule has makespan 5 with
+Sa = Sb = Sd = 0,
+Sc = Se = 3,
+Sf = 5. Figure 1(a)
+summarizes the problem instance parameters.
+Timed Transition Petri Net with Resources
+A Petri net (Petri 1966) is a bipartite graph consisting of
+places (denoted by circles) and transitions (rectangles) con-
+nected by directed arcs. Places hold tokens, whose distribu-
+tion defines the marking M. Formally, a Petri net is the tuple
+(P, T, F, W, M0), where P and T are finite sets of places
+and transitions, F ⊆(P × T) ∪(T × P) is the arc set,
+W : F →Z+ is a weight function, and M0 is the initial
+marking. We write •t = {p ∈P | (p, t) ∈F} for the in-
+put places of transition t. A transition t is enabled if every
+place p ∈•t holds at least W(p, t) tokens; firing consumes
+and deposits tokens accordingly, thereby modeling concur-
+rency and synchronization. In our formulation, each reach-
+able marking corresponds to a search state, and the reachable
+markings define the reachability graph that our approach
+generates and searches incrementally.
+To distinguish the original RCPSP formulation from its
+Petri-net encoding, we use j ∈A for RCPSP activities and
+t ∈T for Petri-net transitions. Below, each transition corre-
+sponds to a single activity. We extend the classical Petri net
+to a TTPNR with time and resource perspectives,
+N = (P, T, F, W, M0, λ, τT , R, C),
+where λ : T →A maps each Petri-net transition to its
+corresponding RCPSP activity, τT : T →N0 assigns a
+duration to each transition, and R, C define the resource
+types and their capacities. Each transition inherits the du-
+ration of its associated activity (τT (t) := τλ(t)). A dedi-
+cated subset PR ⊂P of resource places enforces capac-
+ity constraints: M0 allocates exactly ci tokens to each re-
+source place. The single enabling rule M(p) ≥W(p, t)
+then guarantees that an activity can start only if both its
+precedence conditions and resource requirements are satis-
+fied. This unified enabling rule is a key advantage over prior
+RCPSP search formulations, where precedence and resource
+constraints require separate conflict-resolution mechanisms
+outside the search space.
+Figure 1(b) illustrates the TTPNR formulation of the
+RCPSP instance from Example 1 (Figure 1(a)). Here, a
+and f denote the dummy start and dummy finish activities,
+respectively. The figure shows the initial marking M0, in
+which a single token is placed in p1 and two in the resource
+place pr (resource type index is omitted for readability). The
+only enabled transition at M0 is a; firing it consumes the to-
+ken from p1 and produces tokens in p2 and p3, making ac-
+tivities b and d available to compete for the shared resource.
+Modeling RCPSP as a Search Problem
+To solve the RCPSP via heuristic search, we induce a reach-
+ability graph directly from the TTPNR. In this search graph,
+each node represents a system state, and each edge corre-
+sponds to the commitment to execute a specific project ac-
+tivity by firing a Petri-net transition.
+A state s ∈S is a marking augmented with relative delays
+on tokens. By encoding time as token delays θ, we avoid a
+global clock, allowing more states to be recognized as identi-
+cal and safely pruned; heuristic consistency then guarantees
+that the first expansion of any state is optimal. Formally,
+s =
+h
+p1 : l
+θl1
+1 , . . . , pn : lθln
+n , pr1 : r
+θr1
+1
+, . . . , prk : r
+θrk
+k
+i
+where a token with delay θ > 0 is not yet available, while
+θ = 0 (omitted by convention) means immediate availabil-
+ity. Here, l
+θli
+i
+denotes li tokens in place pi with delay θli, and
+r
+θrj
+j
+denotes rj resource tokens with delay θrj (only positive
+token counts are shown).
+The start state s0 has one token in the input place of the
+dummy start transition and all resource places at their initial
+marking; the goal state has one token in the output place of
+the dummy finish transition with resource places restored.
+We consider a transition t ∈T enabled if its input places
+contain sufficient tokens, irrespective of their current relative
+delays. Firing t commits the corresponding activity λ(t) and
+proceeds as follows. (1) Time jump: Consume the required
+input tokens, prioritizing tokens with smallest relative de-
+lay. The induced time jump is ∆t = max(θconsumed). (2)
+Delay and token generation: All remaining token delays are
+reduced by ∆t: θnew = max(0, θ −∆t). Newly produced
+tokens are assigned the delay τT (t) = τλ(t). Also, each node
+maintains the path cost g(s′) = g(s) + ∆t for use by A∗.
+
+
+Problem instance
+act.
+succ.
+dur.
+r
+a
+b, d
+0
+0
+b
+c
+3
+1
+c
+f
+1
+1
+d
+e
+3
+1
+e
+f
+2
+1
+f
+—
+0
+0
+Capacity
+r
+2
+(a)
+(b)
+(c)
+Figure 1: (a) RCPSP instance; (b) TTPNR initial marking; (c) A∗search over the induced reachability graph. Nodes show
+(g, h, f) and token delays θ, green nodes are expanded.
+Heuristics
+We use two lower bounds on the remaining makespan from a
+state s: the critical-path bound hCP (s), obtained by relaxing
+resource capacities, and the resource-load bound hres(s),
+obtained by relaxing precedence constraints. Their combi-
+nation is hmax(s) = max(hCP (s), hres(s)).
+Critical-Path Heuristic
+hCP (s) is the length of the
+longest residual precedence path to the dummy finish ac-
+tivity n+1, computed by propagating residual earliest finish
+times, REF, in topological order:
+REFj =
+
+
+
+
+
+0
+if j is completed,
+θj
+if j is currently executing,
+max
+i∈•j REFi + τj
+if j has not yet started,
+initialized with REF0 = 0, and hCP (s) = REFn+1.
+Proposition 1. hCP is admissible and consistent.
+Proof. Admissibility. Removing resource constraints cannot
+extend the remaining completion time, so hCP (s) ≤h∗(s).
+Consistency. Consider a successor s′ of s with time in-
+crement δ(s, s′) := g(s′) −g(s). For every activity j, its
+residual duration decreases by at most δ(s, s′): executing
+activities lose at most δ(s, s′), unstarted activities are un-
+changed, and a newly started activity λ(t) receives residual
+delay τλ(t) in s′, identical to its value before firing. Since
+precedence enforces sequential execution along any single
+path, at most one activity on the longest path P ∗is execut-
+ing in s, so the total residual length of P ∗decreases by at
+most δ(s, s′). Since hCP (s′) is the maximum over all paths,
+hCP (s′) ≥hCP (s) −δ(s, s′),
+which rearranges to hCP (s) ≤c(s, s′) + hCP (s′).
+Resource-Based Heuristic
+hres(s) is the minimum time
+to clear the remaining workload on the most heavily loaded
+resource, ignoring precedence constraints. Let active(s) and
+unstarted(s) denote the currently executing and not-yet-
+started activities, respectively.
+hres(s) = max
+r∈R
+X
+a∈active(s)
+θa ua,r +
+X
+a∈unstarted(s)
+τa ua,r
+cr
+.
+Proposition 2. hres is admissible and consistent.
+Proof. Admissibility. Dropping precedence constraints can
+only reduce the remaining makespan, so hres(s) ≤h∗(s).
+Consistency. The argument mirrors that of hCP : firing t
+advances the clock by δ(s, s′), reducing the residual work-
+load numerator by at most δ(s, s′) · cr per resource (exe-
+cuting activities lose at most δ(s, s′) · ua,r ≤δ(s, s′) · cr,
+unstarted activities are unchanged, and λ(t) satisfies θλ(t) =
+τλ(t) immediately after firing). Dividing by cr and taking
+the maximum over resources yields hres(s) ≤c(s, s′) +
+hres(s′).
+Proposition 3. A combined heuristic
+hmax(s) = max(hCP (s), hres(s))
+is admissible and consistent.
+Proof. The max over admissible and consistent heuristics is
+admissible and consistent (Russell and Norvig 2020).
+Consistency guarantees that A∗remains optimal while
+eliminating the need to reopen expanded states (Hart, Nils-
+son, and Raphael 1968; Dechter and Pearl 1985). Our formu-
+lation also enables an effective caching optimization: when-
+ever δ(s, s′) = 0, both lower bounds are preserved, so
+hmax(s′) = hmax(s). Thus, zero-cost successors can reuse
+the parent’s cached heuristic value, without recomputation.
+In the resulting A∗search, we prioritize nodes with mini-
+mal f(s) = g(s) + hmax(s). f-ties are broken by preferring
+higher g-cost, then more finished activities, then more active
+activities, then FIFO, driving the search depth-first through
+equal f-cost plateaus.
+Figure 1(c) illustrates the A∗guided search over the in-
+duced reachability graph of Example 1. Each node shows
+(g, h, f) values and active token delays θ. At each expan-
+sion, a successor is generated for enabled transitions, and
+the prioritized node is selected for expansion.
+MIP Formulation
+Since MIP-based branch-and-cut is the dominant exact ap-
+proach for RCPSP (Dorndorf, Pesch, and Phan-Huy 2000),
+
+
+Metric / Parameter
+J30
+J60
+J90
+TTPNR
+CBC
+SCIP
+TTPNR
+CBC
+SCIP
+TTPNR
+CBC
+SCIP
+Overall Performance
+Success Rate (%)
+(+27.5) 98.96
+47.29
+71.46
+(+19.6) 47.71
+28.13
+8.75
+(+23.1) 36.04
+12.92
+0.21
+Avg. Time (s)
+(-78.8%) 7.97
+42.14
+37.65
+(-77.5%) 19.33
+85.96
+186.42
+(-96.2%) 5.97
+197.37
+155.97
+Success Rate (%) by Resource Strength (RS)
+RS = 1.0
+100.00
+95.00
+100.00
+94.17
+56.67
+27.50
+87.50
+30.83
+0.83
+RS = 0.7
+98.33
+60.83
+95.83
+71.67
+46.67
+5.00
+43.33
+18.33
+0.00
+RS = 0.5
+99.17
+24.17
+68.33
+22.50
+9.17
+1.67
+13.33
+2.50
+0.00
+RS = 0.2
+98.33
+9.17
+22.50
+2.50
+0.00
+0.83
+0.00
+0.00
+0.00
+Success Rate (%) by Resource Factor (RF)
+RF = 1.0
+100.00
+38.33
+51.67
+49.17
+35.83
+3.33
+40.00
+15.00
+0.83
+RF = 0.75
+100.00
+38.33
+65.00
+49.17
+40.83
+5.83
+34.17
+15.83
+0.00
+RF = 0.50
+98.33
+44.17
+72.50
+50.83
+30.00
+5.83
+33.33
+19.17
+0.00
+RF = 0.25
+97.50
+68.33
+97.50
+41.67
+5.83
+20.00
+36.67
+1.67
+0.00
+Table 1: Overall Success Rate and Average Time, alongside breakdowns by Resource Strength (RS) and Resource Factor (RF).
+we compare against two strong off-the-shelf branch-and-
+cut solvers, SCIP (Achterberg 2009) and CBC (Forrest and
+Lougee-Heimer 2005), using the standard time-indexed for-
+mulation (Artigues et al. 2015): a binary variable xjt ∈
+{0, 1} indicates whether activity j starts at time t. The full
+encoding is:
+min
+X
+t∈H
+t · xn+1,t
+(1)
+s.t.
+X
+t∈H
+xjt = 1
+∀j ∈A
+(2)
+Sj + τj ≤Si
+∀(j, i) ∈E
+(3)
+X
+j∈A
+uj,r
+t
+X
+q=t−τj+1
+xjq ≤cr
+∀r ∈R, ∀t ∈H
+(4)
+Constraints (2)–(4) ensure activities start exactly once,
+enforce precedence and resource capacity, with Sj
+=
+P
+t∈H t xjt and H = {0, . . . , T}, where T = P
+j∈A τj.
+Experiments and Discussion
+We evaluated A∗(denoted TTPNR) against SCIP and
+CBC on the standard public RCPSP benchmark suite
+PSPLIB (Kolisch and Sprecher 1997), using the J30, J60,
+and J90 sets (30, 60, and 90 activities; 480 instances per
+set). Each instance has four renewable resource types, and
+the instances in each set are organized into 48 groups of 10
+with shared generation parameters. These parameters (dis-
+cussed later) vary structural properties and resource tight-
+ness, yielding a diverse collection of challenging RCPSP in-
+stances. Evaluations were run sequentially on a single-core
+Intel Xeon Gold 6248R CPU @ 3.00GHz with a 5-minute
+timeout. To ensure a rigorous comparison of the underlying
+search engines and branching mechanics, the MIP solvers
+and TTPNR were executed without preprocessing. TTPNR
+was implemented in C++ and will be publicly available.
+Table 1 summarizes success rate, average time, and per-
+formance breakdowns by problem features. TTPNR outper-
+forms both MIP solvers in success rate and is substantially
+faster across all datasets.
+Impact of Problem Features on TTPNR
+Network Complexity (NC) measures how strongly prece-
+dence constraints restrict activity order, counting only non-
+redundant arcs (redundant arcs are implied by transitivity).
+Higher NC makes the schedule more sequential, reducing
+the number of simultaneously enabled activities, reducing
+the branching factor. From our experiments, NC proved to
+be the least impactful parameter for both MIP solvers and
+TTPNR, and is thus omitted from Table 1.
+Resource Strength (RS) measures how restrictive the re-
+source capacities are. At RS = 1, resources are abundant
+enough that competition for resources is minimal, while
+RS = 0 implies that capacities are near their minimum fea-
+sible levels and competition for resources is maximal. When
+RS is low, many delays are caused by resource conflicts
+rather than precedence, so the true remaining makespan can
+be much larger than the precedence-only lower bound. This
+makes hCP , and therefore hmax, less informative for search,
+weakening A∗guidance and reducing success rates (RS sec-
+tion of Table 1).
+Resource Factor (RF) measures the average propor-
+tion of resource types required per activity. While SCIP
+strictly degrades as RF increases, CBC exhibits mixed sen-
+sitivity. TTPNR demonstrates robustness to RF variations.
+In TTPNR multi-resource requirements involve transitions
+concurrently consuming tokens from multiple places, pre-
+venting branching factor inflation and ensuring stable suc-
+cess rates for any RF (RF section of Table 1).
+Conclusion
+We formulated RCPSP as optimal search on the reacha-
+bility graph of a TTPNR with relative-delay tokens, and
+solved it with A∗guided by a consistent heuristic combin-
+ing Critical Path and resource-based lower bounds. More
+broadly, any scheduling problem expressible as a timed Petri
+net with resources inherits the same search machinery, in-
+cluding consistent heuristics, safe duplicate pruning, and
+zero-cost caching. Empirically, heuristic search and MIP de-
+grade along independent axes—resource tightness for A∗,
+formulation size for MIP—with resource strength mediat-
+ing which solver benefits from scale. Future work includes
+
+
+stronger resource-aware heuristics for low-resource-strength
+instances, algorithm selection across the two paradigms,
+and bidirectional search methods such as BAE* (Sadhukhan
+2013), which fit our state representation.
+References
+Achterberg, T. 2009. SCIP: solving constraint integer pro-
+grams. Mathematical Programming Computation, 1: 1–41.
+Artigues, C.; Kon´e, O.; Lopez, P.; and Mongeau, M. 2015.
+Mixed-integer linear programming formulations. Handbook
+on project management and scheduling vol. 1, 17–41.
+Bell, C. E.; and Park, K. 1990. Solving resource constrained
+project scheduling problems by A* search. Naval Research
+Logistics (NRL), 37(1): 61–84.
+Blazewicz, J.; Lenstra, J.; and Kan, A. 1983. Scheduling
+subject to resource constraints: classification and complex-
+ity. Discrete Applied Mathematics, 5(1): 11–24.
+Brucker, P.; Drexl, A.; M¨ohring, R.; Neumann, K.; and
+Pesch, E. 1999. Resource-constrained project scheduling:
+Notation, classification, models, and methods.
+European
+journal of operational research, 112(1): 3–41.
+Dechter, R.; and Pearl, J. 1985. Generalized best-first search
+strategies and the optimality of A*. J. ACM, 32(3): 505–536.
+Dorndorf, U.; Pesch, E.; and Phan-Huy, T. 2000. A branch-
+and-bound algorithm for the resource-constrained project
+scheduling problem. Mathematical Methods of Operations
+Research, 52: 413–439.
+Edelkamp, S.; and Jabbar, S. 2006. Action Planning for Di-
+rected Model Checking of Petri Nets. Electronic Notes in
+Theoretical Computer Science, 149(2): 3–18.
+Forrest, J.; and Lougee-Heimer, R. 2005. CBC User Guide.
+Technical report, COIN-OR Foundation.
+Hart, P. E.; Nilsson, N. J.; and Raphael, B. 1968. A for-
+mal basis for the heuristic determination of minimum cost
+paths. IEEE transactions on Systems Science and Cybernet-
+ics, 4(2): 100–107.
+Hartmann, S.; and Briskorn, D. 2022. An updated survey of
+variants and extensions of the resource-constrained project
+scheduling problem. European Journal of operational re-
+search, 297(1): 1–14.
+Herroelen, W.; De Reyck, B.; and Demeulemeester, E. 1998.
+Resource-constrained project scheduling: A survey of recent
+developments. Computers & Operations Research, 25(4):
+279–302.
+Huang, B.; Zhou, M.; Lu, X. S.; and Abusorrah, A. 2023.
+Scheduling of resource allocation systems with timed Petri
+nets: A survey. ACM Computing Surveys, 55(11): 1–27.
+Kolisch, R.; and Sprecher, A. 1997.
+PSPLIB-a project
+scheduling problem library: OR software-ORSEP opera-
+tions research software exchange program. European Jour-
+nal of Operational Research, 96(1): 205–216.
+Kon´e, O.; Artigues, C.; Lopez, P.; and Mongeau, M. 2011.
+Event-based MILP models for resource-constrained project
+scheduling problems. Computers & Operations Research,
+38(1): 3–13.
+Mejia, G.; Nino, K.; Montoya, C.; Sanchez, M. A.; Palacios,
+J.; and Amodeo, L. 2016. A Petri Net-based framework for
+realistic project management and scheduling: An application
+in animation and videogames. Computers & Operations Re-
+search, 66: 190–198.
+Mejia, G.; and Odrey, N. G. 2005. An approach using Petri
+nets and improved heuristic search for manufacturing sys-
+tem scheduling. Journal of Manufacturing Systems, 24(2):
+79–92.
+Pellerin, R.; Perrier, N.; and Berthaut, F. 2020. A survey
+of hybrid metaheuristics for the resource-constrained project
+scheduling problem. European Journal of Operational Re-
+search, 280(2): 395–416.
+Petri, C. A. 1966. Communication with automata. Technical
+Report No. RADC-TR-65-377.
+Russell, S.; and Norvig, P. 2020. Artificial Intelligence: A
+Modern Approach. Pearson, 4th edition.
+Sadhukhan, S. K. 2013. Bidirectional heuristic search based
+on error estimate. CSI Journal of Computing, 2(1-2): S1:57–
+S1:64.
+Wu, Y.; Zhuang, X.-c.; Song, G.-h.; Xu, X.-d.; and Li,
+C.-x. 2009. Solving resource-constrained multiple project
+scheduling problem using timed colored Petri nets. Journal
+of Shanghai Jiaotong University (Science), 14: 713–719.
+Zamani, R.; and Shue, L.-Y. 1998. Solving project schedul-
+ing problems with a heuristic learning algorithm. Journal of
+the Operational Research Society, 49(7): 709–716.

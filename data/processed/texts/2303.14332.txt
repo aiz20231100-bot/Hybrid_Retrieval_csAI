@@ -1,0 +1,1191 @@
+Using Simple Incentives to Improve Two-Sided Fairness in Ridesharing Systems
+Ashwin Kumar, Yevgeniy Vorobeychik, William Yeoh
+Washington University in St. Louis
+{ashwinkumar, yvorobeychik, wyeoh}@wustl.edu
+Abstract
+State-of-the-art order dispatching algorithms for ridesharing
+batch passenger requests and allocate them to a ﬂeet of ve-
+hicles in a centralized manner, optimizing over the estimated
+values of each passenger-vehicle matching using integer lin-
+ear programming (ILP). Using good estimates of future val-
+ues, such ILP-based approaches are able to signiﬁcantly in-
+crease the service rates (percentage of requests served) for
+a ﬁxed ﬂeet of vehicles. However, such approaches that fo-
+cus solely on maximizing efﬁciency can lead to disparities for
+both drivers (e.g., income inequality) and passengers (e.g., in-
+equality of service for different groups). Existing approaches
+that consider fairness only do it for naive assignment policies,
+require extensive training, or look at only single-sided fair-
+ness. We propose a simple incentive-based fairness scheme
+that can be implemented online as a part of this ILP formula-
+tion that allows us to improve fairness over a variety of fair-
+ness metrics. Deriving from a lens of variance minimization,
+we describe how these fairness incentives can be formulated
+for two distinct use cases for passenger groups and driver fair-
+ness. We show that under mild conditions, our approach can
+guarantee an improvement in the chosen metric for the worst-
+off individual. We also show empirically that our Simple In-
+centives approach signiﬁcantly outperforms prior art, despite
+requiring no retraining; indeed, it often leads to a large im-
+provement over the state-of-the-art fairness-aware approach
+in both overall service rate and fairness.
+Introduction
+In a ridesharing system, multi-capacity vehicles allow pas-
+sengers to share rides with others or be added onto existing
+trips, and a single central agent aggregates all information
+and dynamically matches passenger requests to available
+vehicles. On-demand ridesharing has been gaining traction
+over the past few years as a solution to the growing need for
+urban mobility and, as a consequence, there has been exten-
+sive work on developing approaches for optimizing the efﬁ-
+ciency of such systems. Recent approaches to this problem
+use dynamic programming and deep reinforcement learning
+to learn value functions for matching pools of passenger re-
+quests to available drivers, and have led to signiﬁcant im-
+provements in service rate (percentage of passenger requests
+served) as well as total passenger delay (Alonso-Mora et al.
+Copyright © 2023, Association for the Advancement of Artiﬁcial
+Intelligence (www.aaai.org). All rights reserved.
+2017; Shah, Lowalekar, and Varakantham 2020; Lowalekar,
+Varakantham, and Jaillet 2019; Li et al. 2019).
+Optimizing the efﬁciency of the overall system, however,
+can lead to both geographic disparity in the quality of ser-
+vice for the passengers, potentially exacerbating historical
+inequalities, and income disparity of the drivers. While fair-
+ness in ridesharing has been a subject of some prior discus-
+sion (Nanda et al. 2020; Xu and Xu 2020), the particular is-
+sue of geographic disparities has received less attention. Ra-
+man, Shah, and Dickerson (2021) consider balancing over-
+all efﬁciency and either geographic or income fairness, but
+this approach loses a great deal of overall efﬁciency, and re-
+quires complete retraining of the deep reinforcement learn-
+ing model for any change in hyperparameters, such as the
+relative importance of fairness.
+Instead of proposing yet another algorithm-speciﬁc ap-
+proach to address fairness in ridesharing, we seek to develop
+a general framework that can be applied orthogonally to a
+large class of existing ridesharing approach. Speciﬁcally, we
+leverage the two-stage approach that many existing rideshar-
+ing algorithms (Alonso-Mora et al. 2017; Shah, Lowalekar,
+and Varakantham 2020; Lowalekar, Varakantham, and Jail-
+let 2021) rely on: (1) Identifying or learning good value
+functions for matches, and (2) Optimizing over those value
+functions to ﬁnd a good match. While one could incor-
+porate fairness in the value function learning stage, doing
+this would undermine our goal of generality since different
+ridesharing approaches employ different ways of identify-
+ing or learning their value functions. However, since all ap-
+proaches employ similar ILP-based optimization approaches
+to ﬁnd good matches, incorporating fairness in the second
+stage would result in the generality that we seek.
+Therefore, in this paper, we propose Simple Incen-
+tives (SI), a general framework for including fairness in ILP-
+based matching, using any off-the-shelf value function ap-
+proximations. The key ingredient in SI is a novel linear mea-
+sure of relative disparity that can be associated with indi-
+viduals based on their group membership (e.g, passengers’
+origin and destination pair or drivers’ relative income level).
+We make the following contributions in this paper: (1) We
+show how we can derive a general form for this measure
+from the lens of minimizing variance in a metric of interest,
+following which we derive instantiations of passenger- and
+driver-side fairness functions. (2) We theoretically demon-
+arXiv:2303.14332v1  [cs.AI]  25 Mar 2023
+
+
+strate that our approaches, under mild assumptions, provably
+improve the service rate of passengers from the most histor-
+ically disadvantaged region as well as improve the income
+of the driver with the least historical income. (3) We empiri-
+cally demonstrate the generality of SI by showing that it sig-
+niﬁcantly improves fairness for a variety of ridesharing algo-
+rithms with minimal compromises on service rate. Addition-
+ally, through extensive experiments, we show that the best SI
+variant achieves signiﬁcantly greater fairness than the state-
+of-the-art fair ridesharing approach, while at the same time
+yielding overall system efﬁciency (measured by the service
+rate) that is nearly inline with a state-of-the-art approach that
+maximizes efﬁciency and ignores fairness. (4) We show that
+our passenger- and driver-side approaches can be combined
+to improve two-sided fairness in such systems. (5) Finally,
+unlike the existing state of the art (Raman, Shah, and Dick-
+erson 2021), our approach is completely online, allowing
+ridesharing operators or policy makers to tune the tradeoff
+between fairness and efﬁciency in real time during execu-
+tion.
+Related Work
+Order dispatching in ridesharing: Rideshare-matching
+has been extensively studied, and researchers have intro-
+duced methods that improve the quality of the matches
+made in terms of increasing the number of requests
+matched (Lowalekar, Varakantham, and Jaillet 2021; Ma,
+Zheng, and Wolfson 2015), reducing the pickup and detour
+delays (Alonso-Mora et al. 2017; Huang et al. 2014), and in-
+creasing drivers’ earnings (Lesmana, Zhang, and Bei 2019).
+The complexity of ridesharing algorithms increases with the
+increase in vehicle capacity and ﬂeet size. As the runtime
+of real-time algorithms need to be relatively small, most ex-
+isting work has either considered assigning one request at
+a time (sequentially) to available drivers for high capaci-
+ties (Ma, Zheng, and Wolfson 2015; Tong et al. 2018) or
+assigning all active requests together in a batch for a small
+capacity (Yu and Shen 2019; Zheng, Chen, and Ye 2018).
+The sequential solution is faster to compute but the solution
+quality is typically poor (Uber 2018). Alonso-Mora et al.
+(2017) proposes ILP optimization approaches for assigning
+all active requests together for high-capacity ridesharing.
+Shah, Lowalekar, and Varakantham (2020) and Lowalekar,
+Varakantham, and Jaillet (2021) further improve these ap-
+proaches by including information about anticipated future
+requests while matching current batch of requests to avail-
+able drivers.
+Fairness in ridesharing: Researchers have evaluated
+ridesharing fairness from many viewpoints. For passen-
+gers, there has been work on addressing lack of trans-
+parency (Wolfson and Lin 2017), using game-theoretic ap-
+proaches to fairness (Foti, Lin, and Wolfson 2021), and ben-
+eﬁt sharing by ensuring non-increasing disutility (Gopalakr-
+ishnan, Mukherjee, and Tulabandhula 2016). Driver-side
+fairness has also been explored from the economic perspec-
+tive, by using a max-min approach to fairness to balance ef-
+ﬁciency and fairness (Lesmana, Zhang, and Bei 2019), and
+by looking at fairness over longer periods of time by equaliz-
+ing driver income proportional to the number of hours spent
+on the platform (S¨uhr et al. 2019). Fairness isn’t restricted
+to monetary beneﬁts, however. Motivated by demographic
+and geographic fairness concerns, recent work formulates
+a matching problem with parameters to trade proﬁt for fair-
+ness in terms of discriminatory cancellations, looking at fac-
+tors like start/end locations, race, gender, or age of passen-
+gers (Nanda et al. 2020) and drivers (Xu and Xu 2020).
+A work that is closest to ours is by Raman, Shah, and
+Dickerson (2021), which looks at disparate treatment of pas-
+sengers and income disparity amongst drivers. While they
+also look at geographic zones to quantify fairness for passen-
+gers, their approach requires the training of a neural network
+based value function to include the fairness term in the ob-
+jective, making it costly to change parameters for fairness.
+Our approach presents an online way to address this prob-
+lem, without retraining existing value functions. Further, our
+approach offers better tradeoffs between efﬁciency and fair-
+ness as compared to the existing approach, and we show this
+in our empirical evaluation.
+Dynamic Matching in Ridesharing Settings
+A matching algorithm for ridesharing receives as inputs a
+continuous stream of batches of requests from passengers R
+and the current state of all the taxis V operating in a street
+network G. The street network G = ⟨L, E, c(e)⟩is a graph
+containing locations L connected by roads E, with a cost
+function c : E →R+ that deﬁnes the cost c(e) of each edge
+e ∈E in the graph, which commonly corresponds to the
+time needed by a taxi to traverse e. A request is a tuple r =
+⟨q, d, t⟩that contains the pickup location q, dropoff location
+d, and the request arrival time t. The vehicle i is associated
+with a state vi = ⟨li, pi, ci, Ui⟩that includes its location li,
+current path pi, capacity ci, and the set of requests Ui it is
+currently serving.
+State-of-the-art approaches to this dynamic match-
+ing problem take a discrete-time multi-agent perspec-
+tive (Alonso-Mora et al. 2017; Shah, Lowalekar, and
+Varakantham 2020). In this framework, a decision-maker is
+faced in each time step with a set of outstanding requests,
+along with the state of vehicles at that point in time. The
+set of actions of this decision-maker is the set of all feasible
+matches of requests to vehicles. Since any matching impacts
+the distribution of future requests (unmatched requests can
+spill over into the next time step) and vehicle states, the as-
+sociated expected future value is captured by a value func-
+tion. This allows the decision-maker to make non-myopic
+decisions by considering expected rewards in addition to im-
+mediate rewards. To manage problem complexity, a value
+function is associated with individual vehicles and assumed
+to be identical for all vehicles, conditional on vehicle state;
+furthermore, it is approximated by a Value Function Approx-
+imator (VFA) – most recently, by a deep neural network in
+the NeurADP framework (Shah, Lowalekar, and Varakan-
+tham 2020).
+A key workhorse in such approaches is an integer linear
+program (ILP) for computing the optimal matching of re-
+quests to vehicles in a given time step, given a value func-
+tion. We now formalize the general form of this ILP, which
+
+
+:0.7,
+:0.8,
+:1.1
+:0.2,
+:1.8,
+:1.5,
+:2.8
+,
+,
+,
+,
+,
+incoming requests
+available vehicles
+generate feasible trips
+score trips for each vehicle
+!!
+,
+= $
+,
++ &(
+, )
++)*(
+, )
+(2.8)
+(0.7)
+solve ILP
+update paths
+Figure 1: The rideshare-matching pipeline. Every time step, based on incoming requests and available vehicles, feasible trips for each vehicle
+are generated. These are assigned values using a score function, and an ILP is solved to optimize for total score.
+is central to our proposed approach below. For each vehicle
+i ∈V, we deﬁne an action a ⊆R as a subset of requests that
+could be matched to it. Each action a of vehicle i is associ-
+ated with a (discounted) value V (i, a) obtained using VFA,
+and an immediate reward:
+R(i, a) =
+X
+r∈a
+R(i, r)
+(1)
+where R(i, r) is an immediate reward to vehicle i for servic-
+ing request r. Let Ai be the set of feasible actions of vehicle
+i (i.e., all feasible subsets of requests that can be matched
+to i). Then, for any feasible action a ∈Ai of vehicle i, we
+deﬁne the score of vehicle i associated with action a as:
+s(i, a) = V (i, a) + R(i, a).
+(2)
+Let A = {ai}i∈V, ai ∩aj = ∅for all i̸ = j be a matching
+of requests to vehicles. We say that this matching is optimal
+if it maximizes the total score P
+i s(i, ai). We can compute
+such an optimal matching by solving the following ILP:
+max
+xi(a)∈{0,1}
+X
+i∈V
+X
+a∈Ai
+xi(a)s(i, a)
+s.t.
+(3)
+X
+a∈Ai
+xi(a) = 1
+∀i ∈V
+(4)
+X
+i∈V
+X
+a∈Ai|r∈a
+xi(a) ≤1
+∀r ∈R
+(5)
+where xi(a) is an indicator variable associated with vehicle
+i and its action a ∈Ai. The constraints ensure that each ve-
+hicle is assigned exactly one action (Eq. 4) and no request
+is assigned to more than one vehicle (Eq. 5). In each vehi-
+cle’s set of available actions, there is always the null action
+(i.e., accepting no new requests), so that there is always a
+solution. The ﬁnal assignment A is a concatenation of all ve-
+hicle assignments. In existing approaches (Shah, Lowalekar,
+and Varakantham 2020), this ILP serves to maximize the to-
+tal expected number of requests served (i.e., the service rate
+when normalized by the total number of requests), and it
+can be readily generalized to maximize total expected proﬁt.
+Figure 1 shows an illustration of the ILP matching process.
+SI: A General Fairness Framework
+By focusing on maximizing measures of efﬁciency such as
+service rate, traditional matching algorithms for rideshar-
+ing fail to account for the emergence of fairness issues for
+both the passengers and drivers. Additionally, since match-
+ing algorithms in ridesharing are often trained on real-world
+data, they can further exacerbate historical inequalities. For
+example, from a passenger’s perspective, it is conceivable
+that while maximizing efﬁciency, matching algorithms focus
+resources towards high-trafﬁc areas (e.g., downtown loca-
+tions) while reducing service in low-trafﬁc areas (e.g., sub-
+urbs). If such algorithms are deployed in practice, it may
+also lead to a feedback loop that continually reduces service
+to regions with low demand, which causes fewer passen-
+gers to make requests from such regions and so on. From a
+driver’s perspective, the matching algorithms may prioritize
+drivers in high-trafﬁc areas to continually service requests
+from those areas over drivers in low-trafﬁc areas, leading to
+disparity in driver income. In this work, our goal is to tackle
+this kind of unfairness with minimal impact to the efﬁciency
+vis-a-vis the service rate.
+We consider statistical parity (Feldman et al. 2015; Agar-
+wal, Dud´ık, and Wu 2019) as the notion of fairness in this
+work, which deﬁnes that the expected value of a given met-
+ric z over a group g is the same as ¯z = Eg′∈G [z(g′)] the
+expected value of that same metric over all groups g′ ∈G:
+z(g) = ¯z
+(6)
+More generally, we can write it as:
+|¯z −z(g)| ≤ϵ
+∀g ∈G
+(7)
+where ϵ is a slack parameter.
+As an example, let’s say that we want parity in service
+rates for passenger groups deﬁned by their origin-destination
+pairs and in normalized income for drivers. If a matching
+algorithm achieves statistical parity for both passengers and
+drivers, then the probability of a passenger receiving a ride is
+the same regardless of their origin and destination locations
+and the income of drivers are the same for all drivers.
+
+
+While the goal of achieving parity is noble, achieving it
+through the matching of a single time step is rarely possi-
+ble, especially when there is a large disparity. Instead, it is
+often better to look at amortized parity over a longer period
+of time (S¨uhr et al. 2019). To do this, we aim for a matching
+that “moves closer” towards parity with the goal of achiev-
+ing parity in the near future. Towards that end, our frame-
+work uses variance var(Z), where Z = {z(g), ∀g ∈G} is
+the set of metric values for all groups, as a proxy measure
+for fairness and, at each time step, it takes a gradient step in
+the solution space, moving in the direction that minimizes
+variance.
+If we assume that the average of the metric over all groups
+is stable (i.e.,
+∂
+∂A ¯z ≃0, a reasonable assumption if a long
+enough history is included), then we can ﬁnd an assignment
+for a modiﬁed score function that accounts for the gradient
+of the variance with respect to the assignment A:
+s′(i, a) = s(i, a) −λ ∂
+∂Avar(Z)
+(8)
+= s(i, a) −1
+|Z|λ ∂
+∂A
+X
+zj∈Z
+(zj −¯z)2
+(9)
+= s(i, a) + 2
+|Z|λ
+X
+zj∈Z
+(¯z −zj)∂zj
+∂A
+(10)
+where λ is a hyperparameter. The general form above for
+the second term is our incentive score: A constant (weight)
+multiplied by the disparity of group j, scaled by a deriva-
+tive term. We show later that the sum can usually be simpli-
+ﬁed within the context of a given action a and the derivative
+can be approximated for speciﬁc metrics, including our two
+passenger- and driver-side fairness metrics of interest.
+The “Simple Incentives” idea is that, for each group in-
+volved in an action, provide them with an incentive (or
+penalty) proportional to how disadvantaged (or advantaged)
+their group has been historically. Given the recent abundance
+of black-box algorithms, we ﬁnd this simplicity helpful from
+a transparency perspective, making it easy to explain to any
+stakeholder how this score is calculated.
+SI(+): While there is generally a consensus for applying in-
+centives to help disadvantaged groups, it may be controver-
+sial to impose penalties for advantaged groups in some ap-
+plications. With this in mind, we also present a modiﬁcation
+to SI, where we clip the incentive term to be larger than 0,
+resulting in the SI(+) variant, where the “+” indicates that
+we include only positive incentives.
+In the following sections, we discuss how we specify the
+incentive score (see Eq. 10) for two use cases, one for pas-
+sengers and one for drivers.
+SI for Passengers (SIP): Geographic Fairness
+Our notion of passenger-side fairness is deﬁned by the idea
+that the probability of receiving a ride should not depend
+on your origin or destination. To do this, we divide the ge-
+ographical area served by the ﬂeet into a collection of areas
+C. Recall that each request r contains both the origin o and
+destination d. Thus, we can map each passenger to one of
+C × C groups, uniquely identiﬁed by the origin-destination
+area pair based on (o, d). Computing the service rate for each
+of these groups gives us the passenger-side metric set Zp,
+where zi ∈Zp denotes the historical service rate for pas-
+senger group i. For a given request r, let g(r) denote the
+group to which r belongs, and let z(r) = zg(r) (i.e., the
+historical service rate of the group g(r) ∈C × C). These
+historical service rates are updated every time step after an
+assignment is made. The goal is thus to achieve parity in the
+service rates for all geographic groups.
+We now derive the fairness incentive for this metric, based
+on Eq. 10:
+s′(i, a) = s(i, a) +
+2
+|Zp|λ
+X
+zj∈Zp
+(¯z −zj)∂zj
+∂A
+(11)
+≃s(i, a) +
+2
+|Zp|λ
+X
+zj∈Zp
+(¯z −zj)∂zj
+∂a
+(12)
+= s(i, a) +
+2
+|Zp|λ
+X
+r∈a
+(¯z −z(r))∂z(r)
+∂a
+(13)
+≃s(i, a) +
+2
+|Zp|λ
+X
+r∈a
+(¯z −z(r)) λ′
+(14)
+= s(i, a) + β
+X
+r∈a
+(¯z −z(r))
+(15)
+Notice that computing ∂zj
+∂A is difﬁcult due to circular de-
+pendencies: The matching A depends on the score function,
+which depends on the service rates, which in turn depend on
+the matching. As such, computing it precisely will require
+a global optimization procedure. Therefore, we approximate
+it with ∂zj
+∂a (from Eqs. 11 to 12) based on the assumption
+that the change in the service rate of zone zj that is based on
+action a is independent of the actions of other vehicles. Ad-
+ditionally, as serving a single request r can only make small
+changes to the service rate z(r) because service rates are ag-
+gregated over a reasonably long time period, we assume that
+the change is a (positive) constant λ′ for all requests (from
+Eqs. 13 to 14). We also introduce a fairness incentive term
+Fp(i, a) to represent the summation in the second term of
+Eq. 15 and use it in the new approximated score function sβ:
+Fp(i, a) =
+X
+r∈a
+(¯z −z(r))
+(16)
+sβ(i, a) = s(i, a) + β Fp(i, a)
+(17)
+Here, β is a hyperparameter that controls the relative im-
+portance of geographic fairness for passengers. In summary,
+for our SIP score function sβ, we include a fairness incen-
+tive term Fp(i, a) that increases (or decreases) the score of
+actions proportional to how disadvantaged (or advantaged)
+their respective passenger groups have been according to our
+geographic fairness metric.
+As described earlier, we also have the corresponding SI(+)
+version of this passenger-side incentive, which takes into ac-
+count only requests from groups with below-average service
+rates:
+Fp(i, a) =
+X
+r∈a
+max{¯z −z(r), 0}
+(18)
+We call this variant of the framework SIP(+).
+
+
+SI for Drivers (SID): Income Fairness
+Our notion of driver-side fairness is deﬁned by the idea
+that all drivers should earn similar incomes. This makes our
+driver-side fairness metric Zd the set of all zi, where zi now
+denotes historical driver incomes for each driver i. We scale
+the driver incomes by the largest driver income to restrict
+it to within [0, 1] and avoid scaling issues. The goal here is
+thus to achieve parity in the scaled income for all drivers.
+We now derive the fairness incentive for this metric, based
+on Eq. 10, where we model the income of a driver to be
+proportional to the value of the request they serve R(i, r):
+s′(i, a) = s(i, a) +
+2
+|Zd|λ
+X
+zj∈Zd
+(¯z −zj)∂zj
+∂A
+(19)
+= s(i, a) +
+2
+|Zd|λ
+X
+zj∈Zd
+(¯z −zj)∂zj
+∂a
+(20)
+= s(i, a) +
+2
+|Zd|λ (¯z −zi)∂zi
+∂a
+(21)
+= s(i, a) + δ (¯z −zi) R(i, a)
+(22)
+Eqs. 19 and 20 are equivalent because, unlike the case in
+passenger-side fairness, computing ∂zj
+∂A when the metric is
+driver income is straightforward as the income of a driver de-
+pends solely on their actions. Next, Eqs. 20 to 22 are equiv-
+alent because ∂zj
+∂a = R(i, a) when j = i and is 0 otherwise.
+Analogous to the case for passenger-side fairness, we also
+introduce a similar fairness incentive term Fd(i, a) and use
+it in the new score function sδ:
+Fd(i, a) = (¯z −zi) R(i, a)
+(23)
+sδ(i, a) = s(i, a) + δ Fd(i, a)
+(24)
+Here, δ is a hyperparameter that controls the relative impor-
+tance of income fairness for drivers.
+We also have the variant that we call SID(+), where the
+fairness incentive is applied only to drivers with below-
+average income:
+Fd(i, a) =
+X
+r∈a
+max{¯z −zi, 0} R(i, r)
+(25)
+Theoretical Properties
+While our approach directly works to minimize variance in
+the selected metric across groups, max-min fairness is an-
+other popular notion of fairness, where we want to maxi-
+mize the worst-off group. Towards that end, given a sufﬁ-
+cient large weight (β for passenger-side fairness and δ for
+driver-side fairness), our approaches provide guarantees for
+improving worse-off groups. We provide proof sketches here
+for the two metrics discussed in the previous section, with
+complete proofs our supplemental document.1 Both proofs
+assume that vehicles can only accept a single request at any
+time step (including the null action). With this assumption,
+each action a contains only one request r, allowing us to use
+them interchangeably.
+1The code and supplementary material can be found at: https:
+//github.com/YODA-Lab/Simple-Incentives-For-Ridesharing
+Let A(w) be the matching solution produced by the ILP
+with fairness weight w ∈{β, δ}. Further, let z′
+j(w) denote
+the updated metric value of group j after an assignment
+A(w); and gmin = argminj zj denote the group with the
+smallest metric value. We now describe the theoretical prop-
+erties for each of our two fairness metrics below.
+Passenger-side Fairness Properties
+Let Rf = {r}g(r)=gmin denote the set of current requests
+corresponding to group gmin. Any request r ∈Rf would
+have the largest fairness incentive by deﬁnition (Eq. 16).
+In what follows, we state the theorem, claiming that as
+long as it is possible to improve the service rate of zgmin rel-
+ative to A(0) – a condition that we formalize as passenger-
+min-unfairness in the following deﬁnition – we can do so for
+a sufﬁciently high β.
+Deﬁnition 1. A matching A is passenger-min-unfair if there
+exists a request rf ∈Rf not served in A, there is a vehicle
+i ∈V such that rf ∈Ai, but the request assigned to i is
+ri /∈Rf.
+Theorem 1. If A(0) is passenger-min-unfair, then there ex-
+ists β > 0 such that z′
+gmin(β) > z′
+gmin(0).
+Proof Sketch: It can be shown that:
+1. The highest-preferred request of vehicle i, r∗
+i
+=
+argmaxr∈Ai sβ(i, r) will always be assigned to some ve-
+hicle in the optimal assignment. This follows from the
+nature of the ILP, which maximizes the total score.
+2. Any vehicle that prefers (see (1)) rf ∈Rf also prefers
+it for higher β values. This can be proven using the fact
+that rf has the largest fairness incentive, and increasing
+β only increases the contribution of the fairness incentive
+towards sβ(i, a).
+3. There is a threshold ¯β value such that for higher β values,
+the βFp(·) term in sβ(i, a) dominates the other factors
+(i.e., any action a1 with Fp(i, a1) > Fp(i, a2) will be
+preferred by vehicle i over action a2). This can be shown
+if we assume some bounds on R(·) and V (·).
+4. Any request rf that was assigned in A(0) will also be
+assigned in A(β), where β > ¯β ≥0. This follows from
+a combination of the previous points.
+If A(0) is passenger-min-unfair, then we can conclude that
+there is some request r ∈Rf that was not preferred in A(0)
+but will now be preferred (3) and assigned to some vehi-
+cle (1). Thus, A(β) assigns all requests in Rf that were as-
+signed in A(0) and at least one more, thus increasing the
+service rate for gmin as compared to A(0).
+2
+Driver-side Fairness Properties
+For drivers, note that they would see a highest improvement
+in income after receiving an action with the highest immedi-
+ate reward. In what follows, we state the theorem, claiming
+that, for SID(+) with high enough δ, any worse-off driver j
+(zj < ¯z) is guaranteed to get their highest preferred request
+r∗
+j as long as no other worse-off driver can serve it.
+Deﬁnition 2 (driver-min-unfair). A matching A is driver-
+min-unfair if any worse-off driver j is assigned a request
+
+
+r̸ = r∗
+j in A and there exists no other worse-off driver k that
+can serve r∗
+j .
+Theorem 2. If A(0) is driver-min-unfair for any driver j,
+then there exists δ > 0 such that z′
+j(δ) > z′
+j(0), when using
+SID(+).
+Proof Sketch: It can be shown that:
+1. For a worse-off driver j, their highest-preferred request
+r∗
+j will have the highest score for some value of δ, and
+will be assigned in A(δ) to some driver.
+2. Any better-off driver that can serve r∗
+j will not serve it
+for some large value of δ.
+If A(0) is driver-min-unfair, then we can conclude that r∗
+j
+will be assigned to j for some large value of δ because no
+other worse-off driver can serve it; no better-off driver can
+serve it (2); and it must be served by some driver (1). Thus,
+z′
+j(δ) > z′
+j(0) because j is getting their highest-preferred
+request r∗
+j for some large δ > 0, but not when δ = 0.
+2
+Experimental Evaluations
+To comprehensively evaluate our SI framework, we ran three
+sets of experiments. First, to demonstrate the generality of
+the framework, we evaluated it in combination with vari-
+ous ridesharing algorithms, which use different value func-
+tion approximations, from the literature. Second, to demon-
+strate the competitiveness of the framework, we evaluated
+it against a state-of-the-art ridesharing fairness approach.
+Finally, to demonstrate the ﬂexibility of the framework,
+we evaluated it on two-sided fairness with both of our
+passenger- and driver-side fairness approaches combined.
+We evaluate the performance and fairness metrics after
+running the matching algorithms over a 24-hour period on
+the island of Manhattan using demand data from the NY
+Yellow Taxi dataset (NYC Taxi & Limousine Commission
+2020). The locations in the road network correspond to street
+intersections, with edges as roads connecting them. We de-
+ﬁne areas with respect to a standard partition of Manhat-
+tan into neighborhoods, where passenger groups correspond
+to pairs of areas in which passengers are to be picked up
+and dropped off. Our efﬁciency objective is to maximize
+service rate, and thus, correspondingly, we set the value
+of each request to 1. For each hyperparameter β and δ,
+we performed a logarithmic search in the [0.5, 20] range to
+capture a wide range of behaviors. Consistent with litera-
+ture (Shah, Lowalekar, and Varakantham 2020; Lowalekar,
+Varakantham, and Jaillet 2021; Raman, Shah, and Dickerson
+2021), we use a ﬂeet size of 1000 vehicles, with a maximum
+request waiting time of 300 seconds. In all approaches, any
+request not assigned in the current assignment (one minute
+window) is dropped. All experiments were run on a Ryzen
+3700x CPU, RTX2080 Super GPU, and 32GB RAM.1
+We consider two standard measures of equity: The Gini
+coefﬁcient Gini(Z) and the minimum metric value min(Z)2
+for a set Z of service rates for passenger-side fairness or in-
+come for driver-side fairness. For ease of comprehension, we
+2For drivers, we plot the minimum income (unscaled), to pre-
+vent bias because of scaling by the max.
+plot FGini(Z) = 1−Gini(Z) so that our goal is to maximize
+each of these metrics. Our efﬁciency measure is the overall
+service rate, deﬁned as the fraction of all passenger requests
+served.
+Generality: Evaluation on Benchmark Algorithms
+We tested the efﬁcacy of our framework on a variety of nat-
+ural and state-of-the-art ridesharing algorithms:
+• Greedy: A baseline algorithm that considers only current
+rewards R(i, a) as the score in the ILP optimization.
+• R+D: A pioneering approach proposed by Alonso-Mora
+et al. (2017) that estimates future values by using delays
+for passengers, as part of the score function in the ILP
+optimization.
+• NeurADP:
+A
+state-of-the-art
+approach
+by
+Shah,
+Lowalekar, and Varakantham (2020) that uses deep re-
+inforcement learning to approximate the value function,
+as part of the score function in the ILP optimization. We
+use a pre-trained model trained with 1000 vehicles.
+• AsyncNeural: An asynchronous and distributed baseline
+algorithm that uses the approximated value function from
+NeurADP, but each vehicle greedily chooses its action
+and ties in vehicle order are broken randomly. (No ILP.)
+Figure 2 show the impact of SI on our four ridesharing
+algorithms. The origin of each arrow corresponds to the per-
+formance of an algorithm without SI and the arrowhead cor-
+responds to the best performance with SI while restricting
+the service rate to be above 95% of the service rate without
+SI. Figures 2(a) and 2(b) show the results for passenger-side
+fairness for the FGini and min metrics, respectively; while
+Figures 2(c) and 2(d) show the results for driver-side fair-
+ness for those two metrics as well.
+We observed that our methods can provide signiﬁcant im-
+provement in fairness at a marginal impact to service rates.
+Even with varying degrees of initial fairness, consistent im-
+provement for both passengers and drivers can be seen. The
+one outlier is that SI failed to improve driver fairness for
+AsyncNeural. The reason is that, for each driver, their fair-
+ness incentive scaling term in Fd(·) for all actions are identi-
+cal. Therefore, the incentive does not affect their preference
+ordering of requests to serve, and the outcome of the algo-
+rithm remains unchanged with and without the fairness in-
+centive term. On the other hand, with the other centralized
+approaches, the ILP is able to arbitrate between different ve-
+hicles and prioritize low-income drivers.
+Competitiveness: Comparisons with FairNN
+As our fairness baseline, we use FairNN, a recent fairness
+extension of NeurADP (Raman, Shah, and Dickerson 2021).
+Like our SI framework, FairNN also considers geographic
+fairness for passengers or income fairness for drivers, but
+unlike SI, it cannot consider both together. It does this by
+minimizing the variance in service rates or incomes, learning
+a neural network-based VFA to do so. As it follows a similar
+ILP formulation to solve the optimization problem, it is well
+suited for comparison with SI. It also has a hyperparameter
+λ that controls the scale of the variance term in the objective,
+similar to β or δ in our formulation.
+
+
+0.65
+0.7
+0.75
+0.8
+0.65
+0.7
+0.75
+0.8
+0.85
+0.9
+0.95
+0.65
+0.7
+0.75
+0.8
+0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.75
+0.8
+0.96
+0.965
+0.97
+0.975
+0.98
+0.985
+0.99
+0.7
+0.75
+0.8
+160
+170
+180
+190
+200
+210
+220
+Greedy
+R+D
+NeurADP
+AsyncNeural
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+(a)
+(b)
+(c)
+(d)
+Figure 2: Change in efﬁciency and passenger-side fairness (with (a) FGini and (b) min) as well as driver-side fairness (with (c) FGini and
+(d) min) when Simple Incentives are used. The arrows show the best improvement for each algorithm metric while limiting SR to remain
+above 95% of the initial value. The optimal point is to the top-right (high fairness and high service rate).
+0.2
+0.4
+0.6
+0.8
+0.65
+0.7
+0.75
+0.8
+0.85
+0.9
+0.95
+0.2
+0.4
+0.6
+0.8
+0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+FairNN Rider
+NeurADP
+NeurADP SIP(+)
+NeurADP SIP
+(a)
+(b)
+Figure 3: Comparison of SIP and SIP(+) against NeurADP and
+FairNN (line plotted in the order of hyperparameter values) for
+passenger-side fairness with (a) FGini and (b) min. The optimal
+point is to the top-right (high fairness and service rate).
+We note below some key differences between our ap-
+proach and FairNN: (1) FairNN directly includes variance
+in the optimization, but as history size increases, the change
+in variance per action diminishes, reducing the impact of
+the fairness term if a constant weight is used. SI com-
+putes the scores based on historical inequalities rather than
+marginal contribution, which, combined with metric scaling,
+allows our approach to work well even with large histories.
+(2) FairNN applies the fairness uniformly across all actions,
+and we can improve both overall efﬁciency and fairness by
+adding further ﬂexibility to the objective (as shown below
+with SI(+)). (3) Possibly most important of all, this approach
+requires full retraining of VFA for even a small change in the
+tradeoff weight, or a change in any other problem parameters
+(such as the particular measure of fairness used), making it
+difﬁcult to scale in practice. Our approach is completely on-
+line, and can be used with any pre-existing value function,
+and with any hyperparameter value.
+We trained FairNN using their provided code, suggested
+parameter values, and suggested hyperparameter values λ
+from 107 −1010 for passengers and 1
+6 −6
+6 for drivers, each
+of which requires costly retraining. For SI, we use the pre-
+trained NeurADP value function described in the previous
+section. NeurADP (without fairness) also acts as our efﬁ-
+0.78
+0.8
+0.82
+0.955
+0.96
+0.965
+0.97
+0.975
+0.98
+0.985
+0.99
+0.78
+0.8
+0.82
+150
+160
+170
+180
+190
+200
+210
+220
+230
+FairNN Driver
+NeurADP
+NeurADP SID(+)
+NeurADP SID
+(a)
+(b)
+Figure 4: Comparison of SID and SID(+) against NeurADP and
+FairNN (line plotted in the order of hyperparameter values) for
+driver-side fairness with (a) FGini and (b) min. The optimal point
+is to the top-right (high fairness and service rate).
+ciency baseline.
+Baseline Comparisons for Passenger-side Fairness: Fig-
+ures 3(a) and 3(b) compare SIP and SIP(+), with different
+β values, against both baselines. FairNN outperforms SIP
+when the service rate is small (∼0.65), but SIP(+) signif-
+icantly outperforms FairNN by achieving similar fairness
+with much higher service rates. Consistent with results in
+Figure 2, SIP and SIP(+) improves the fairness of NeurADP
+as β increases.
+Baseline Comparisons for Driver-side Fairness: Fig-
+ures 4(a) and 4(b) compare SID and SID(+), with differ-
+ent δ values, against NeurADP. FairNN for drivers had poor
+efﬁciency compared to NeurADP, which is consistent with
+observations by the authors (Raman, Shah, and Dickerson
+2021). Performing better than FairNN, SID and SID(+) im-
+prove the fairness of NeurADP as δ increases. Analogous to
+the passenger-side variants, SID(+) outperforms SID.
+Relative Performance of our Variants: For both drivers
+and passengers, we observed the SI(+) variants provided
+better tradeoffs between fairness and efﬁciency. The rea-
+son is that these variants improve fairness without signiﬁ-
+cantly sacriﬁcing efﬁciency since high-efﬁciency groups are
+not penalized. The base variants achieved much better fair-
+
+
+0.6
+0.65
+0.7
+0.75
+0.8
+0.65
+0.7
+0.75
+0.8
+0.85
+0.9
+0.95
+1
+0.6
+0.65
+0.7
+0.75
+0.8
+0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.75
+0.8
+0.98
+0.982
+0.984
+0.986
+0.988
+0.99
+0.992
+0.994
+0.78
+0.79
+0.8
+0.81
+214
+216
+218
+220
+222
+224
+226
+NeurADP
+SID(+)&SIP(+)
+SID(+)&SIP
+SID&SIP(+)
+SID&SIP
+(a)
+(b)
+(c)
+(d)
+Figure 5: Comparison of Pareto frontiers of our combined variants on efﬁciency vs passenger-side fairness (with (a) FGini and (b) min) and
+driver-side fairness (with (c) FGini and (d) min). The optimal point is to the top-right (high fairness and service rate)
+ness in the extreme, albeit at a higher cost to service rate.
+The reason is that if extreme fairness is required, then there
+may be no choice but to penalize high-efﬁciency groups.
+Ablation Experiments: Two-Sided Fairness
+Finally, we evaluate SI with NeurADP’s value function on
+two-sided fairness with both passenger- and driver-side fair-
+ness approaches combined. Speciﬁcally, we ran ablation ex-
+periments, running all combinations of β and δ values in a
+logarithmic grid search for the score function:
+sβ,δ(i, a) = s(i, a) + βFp(i, a) + δFd(i, a)
+(26)
+Figure 5 shows the Pareto frontier for each passenger- and
+driver-side fairness combination. In general, we observe the
+trend that using SIP leads to much lower service rates as
+compared to SIP(+). SID and SID(+) with SIP(+) are almost
+equivalent, Pareto dominating the other approaches, with the
+exception of extremely high fairness regions. SIP and SID
+combined resulted in the fairest algorithm, albeit at a high
+cost to service rate.
+Typically, one would expect a tradeoff between fairness
+and service rate. However, out of 175 combinations of β
+and δ hyperparameter values as well as SIP/SIP(+) and
+SID/SID(+) pairs, 15 combinations (∼8.5%) outperformed
+NeurADP on all ﬁve metrics (four fairness metrics and ser-
+vice rate). A commonality across all 15 combinations is that
+they all have small hyperparameter values with β ≤2 and
+δ ≤2. Further, 41 out of 175 combinations (∼23.5%) out-
+performed NeurADP on four out of ﬁve metrics, with β ≤2
+and δ ≤10. This observation reinforces the idea that fair-
+ness does not have to be a trade off and, in many cases,
+improving fairness and efﬁciency can go hand-in-hand.
+Discussion and Conclusions
+As the demand for cutting-edge algorithms for urban mo-
+bility increases, their effects on the underlying fairness of
+these systems need to be studied, and measures taken to en-
+sure that the algorithms do not inherit implicit biases that
+result from pure optimization. In this work, we focused on
+the issue of fairness in ridesharing systems, speciﬁcally ge-
+ographic fairness for passengers and income fairness for
+drivers. We proposed Simple Incentives (SI), a general fair-
+ness framework that can be adapted to a class of existing
+ridesharing algorithms that use an integer linear program to
+ﬁnd matches. At a high level, SI applies fairness incentives
+to groups of passenger requests and drivers based on their
+service rate and income disparity. Under mild assumptions,
+SI provably improves the service rate of passengers from
+the group with the worst service rate as well as the income
+of driver with the lowest income. Our experimental results
+demonstrated its generality by showing that it improves the
+fairness for several ridesharing benchmarks and its compet-
+itiveness by outperforming existing state of the art in terms
+of both efﬁciency (measured through overall service rates)
+and fairness (measured through the Gini coefﬁcient and the
+minimum service rates and driver income) despite requir-
+ing no retraining. Our experiments showed that it is better
+to apply fairness incentives only to requests from passen-
+ger groups with below-average service rates and to drivers
+with below-average income, as opposed to a blanket ap-
+proach that applies fairness incentives to all passenger re-
+quests and drivers. Finally, interestingly, our results showed
+that it is possible to improve both efﬁciency and fairness in
+some cases.
+Limitations: We do not prescribe “best” hyperparameters as
+that decision is subjective and will depend on the use-case.
+Instead, we provide an easy way to tune the importance of
+fairness using the hyperparameters. We selected geographic
+fairness because of the lack of other protected demographic
+information of passengers in public datasets. However, our
+formulation is general enough to allow any group-based di-
+vision of passengers (e.g., by race and/or gender). Our in-
+come fairness does not take into account the number of hours
+worked by drivers as we assume that all drivers work all 24
+hours, consistent with the literature. Finally, SI is a myopic
+approach to fairness. We may expect to see a non-myopic
+approach perform better when system dynamics allow for
+making suboptimal actions in the present that could lead
+to better fairness returns in the future. However, we expect
+these situations to be infrequent in practice.
+
+
+Ethics Statement
+This work has the potential to affect livelihoods of taxi
+drivers in real ridesharing systems. We do not intend this
+work to be directly translated to application without sufﬁ-
+cient testing to ensure that the effects on drivers’ and other
+stakeholders’ livelihood are not adverse.
+Acknowledgements
+This research is partially supported by the National
+Science Foundation under awards 1812619, 1905558,
+1939677, 2020289, 2118201, and 2214141; by ARO grant
+W911NF1810208; and by Amazon. The views and conclu-
+sions contained in this document are those of the authors and
+should not be interpreted as representing the ofﬁcial policies,
+either expressed or implied, of the sponsoring organizations,
+agencies, or the United States government.
+References
+Agarwal, A.; Dud´ık, M.; and Wu, Z. S. 2019. Fair Regres-
+sion: Quantitative Deﬁnitions and Reduction-based Algo-
+rithms. In International Conference on Machine Learning,
+120–129.
+Alonso-Mora, J.; Samaranayake, S.; Wallar, A.; Frazzoli, E.;
+and Rus, D. 2017. On-demand High-capacity Ride-sharing
+via Dynamic Trip-vehicle Assignment. Proceedings of the
+National Academy of Sciences, 114: 462–467.
+Feldman, M.; Friedler, S. A.; Moeller, J.; Scheidegger, C.;
+and Venkatasubramanian, S. 2015. Certifying and Remov-
+ing Disparate Impact. In ACM International Conference on
+Knowledge Discovery & Data Mining, 259–268.
+Foti, L.; Lin, J.; and Wolfson, O. 2021. Optimum versus
+Nash-equilibrium in Taxi Ridesharing. GeoInformatica, 25:
+423–451.
+Gopalakrishnan, R.; Mukherjee, K.; and Tulabandhula,
+T. 2016.
+The Costs and Beneﬁts of Ridesharing: Se-
+quential Individual Rationality and Sequential Fairness.
+arXiv:1607.07306.
+Huang, Y.; Bastani, F.; Jin, R.; and Wang, X. S. 2014.
+Large Scale Real-time Ridesharing with Service Guarantee
+on Road Networks. Proceedings of the VLDB Endowment,
+7: 2017–2028.
+Lesmana, N. S.; Zhang, X.; and Bei, X. 2019. Balancing
+Efﬁciency and Fairness in On-Demand Ridesourcing.
+In
+Advances in Neural Information Processing Systems, 5309–
+5319.
+Li, M.; Qin, Z.; Jiao, Y.; Yang, Y.; Wang, J.; Wang, C.; Wu,
+G.; and Ye, J. 2019. Efﬁcient Ridesharing Order Dispatching
+with Mean Field Multi-Agent Reinforcement Learning. In
+The World Wide Web Conference, 983–994.
+Lowalekar, M.; Varakantham, P.; and Jaillet, P. 2019. ZAC:
+A Zone Path Construction Approach for Effective Real-time
+Ridesharing.
+In International Conference on Automated
+Planning and Scheduling, 528–538.
+Lowalekar, M.; Varakantham, P.; and Jaillet, P. 2021. Zone
+pAth Construction (ZAC) Based Approaches for Effective
+Real-Time Ridesharing.
+Journal of Artiﬁcial Intelligence
+Research, 70: 119–167.
+Ma, S.; Zheng, Y.; and Wolfson, O. 2015. Real-Time City-
+Scale Taxi Ridesharing. In IEEE Transactions on Knowl-
+edge and Data Engineering, 1782–1795.
+Nanda, V.; Xu, P.; Sankararaman, K. A.; Dickerson, J.; and
+Srinivasan, A. 2020. Balancing the Tradeoff between Proﬁt
+and Fairness in Rideshare Platforms during High-Demand
+Hours. In AAAI Conference on Artiﬁcial Intelligence, 2210–
+2217.
+NYC Taxi & Limousine Commission. 2020. TLC TripRe-
+cord Data - TLC. https://www1.nyc.gov/site/tlc/about/tlc-
+trip-record-data.page. Accessed: 2022-03-15.
+Raman, N.; Shah, S.; and Dickerson, J. 2021. Data-Driven
+Methods for Balancing Fairness and Efﬁciency in Ride-
+Pooling. In International Joint Conference on Artiﬁcial In-
+telligence, 363–369.
+Shah, S.; Lowalekar, M.; and Varakantham, P. 2020. Neu-
+ral Approximate Dynamic Programming for On-Demand
+Ride-Pooling. In AAAI Conference on Artiﬁcial Intelligence,
+507–515.
+S¨uhr, T.; Biega, A. J.; Zehlike, M.; Gummadi, K. P.; and
+Chakraborty, A. 2019.
+Two-Sided Fairness for Repeated
+Matchings in Two-Sided Markets.
+In ACM International
+Conference on Knowledge Discovery & Data Mining, 3082–
+3092.
+Tong, Y.; Zeng, Y.; Zhou, Z.; Chen, L.; Ye, J.; and Xu, K.
+2018. A Uniﬁed Approach to Route Planning for Shared
+Mobility. Proceedings of the VLDB Endowment, 11: 1633–
+1646.
+Uber. 2018. Uber Matching Solution. https://marketplace.
+uber.com/matching. Accessed: 2022-03-20.
+Wolfson, O.; and Lin, J. 2017. Fairness versus Optimality in
+Ridesharing. In IEEE International Conference on Mobile
+Data Management, 363–369.
+Xu, Y.; and Xu, P. 2020. Trade the System Efﬁciency for the
+Income Equality of Drivers in Rideshare. In International
+Joint Conference on Artiﬁcial Intelligence, 4199–4205.
+Yu, X.; and Shen, S. 2019. An Integrated Decomposition
+and Approximate Dynamic Programming Approach for On-
+Demand Ride Pooling. In IEEE Transactions on Intelligent
+Transportation Systems, 3811–3820.
+Zheng, L.; Chen, L.; and Ye, J. 2018. Order Dispatch in
+Price-aware Ridesharing. Proceedings of the VLDB Endow-
+ment, 11: 853–865.

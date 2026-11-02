@@ -1,0 +1,646 @@
+KGNN: Distributed Framework for Graph Neural Knowledge Representation
+Binbin Hu 1 Zhiyang Hu 1 Zhiqiang Zhang 1 Jun Zhou 1 Chuan Shi 2
+Abstract
+Knowledge representation learning has been com-
+monly adopted to incorporate knowledge graph
+(KG) into various online services. Although ex-
+isting knowledge representation learning methods
+have achieved considerable performance improve-
+ment, they ignore high-order structure and abun-
+dant attribute information, resulting unsatisfac-
+tory performance on semantics-rich KGs. More-
+over, they fail to make prediction in an induc-
+tive manner and cannot scale to large industrial
+graphs. To address these issues, we develop a
+novel framework called KGNN to take full advan-
+tage of knowledge data for representation learn-
+ing in the distributed learning system. KGNN is
+equipped with GNN based encoder and knowl-
+edge aware decoder, which aim to jointly explore
+high-order structure and attribute information to-
+gether in a ﬁne-grained fashion and preserve the
+relation patterns in KGs, respectively. Extensive
+experiments on three datasets for link prediction
+and triplet classiﬁcation task demonstrate the ef-
+fectiveness and scalability of KGNN framework.
+1. Introduction
+Knowledge graph (KG) represents the heterogeneous struc-
+ture of entities and their rich relations in triplets of the
+form ⟨head entity, relation, tail entity⟩. For example in
+Fig. 1, a triplet ⟨Bob, work in, Apple⟩is denoted as a rela-
+tion work in connecting two entities: Bob and Apple. Due
+to abundant structured information, KG has attracted much
+attention in many research areas, ranging from information
+retrieval (Dietz et al., 2018), question answering (Huang
+et al., 2019) to recommender system (Cao et al., 2019).
+To ﬂexibly incorporate such knowledge, knowledge rep-
+resentation learning (Wang et al., 2017) has emerged as
+1Ant Financial Services Group, Hangzhou, China 2Beijing
+University of Posts and Telecommunications, Beijing, China. Cor-
+respondence to: Binbin Hu <bin.hbb@antﬁn.com>.
+Proceedings of the 37 th International Conference on Machine
+Learning, Vienna, Austria, PMLR 108, 2020. Copyright 2020 by
+the author(s).
+Bill
+Alice
+Microsoft
+Apple
+Shanghai
+Beijing
+Person
+Company
+is_a
+is_a
+is_a
+friend
+friend
+work_in
+work_in
+is_a
+is_a
+locate_in
+locate_in
+friend?
+Bob
+Figure 1. The example of knowledge graph.
+a promising direction for knowledge completion (Lacroix
+et al., 2018), alignment (Wang et al., 2018) and reason-
+ing (Trivedi et al., 2017), which aims to project both entities
+and relations into a low-dimensional space whilst preserving
+certain information of the original graph. These methods can
+be broadly classiﬁed as translational distance models (Bor-
+des et al., 2013; Wang et al., 2014; Lin et al., 2015; Sun
+et al., 2019) and semantic matching models (Nickel et al.,
+2011; Jenatton et al., 2012; Yang et al., 2015; Trouillon
+et al., 2016; Dettmers et al., 2018), which exploit distance-
+based and similarity-based scoring function for knowledge
+representation learning, respectively.
+Although these methods have yield considerable perfor-
+mance improvements to some extent, they still suffer from
+several limitations. First, they process each triple inde-
+pendently and abundant attributes in nodes and edges are
+commonly ignored, resulting in unsatisfactory performance
+on semantics-rich KGs. Second, they are inherently trans-
+ductive models, which cannot make prediction for entities
+unseen in the training set. Third, these methods cannot
+scale to industral-scale graphs with hundreds of millions of
+entities and relations.
+To address these issues, in this paper, we aim to build a
+scalable and distributed knowledge graph representation
+framework to ﬂexibly distill rich knowledge for downstream
+applications. Intuitively, the framework is expected to sat-
+isfy the following three key properties: (1) Semantics-rich:
+High order structure and attribute information have been
+already proved effective for preserving properties of original
+graphs in previous works (Xu et al., 2018; Abu-El-Haija
+et al., 2019; Luan et al., 2019) . Hence, we aim to incorpo-
+rate such information into knowledge graph representation
+arXiv:2205.08285v1  [cs.LG]  17 May 2022
+
+
+KGNN: Distributed Framework for Graph Neural Knowledge Representation
+to comprehensively capture rich semantics in KGs. (2) In-
+ductive: Current KGs are usually far from complete and
+thus the new entities will appear everyday in the real-world
+setting, which prompts the proposal to make prediction for
+entities unseen in the training set dynamically. (3) Scal-
+able: Since KGs in the real-world industrial scenarios are
+extremely large-scale, a scalable knowledge graph repre-
+sentation framework implemented on distributed learning
+system is in urgent demand.
+To integrate above main idea together, we propose KGNN, a
+distributed framework for graph neural knowledge represen-
+tation with graph neural network (GNN) based encoder and
+knowledge aware decoder. With the help recently emerging
+GNN, KGNN is potential to jointly capture attribute infor-
+mation and high order structure in an inductive, end-to-end
+framework. Obviously, it is a ﬂexible framework to equip
+arbitrary GNN based encoder, and in this paper, an attention
+based GNN is introduce to locate the important and rele-
+vant relations or structures for ﬁne-grained semantics. In
+order to perform model training and inference effectively for
+real-world KGs, KGNN is implemented on the distributed
+learning system and the implementation details are uncov-
+ered. We make extensive experiments on three real-world
+datasets on link prediction and triplet classiﬁcation task,
+which demonstrates the effectiveness and scalability of the
+proposed KGNN framework.
+2. Background
+In this section, we give a brief overview of knowledge rep-
+resentation learning and graph neural networks.
+Knowledge representation learning. A knowledge graph
+is denoted by G = {E, R}, consisting of the entity set E and
+the relation set R. A triplet ⟨h, r, t⟩is deﬁned as an relation
+r between entities h and t on G, where h, r ∈G. Learning
+distributional representations of KGs provides an effective
+and efﬁcient way for applying structural knowledge in var-
+ious applications. Hence, a scoring function s(eh, er, et)
+is deﬁned as the likelihood of triple ⟨h, r, t⟩being a valid
+triple, where eh, er, et represent the embeddings of h, r, t,
+respectively. A series of scoring functions (Wang et al.,
+2017) are proposed to preserve different relation patterns
+of KGs, and here, we introduce the TransH based scoring
+function (Wang et al., 2014), which learns different repre-
+sentations for an entity conditioned on different relations.
+s(eh, er, et) = ||e⊥
+h + er −e⊥
+t ||.
+(1)
+Here, we have e⊥
+h = eh −wT
+r ehwr and e⊥
+t = et −wT
+r etwr,
+in order to project entity embeddings into relation heper-
+planes, which allows entities playing different roles under
+different relations.
+Graph neural network. Graph neural network (GNN)
+makes use of the structure of the graph and attributes on
+eBob
+Person
+Apple
+Bill
+Bob
+Bill
+Alice
+Shanghai
+Bob
+Company
+Alice
+Bob
+Bill
+eAlice
+Person
+Microsoft
+Bill
+Bob
+Bill
+Alice
+Beijing
+Alice
+Company
+Alice
+Bob
+Bill
+Knowledge
+aware Decoder
+Relation: friend
+GNN based
+Encoder
+Figure 2. Overview of KGNN model.
+nodes for representation learning (Hamilton et al., 2017;
+Veliˇckovi´c et al., 2018; Kipf & Welling, 2017). Speciﬁ-
+cally, GNN recursively update an node’s representation by
+aggregating information from its neighbors. Subsequently,
+the ﬁnal representations of the nodes after k updating cap-
+ture the structural information as well as the node attributes
+within k-hop neighbors. Formally, we can calculate the
+k + 1-th representation for node v with aggregation and
+updating function as follows,
+ek+1
+v
+= f (U)(ek
+v, f (A)({ek
+v′, v′ ∈Nv}; Θ(A)); Θ(U)),
+(2)
+where f (A) and f (U) denotes the aggregation and updating
+function parameterized by Θ(A) and Θ(U), respectively, and
+Nv is the neighbor set of node v.
+3. Methodology
+In this section, we present the distributed framework for
+graph neural knowledge representation, called KGNN.
+3.1. KGNN Model
+In this section, we introduce the model part of KGNN to
+comprehensively distill knowledge graph for representation
+learning in an inductive manner. We present the architecture
+of our proposed KGNN in Fig. 2, which intuitively consists
+of two modules: (1) GNN based encoder and knowledge
+aware decoder, which ﬂexibly utilizes the local structure
+information and recursively propagates the embeddings over
+KGs for expressive representations and (2) knowledge aware
+decoder, which aims to preserve the relation patterns in KGs
+through various types of score functions.
+GNN based Encoder. Different from one-hot representa-
+tion in previous works, we propose to adopt graph neural
+network to encode structural knowledge and attributes into
+entities’ representations. For ﬁne-grained modeling , we
+introduce an attention based GNN to weighs various under-
+lying preference for each relation. Following the above up-
+
+
+KGNN: Distributed Framework for Graph Neural Knowledge Representation
+Graph Storage System
+h
+t
+r
+h’
+t’
+Trainer
+Sampler
+Figure 3. Overview of distributed KGNN framework.
+dating principle of entity representations in Eq. 2, we ﬁrstly
+formulate the aggregation function f (A)(·) as follows:
+f (A)({ek
+t , t ∈N k
+h }) =
+X
+r,t∈Nh
+α(h, r, t)ek
+t .
+(3)
+Here, α(h, r, t) is the attention value for the triple ⟨h, r, t⟩,
+which is implemented as a neural network. And N k
+h =
+{(r, t)|(h, r, t) ∈G} is the k-hop neighbor set for entity h.
+Inspired by the idea jumping knowledge network (Xu et al.,
+2018), we adopt an adaptive depth function to ﬂexibly mul-
+tiple hops of neighbors for better structure-aware represen-
+tation. Here, an LSTM is applied to implement f (U)(·)
+for representation updating. Therefore, we can obtain the
+k + 1-th representation for entity h as follows:
+ek+1
+h
+= LSTM(ek
+h, ak
+h),
+(4)
+where ak
+h denotes the aggregated information for entity h,
+calculated by Eq. 3.
+Knowledge aware decoder. The key of link prediction in
+KGs is to infer the relation patterns e.g., symmetry, inversion
+and composition with observed triplets (Sun et al., 2019).
+In order to adaptively preserve different relation patterns
+on various KGs, KGNN adopts knowledge aware score
+function as the decoder. Take the TransH as an example,
+we represent the score function for a triple ⟨h, r, t⟩after
+K-hop updating as s(eK
+h , er, eK
+t ). Then, we train KGNN in
+an end-to-end fashion via the margin based objective with
+negative sampling:
+L =
+X
+⟨h,r,t⟩∈G,⟨h′,r,t′⟩∈G′
+[s(eK
+h , er, eK
+t )+λ−s(eK
+h′, er, eK
+t′ )]+,
+(5)
+Table 1. Statistics of data sets.
+Dataset
+# Ent.
+# Rel.
+# Trip.
+# Attr.
+WN18
+40, 943
+18
+151, 442
+N.A.
+FB15K
+14, 951
+1, 345
+592, 213
+N.A.
+Alipay
+2.6 × 105
+6
+1.28 × 106
+504
+where [·] = max(0, ·), and G′ is the set of incorrect triplets
+constructed by randomly replacing head entity or tail entity
+in a valid triplet.
+3.2. Distributed Implementation
+We now zoom into the distribution implementation of
+KGNN, which provide a complete solution for large-scale
+knowledge graph representation. As shown in Fig. 3, the
+distributed KGNN is comprised of three parts:
+• Graph storage system. It stores the whole knowledge
+graph as well as corresponding attributes information
+on nodes under the distributed architecture. With the
+help of the effective data compression technology, it is
+capable of serving large-scale industrial graphs.
+• Sampler. It mainly provides negative sampler and sub-
+graph sampler for knowledge representation. In par-
+ticular, the negative sampler randomly replaces head
+entity or tail entity in a batch of valid triplets for cor-
+responding corrupted triplets. And then, sub-graph
+sampler will randomly collect k-hop neighbors set for
+each entity in batch. It is worth noting that we feed the
+sub-graph into KGNN instead of the full graph, which
+helps reduce the time and memory cost.
+• Trainer. It consisting of several workers and parame-
+ter servers, controlled by the coordinator. For effective
+parameter updating, each work pulls parameters from
+a parameter server and update them independently dur-
+ing training. In a speciﬁc worker, KGNN naturally fol-
+lows such a work ﬂow: (1) Pre-process the sub-graph
+and parse the model conﬁg. (2) Produce embeddings
+for entities and relations based on sub-graph with our
+encoder and decoder introduced in Sec. 3.1. (3) Opti-
+mize a certain loss to guide the learning process.
+4. Experiments
+In this section, we evaluate the effectiveness of KGNN for
+link prediction and triplet classiﬁcation task.
+Datasets and evaluation metrics. We evaluate our pro-
+posed framework on three datasets (Lin et al., 2015), namely
+WN18, FB15K and industrial AliPay dataset. The detailed
+descriptions of the three datasets are summarized in Tab. 1.
+We perform link prediction on WN18 and FB15K, while
+
+
+KGNN: Distributed Framework for Graph Neural Knowledge Representation
+Table 2. Evaluation results on link prediction. (%)
+Methods
+WN18 (HR@k)
+FB15K (HR@k)
+1
+3
+10
+1
+3
+10
+TransE
+70.8
+89.6
+94.7
+64.4
+84.0
+95.9
+TransR
+65.5
+83.7
+92.7
+63.6
+82.3
+95.2
+TransH
+72.3
+90.6
+94.9
+64.5
+84.1
+95.9
+DistMult
+69.3
+89.9
+94.6
+65.2
+84.6
+96.5
+KGNN
+78.9
+96.9
+98.8
+67.4
+86.4
+96.8
+apply triple classiﬁcation on WN18, FB15K and AliPay
+dataset. Following the same setting in (Bordes et al., 2011;
+2013), we adopt hit ratio at rank k (HR@k) and area under
+ROC curve (AUC) to evaluate the model performance of
+link prediction and triplet classiﬁcation, respectively.
+Table 3. AUC comparison results on triplet classiﬁcation. (%)
+Methods
+WN18
+FB15K
+Alipay
+TransE
+91.7
+97.5
+61.0
+TransR
+78.6
+95.8
+74.9
+TransH
+91.7
+97.4
+72.6
+DistMult
+93.5
+97.9
+65.3
+KGNN
+94.1
+99.0
+84.9
+Compared methods and parameter settings. We con-
+sider for representative knowledge representation learning
+methods for performance comparison, namely TransE (Bor-
+des et al., 2013), TransR (Lin et al., 2015), TransH (Wang
+et al., 2014) and DistMult (Yang et al., 2015). For fair com-
+parison, we also select one of them as the decoder of KGNN
+framework. We adopt Adam with learning rate = 0.001 to
+optimize all models and set the batch size = 256. Moreover,
+the margin is selected among {1, 2, 5} and the embedding
+size is searched among {64, 128, 256}.
+Performance Comparison. We report the comparison re-
+sults of the proposed KGNN and baselines on link prediction
+and triplet classiﬁcation in Tab. 2 and Tab. 3, respectively.
+We observe that KGNN consistently outperform on three
+datasets for both tasks, indicating that KGNN is potential to
+capture high-order structural information for more expres-
+sive knowledge representations. It is worthwhile to note that
+KGNN achieve signiﬁcant performance improvement over
+baselines on Alipay datasets. The results may correlated
+with the characteristics of this dataset: (1) There are 504
+attributes on entities, which are ignored by these baselines.
+(2) The test set contains a part of unseen entities, while these
+baselines fail to produce proper representations for them. As
+a comparison, the performance of KGNN demonstrates that
+KGNN is capable of jointly exploring structure and attribute
+information together over KGs in an inductive manner.
+Effect of the number of hops. We analyze the effect of the
+number of hops on the link prediction task through varying
+1
+2
+3
+4
+75
+80
+85
+90
+95
+100
+HR@k
+1
+3
+10
+(a) WN18
+1
+2
+3
+4
+65
+70
+75
+80
+85
+90
+95
+HR@k
+1
+3
+10
+(b) FB15K
+Figure 4. Performance study w.r.t. the number of hops
+2
+4
+8
+16
+2
+4
+6
+8
+10
+12
+14
+Time (102 s)
+90
+92
+94
+96
+98
+100
+HR@3 (%)
+Time
+Performance
+(a) WN18
+2
+4
+8
+16
+2
+4
+6
+8
+10
+12
+14
+16
+Time (102 s)
+80.0
+82.5
+85.0
+87.5
+90.0
+92.5
+95.0
+97.5
+100.0
+HR@3 (%)
+Time
+Performance
+(b) FB15K
+Figure 5. Scalability study w.r.t. the number of workers
+it among {1, 2, 3, 4}. As shown in Fig. 4 , the proposed
+KGNN achieve the optimal performance when # hop = 2
+on WN18 and # hop = 3 on FB15K. The results indicates
+high-order structure information exactly help our model
+learn more powerful representations, while excessive hops
+of neighbors would harm the performance due to the over-
+smoothing problem (Chen et al., 2019).
+Scalability study. To verify the scalability of our proposed
+distributed KGNN framework, we report the updating time
+per training epoch w.r.t. the number of workers in Fig. 5.
+As shown, the speed up in training KGNN on WN18 and
+FB15K is consistent as we increase the number of workers
+from 2 to 16. Meanwhile, it also shows that there is almost
+no loss of predictive performance as the number of workers
+increases.
+5. Conclusion
+In this paper, we proposed a novel distributed framework
+called KGNN for graph neural knowledge representation
+with GNN based encoder and knowledge aware decoder,
+which jointly exploit high-order structure and attribute in-
+formation together for powerful knowledge representation
+as well as preserve relation patterns in KGs. Furthermore,
+an attention mechanism is introduced to emphasize impor-
+tant information for ﬁne-grained modeling. We implement
+the proposed KGNN on the distributed learning system and
+extensive experiments demonstrates its effectiveness and
+scalability.
+
+
+KGNN: Distributed Framework for Graph Neural Knowledge Representation
+References
+Abu-El-Haija, S., Perozzi, B., Kapoor, A., Alipourfard, N.,
+Lerman, K., Harutyunyan, H., Steeg, G. V., and Galstyan,
+A. Mixhop: Higher-order graph convolutional architec-
+tures via sparsiﬁed neighborhood mixing. In ICML, pp.
+21–29, 2019.
+Bordes, A., Weston, J., Collobert, R., and Bengio, Y. Learn-
+ing structured embeddings of knowledge bases. In AAAI,
+pp. 301–306, 2011.
+Bordes, A., Usunier, N., Garcia-Duran, A., Weston, J., and
+Yakhnenko, O. Translating embeddings for modeling
+multi-relational data. In NIPS, pp. 2787–2795, 2013.
+Cao, Y., Wang, X., He, X., Hu, Z., and Chua, T.-S. Unifying
+knowledge graph learning and recommendation: Towards
+a better understanding of user preferences. In WWW, pp.
+151–161, 2019.
+Chen, D., Lin, Y., Li, W., Li, P., Zhou, J., and Sun, X.
+Measuring and relieving the over-smoothing problem for
+graph neural networks from the topological view. arXiv
+preprint arXiv:1909.03211, 2019.
+Dettmers, T., Minervini, P., Stenetorp, P., and Riedel, S.
+Convolutional 2d knowledge graph embeddings. In AAAI,
+pp. 1811–1818, 2018.
+Dietz, L., Kotov, A., and Meij, E. Utilizing knowledge
+graphs for text-centric information retrieval. In SIGIR,
+pp. 1387–1390, 2018.
+Hamilton, W., Ying, Z., and Leskovec, J. Inductive represen-
+tation learning on large graphs. In NIPS, pp. 1024–1034,
+2017.
+Huang, X., Zhang, J., Li, D., and Li, P. Knowledge graph
+embedding based question answering. In WSDM, pp.
+105–113, 2019.
+Jenatton, R., Roux, N. L., Bordes, A., and Obozinski, G. R.
+A latent factor model for highly multi-relational data. In
+NIPS, pp. 3167–3175, 2012.
+Kipf, T. N. and Welling, M. Semi-supervised classiﬁcation
+with graph convolutional networks. ICLR, 2017.
+Lacroix, T., Usunier, N., and Obozinski, G. Canonical tensor
+decomposition for knowledge base completion. In ICML,
+pp. 2869–2878, 2018.
+Lin, Y., Liu, Z., Sun, M., Liu, Y., and Zhu, X. Learning
+entity and relation embeddings for knowledge graph com-
+pletion. In AAAI, pp. 2181–2187, 2015.
+Luan, S., Zhao, M., Chang, X.-W., and Precup, D. Break the
+ceiling: Stronger multi-scale deep graph convolutional
+networks. In NIPS, pp. 10945–10955, 2019.
+Nickel, M., Tresp, V., and Kriegel, H.-P. A three-way model
+for collective learning on multi-relational data. In ICML,
+pp. 809–816, 2011.
+Sun, Z., Deng, Z.-H., Nie, J.-Y., and Tang, J. Rotate: Knowl-
+edge graph embedding by relational rotation in complex
+space. In ICLR, 2019.
+Trivedi, R., Dai, H., Wang, Y., and Song, L. Know-evolve:
+Deep temporal reasoning for dynamic knowledge graphs.
+In ICML, pp. 3462–3471, 2017.
+Trouillon, T., Welbl, J., Riedel, S., Gaussier, ´E., and
+Bouchard, G. Complex embeddings for simple link pre-
+diction. In ICML, pp. 2071–2080, 2016.
+Veliˇckovi´c, P., Cucurull, G., Casanova, A., Romero, A., Lio,
+P., and Bengio, Y. Graph attention networks. In ICLR,
+2018.
+Wang, Q., Mao, Z., Wang, B., and Guo, L. Knowledge graph
+embedding: A survey of approaches and applications.
+IEEE Transactions on Knowledge and Data Engineering,
+29(12):2724–2743, 2017.
+Wang, Z., Zhang, J., Feng, J., and Chen, Z. Knowledge
+graph embedding by translating on hyperplanes. In AAAI,
+pp. 1112–1119, 2014.
+Wang, Z., Lv, Q., Lan, X., and Zhang, Y. Cross-lingual
+knowledge graph alignment via graph convolutional net-
+works. In EMNLP, pp. 349–357, 2018.
+Xu, K., Li, C., Tian, Y., Sonobe, T., Kawarabayashi, K.-i.,
+and Jegelka, S. Representation learning on graphs with
+jumping knowledge networks. In ICML, pp. 5449–5458,
+2018.
+Yang, B., Yih, W.-t., He, X., Gao, J., and Deng, L. Embed-
+ding entities and relations for learning and inference in
+knowledge bases. In ICLR, 2015.

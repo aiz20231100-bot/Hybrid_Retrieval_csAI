@@ -1,0 +1,848 @@
+ROSBag MCP Server:
+Analyzing Robot Data with LLMs for
+Agentic Embodied AI Applications
+Lei Fu*1, Sahar Salimpour*2, Leonardo Militano1, Harry Edelman4,
+Jorge Pe˜na Queralta3,4, Giovanni Toffetti1
+1Institute of Computer Science, Zurich University of Applied Sciences
+2Department of Computing, University of Turku, Finland
+3Centre for Artificial Intelligence, Zurich University of Applied Sciences
+4Binabik.ai
+Abstract— Agentic AI systems and Physical or Embodied AI
+systems have been two key research verticals at the forefront
+of Artificial Intelligence and Robotics, with Model Context
+Protocol (MCP) increasingly becoming a key component and
+enabler of agentic applications. However, the literature at the
+intersection of these verticals, i.e., Agentic Embodied AI, remains
+scarce. This paper introduces an MCP server for analyzing
+ROS and ROS 2 bags, allowing for analyzing, visualizing and
+processing robot data with natural language through LLMs and
+VLMs. We describe specific tooling built with robotics domain
+knowledge, with our initial release focused on mobile robotics
+and supporting natively the analysis of trajectories, laser scan
+data, transforms, or time series data. This is in addition to
+providing an interface to standard ROS 2 CLI tools (ros2 bag
+list or ros2 bag info), as well as the ability to filter bags with
+a subset of topics or trimmed in time. Coupled with the MCP
+server, we provide a lightweight UI that allows the benchmarking
+of the tooling with different LLMs, both proprietary (Anthropic,
+OpenAI) and open-source (through Groq). Our experimental
+results include the analysis of tool calling capabilities of eight
+different state-of-the-art LLM/VLM models, both proprietary
+and open-source, large and small. Our experiments indicate
+that there is a large divide in tool calling capabilities, with
+Kimi K2 and Claude Sonnet 4 demonstrating clearly superior
+performance. We also conclude that there are multiple factors
+affecting the success rates, from the tool description schema to
+the number of arguments, as well as the number of tools available
+to the models. The code is available with a permissive license at
+https://github.com/binabik-ai/mcp-rosbags.
+Index Terms—Agentic AI; ROS 2; MCP; Data analytics
+I. INTRODUCTION
+The development of autonomous robots capable of interact-
+ing with humans through natural language has been a long-
+standing objective in robotics research [1]. These capabilities
+include commanding and controlling the robot, as well as
+interpreting and analyzing its state and diverse streams of
+sensor data via conversational interfaces, all without requiring
+expert-level knowledge in robotics or programming [2], [3].
+*Authors with equal contribution.
+Emails:{fule, milt, penq, toff}@zhaw.ch, sahars@utu.fi, harry@binabik.ai
+Notably, large language models (LLMs) and, building on them,
+Vision-Language Models (VLMs) have demonstrated consid-
+erable promise in bridging the gap between human intent and
+robotic execution by translating natural language instructions
+into structured actions [4], [5]. Consequently, there has been
+a growing interest in embodied AI agent systems, capable of
+reasoning, planning, maintaining memory, and interacting with
+humans [6]. A significant portion of robotic systems relies on
+the Robot Operating System (ROS), and recent works, such
+as ROSA [7] and RAI [8], have explored LLM-based agents
+that bridge the gap between natural language and robot stack.
+These agents often rely on LLMs augmented with the ability
+to integrate with external APIs. The Model Context Protocol
+(MCP), introduced by Anthropic in late 2024 [9], is an open
+interoperability standard designed to simplify and unify the
+way LLM models connect with external tools and replace the
+custom-built API integrations that currently hinder scalability
+and integration.
+ROSbag files are a standardized format for storing large
+volumes of time-synchronized robotic data from diverse sen-
+sors. Analyzing these datasets is essential for debugging,
+performance evaluation, and extracting insights from robotic
+systems. However, direct analysis of this data using state-
+of-the-art conversational AI models is challenging, as they
+cannot natively parse the binary format, often exceed context
+length limits, and lack direct access to structured metadata and
+sensor semantics, leading to incomplete or inaccurate results.
+To address these limitations, this paper presents an MCP server
+that enables comprehensive and efficient human interaction
+with ROSbag files, facilitating rapid and in-depth analysis of
+recorded datasets.
+The main contribution of this paper is the design and
+development of rosbags-mcp framework. Unlike previous
+MCP integrations, our work focuses specifically on enabling
+LLM/VLM-driven data analysis of ROSbag files. To the best
+of our knowledge, this is the first paper to propose an
+MCP interface for analyzing and processing ROS native data.
+Compared with existing open-source tooling, we introduce a
+1
+arXiv:2511.03497v1  [cs.RO]  5 Nov 2025
+
+
+set_bag_path
+list_bags
+bag_info
+filter_bag
+get_message_at_time
+get_messages_in_range
+search_messages
+analyze_trajectory
+analyze_lidar_scan
+analyze_logs
+get_tf_tree
+get_image_at_time
+plot_timeseries
+plot_2d
+plot_lidar_scan
++ others
+MCP Client / LLM UI
+ROS Bags 
+MCP Server
+LLM 
+Providers
+(remote or local)
+Filesystem / ROS bags folder
+stdio
+Python3 
+rosbags
+library
+JSON-RPC
+Fig. 1: The overview of the agentic chain of the ROSbag MCP Server. The diagram illustrates the different components, including the
+available tools in the MCP server, the capability to read various ROSbag formats from the filesystem, and the overall data flow between
+the MCP client and server. The MCP Host represents the runtime environment that mediates communication between the LLM client (e.g.,
+Claude Desktop or MCP Lab) and the MCP server, managing JSON-RPC connections to the selected LLM provider.
+wider and more comprehensive toolset, grounded on robotics
+domain knowledge. Additionally, we are the first to benchmark
+tool calling capabilities of different proprietary and open-
+source LLMs and VLMs within a robotics data context. This
+is particularly relevant due to the increasing complexity of
+the proposed tools, in comparison to MCP servers in other
+domains that act mainly as translators. To enable such bench-
+marking, we also develop and introduce a web UI, MCP Lab,
+which provides built-in visualization of plots generated by our
+MCP server. Figure 1 illustrates the components and data flow
+of the proposed tool within the agentic system.
+The remainder of the paper is organized as follows. Section
+II reviews related work on agentic AI applications in robotics,
+recent advances in ROSbag analytics, and the development of
+MCP servers within the ROS community. Section III presents
+the implementation of our proposed ROSbag analytics MCP
+server, focusing on the technical aspects of MCP and robotics
+data analysis tools. Section IV reports the experimental results,
+and Section V concludes the paper.
+II. RELATED WORKS
+The literature in integrating the MCP protocol with ROS
+and ROS 2 systems for natural language interfaces is scarce,
+due to the young age of MCP, proposed only in late 2024. The
+field of Agentic AI in general is also progressing rapidly, with
+Agentic Embodied AI in particular being a nascent research
+area. Therefore, in this section we focus on covering the
+literature from the general viewpoint of integrating LLMs and
+VLMs in robotics. We also cover existing tooling for analyzing
+ROSbags, and community-led MCP servers for ROS.
+A. ROS-based AI Agents
+Robot systems are often modular, allowing easy integration
+and modification of processes. The widely used ROS offers
+ready-to-use packages and libraries for many common robot
+systems. Limited yet promising developments have emerged
+in creating ROS-based robotic AI agents that bridge the gap
+between LLM-based reasoning and robotic middleware [6]. A
+notable implementation is the ROS-LLM framework, which
+exposes ROS actions and services as atomic action tools to the
+LLM, bridging the gap between natural language commands
+and robot control for non-experts [10]. ROSA [7] is an LLM-
+based agent built on the LangChain framework and the ReAct
+agent paradigm. Its core innovation lies in abstracting ROS
+operations into tool-enabled Python functions. The NASA JPL
+implementation of ROSA serves as an AI-powered assistant
+for both ROS1 and ROS2 systems, helping developers interact
+with robots using natural language queries, making robotics
+development more accessible and efficient. RAI [8] is another
+approach in this field, serving as a flexible embodied multi-
+agent framework designed to integrate LLM reasoning with
+robotic systems (e.g., ROS 2).
+Another example is ros2ai [11], which translates a generic
+user prompt into a specific ROS 2 command-line interface call.
+While some interaction is possible, it remains limited, and the
+process is largely unidirectional. An early work in this area
+was also Microsoft’s ChatGPT for robotics integration [12].
+Such LLM-powered robot learning (as agentic applications)
+solutions are emerging as opposed to other research areas in
+RL [13], [14] or Vision-Language-Action (VLA) transformer-
+based models [5], [15], [16].
+Further context to the literature in this area is added by
+works on ROS-based LLM-powered agents such as Bum-
+2
+
+
+ble [17], NavGPT [18]. Other relevant works in this area
+included non-robotics agents for games such as Minecraft [19],
+[20].
+B. ROSBag Analytics / Visualization Frameworks
+The primary method for recording and playing back ROS
+data is the ROSbag format. While the native tools provide fun-
+damental read/write functionality, the ecosystem has evolved
+significantly to address the need for more powerful analysis
+and visualization.
+The MCAP (Modular Container and Playback) format,
+developed by Foxglove, has emerged as a modern, open-source
+container file format designed for multimodel timestamped
+pub/sub or robotics log data. It emphasizes portability, effi-
+cient indexing, flexibility in serialization, and is increasingly
+adopted as an alternative to ROSbag formats. Alongside the
+format, the Foxglove Studio [21] is a powerful, extensible
+visualization and analysis platform that supports both ROS 1,
+ROS 2 and MCAP files. It allows developers to inspect sensor
+data, plots, and 3D scenes, and exposes APIs and plugins for
+offline analysis and real-time debugging. Plotjuggler [22] is
+a lightweight, extensible time-series visualizer widely used in
+ROS workflows for fast interactive plotting, transform editing,
+and scripting (Lua).
+Heex Technologies offers an event-driven approach to ROS-
+bag data management and analysis, targeting both live and of-
+fline ROS workflows. Data is segmented into short MCAP files
+(e.g., 20s) and evaluated against user-defined / AI-generated
+triggers (e.g., IMU acceleration exceeding a threshold). Only
+triggered segments are stored, either from active robots or from
+existing ROSbags, enabling targeted cloud-based review. This
+selective-capture model supports efficient ROS data analytics
+but relies on predefined events, potentially limiting the discov-
+ery of unanticipated patterns.
+C. MCP Servers and ROS
+An emerging development is the rise of MCP servers as
+lightweight, modular plugins that equip AI agents with seam-
+less integration into ROS-based systems. A notable extension
+of MCP is its application in robotics through community-
+driven projects, openly available on GitHub, such as ros-mcp
+library [23], which bridges AI assistants (e.g., Claude) with in-
+stalled ROS 2 applications. This library enables functionalities
+like ROS resource management (topics, nodes), system inter-
+action (topic publisher, service calls, action goals), simulation
+control (Gazebo, RViz visualizer), environment debugging and
+process orchestration, demonstrating a shift from monolithic
+frameworks (e.g., ROSA, RAI) toward modular, plugin-based
+architectures. Further expanding MCP’s versatility, ros-mcp-
+server [24], leverages rosbridge to connect to either ROS 1
+or ROS 2 systems through WebSockets, and contains specific
+interfaces to odometry and velocity control topics. Auto-
+mcp [25] is another custom MCP server enabling real-time
+discovery of active ROS 2 topics, retrieval of the latest
+messages, and remote publication of messages to those topics.
+Additional implementations like the ros-mcp-server [26] by
+robotmcp provide comprehensive robot control capabilities,
+enabling simultaneous control of multiple robots through a
+unified interface for movement, sound playback, and camera
+operations.
+A recent open-source ”ChatGPT for physical data” platform,
+Bagel [27], exemplifies how MCP servers can transform
+analysis of robotic logs. Bagel supports ROS 1 (.bag), ROS 2
+(.mcap, .db3), PX4 (.ulg), and Ardupilot (.bin) log formats,
+allowing agents to query logs using natural language and
+receive metadata summaries, system diagnoses and insights in
+return. Compared to Bagel, we provide more specific tooling,
+in addition to an in-depth benchmarking.
+III. IMPLEMENTATION
+A. The MCP protocol
+A core capability of modern AI agents is the tool-use mod-
+ule, which allows them to invoke external functions and access
+structured or unstructured data sources. Most state-of-the-art
+LLMs are trained to perform such tool calls, enabling them to
+extend their reasoning and problem-solving abilities beyond
+their internal knowledge. However, tool calling often requires
+custom, model-specific integrations, leading to fragmentation
+and limiting scalability. The MCP addresses these challenges
+by providing an open interoperability standard that enables
+seamless, standardized communication between LLMs and
+external tools or data resources [9]. MCP implements a JSON-
+RPC client–server architecture, where MCP clients, such as
+Claude Desktop or Cursor, connect to lightweight MCP servers
+that securely access both local and remote resources through
+dedicated one-to-one protocol connections. Additionally, MCP
+includes an open-source SDK that supports rapid adoption
+across popular programming languages, including Python.
+B. Code architecture / implementation
+The current implementation leverages Python’s MCP library
+to create specialized servers that expose robotics-specific func-
+tionality through standardized interfaces. Each MCP server
+runs as a lightweight process that handles tool registra-
+tion, parameter validation, and execution orchestration. MCP
+servers communicate with clients via JSON-RPC messages,
+enabling a language-agnostic and platform-independent inter-
+action paradigm. The overall architecture of these interactions
+is summarized in Figure 1. A modular design is adopted in
+which each tool is defined in a dedicated function with explicit
+input and output schemas. These schemas validate user input
+and provide metadata to MCP clients for generating interactive
+documentation (see MCP Tool Schema).
+FastAPI serves as the underlying web framework, offering
+automatic request validation, interactive documentation, and
+robust error handling capabilities that ensure reliable operation
+during extended analysis sessions.
+C. Available tools
+We developed the tools within three main categories, as
+summarized in Table I. Each category is designed to address a
+specific aspect of robotic data analysis and interaction through
+the MCP interface.
+3
+
+
+1) Core Data Access And Management: Robotics experi-
+ments generate large, multimodal datasets, and effective anal-
+ysis begins with robust data management. Accessing, orga-
+nizing, and filtering recorded trials is essential to ensure that
+only the most relevant portions of data are examined, partic-
+ularly when synchronizing control commands with odometry
+or isolating events of interest. By enabling precise retrieval
+and reproducible dataset preparation, this category supports
+efficient systematic evaluation of robot performance.
+2) Domain-Specific Analysis: Since robots rely on diverse
+modalities such as odometry, LiDAR, cameras, and logs, it
+is necessary to provide dedicated tools for analyzing these
+common data sources. While basic access to raw messages is
+possible through core tools, ROSbags can be very large, and
+extracting meaningful patterns, such as evaluating entire trajec-
+tories, can become computationally expensive. A specialized
+trajectory analysis tool can therefore provide comprehensive
+statistics, distance measures, and waypoint evaluations far
+more efficiently. Similarly, coordinate frame transformations
+are critical for ensuring consistent spatial reasoning across
+multiple sensors, and a dedicated TF tree analysis tool ensures
+that these relationships remain coherent and interpretable. By
+separating these domain-focused tasks into specialized tools,
+the analysis process becomes both computationally efficient
+and directly aligned with the unique requirements of robotic
+systems.
+MCP Tool Schema: get_messages_in_range
+Description: Get all messages from a topic within a time
+range.
+Input Schema:
+{
+"type": "object",
+"properties": {
+"topic": {
+"type": "string",
+"description": "ROS topic name"
+},
+"start_time": {
+"type": "number",
+"description": "Start unix timestamp in seconds"
+},
+"end_time": {
+"type": "number",
+"description": "End unix timestamp in seconds"
+},
+"max_messages": {
+"type": "integer",
+"description": "Maximum messages to return (
+default: 100)"
+},
+"bag_path": {
+"type": "string",
+"description": "Optional: specific bag file or
+directory to search"
+}
+},
+"required": [
+"topic",
+"start_time",
+"end_time"
+]
+}
+3) Visualization and Plotting: Visualization bridges the
+gap between raw data and interpretable insights, making
+Fig. 2: System architecture of MCP Lab with remote connection
+support, illustrating the integration of MCP servers and multiple LLM
+providers.
+system behavior immediately apparent. Time-series plots ex-
+pose dynamic trends such as responsiveness or drift, while
+spatial trajectory views highlight path following quality and
+navigation efficiency. Modality-specific plots, such as sensor
+visualizations, further help validate perception outputs.
+D. MCP Lab
+MCP Lab [28] is a modular testing environment for MCP
+servers that supports multiple LLM providers. Its primary
+purpose is to provide a controlled and reproducible setup
+for benchmarking and analysis. To achieve this, MCP lab
+standardizes access to ROSbag repositories, manages tool
+invocation, and records structured metrics throughout the
+evaluation process. These features enable systematic compar-
+isons between models by allowing us to measure tool usage
+behavior, task completion rates, and overall performance under
+consistent conditions. In addition, MCP Lab serves as the
+accompanying framework for this work, ensuring that the
+experimental results presented in this paper are both replicable
+and grounded in a unified testing methodology. Figure 2 shows
+the MCP Lab interface connected to different LLM providers,
+enabling tool testing and performance tracking of MCP servers
+without local ROS installation.
+IV. EXPERIMENTAL RESULTS
+To assess the effectiveness of our MCP-based robotic anal-
+ysis framework, we conducted a comprehensive evaluation
+across multiple language models using standardized set of
+robotics data analysis tasks, ranging from basic data retrieval
+operations (e.g. extract sensor readings) to complex analytical
+workflows that require multiple tools.
+For illustrative purposes of the capabilities of the proposed
+MCP server, the following is an example conversation below.
+Examples of MCP Tool Requests
+User: Has the robot ever passed close by this position: (x=2,
+y=-2), within 0.5 meters?
+MCP search_message Request:
+{
+"bag_path": "/path/rosbags/turtlebot_5m",
+"topic": "/odom",
+"condition_type": "near_position",
+"value": "2,-2,0.5",
+"limit": 10
+}
+Agent: The robot indeed passed within 0.5 m of the tar-
+4
+
+
+TABLE I: Description of tools in the initial release of the Rosbags MCP server.
+Category
+Task Type
+Tool
+Description
+Core Data Access & Management
+Bag Operations
+B1: set_bag_path
+Set the path to a rosbag file or directory
+B2: list_bags
+List all available rosbag files in the directory
+B3: bag_info
+Retrieve bag metadata: topics, counts, duration
+Message Retrieval
+M1: get_message_at_time
+Get message from a topic at a specific timestamp
+M2: get_messages_in_range
+Get all messages from a topic within a time range
+M3: search_messages
+Search messages using conditions (regex, equals, etc.)
+Data Filtering
+FB: filter_bag
+Create a filtered copy of a bag file by topic, time, or rate
+Domain-Specific Analysis
+Trajectory Analysis
+AT: analyze_trajectory
+Compute trajectory metrics (distance, speed, waypoints)
+LiDAR Analysis
+AS: analyze_lidar_scan
+Analyze LiDAR scans for obstacles, gaps, statistics
+Log Analysis
+AL: analyze_logs
+Parse/analyze ROS logs; filter by level or node
+Transform Analysis
+GT: get_tf_tree
+Get TF tree of coordinate frame relationships
+Image Analysis
+GI: get_image_at_time
+Extract camera image at specific time (base64 JPEG)
+Visualization & Plotting
+Time Series Visualization
+P1: plot_timeseries
+Plot time series data with multiple styles
+Spatial Visualization
+P2: plot_2d
+Create 2D trajectory plots (XY)
+P3: plot_lidar_scan
+Visualize LiDAR scans as polar plots
+TABLE II: Task completion and tool usage across different models.
+Task
+Required
+Sonnet
+Sonnet
+GPT-4o
+GPT-5
+Qwen3
+Llama 4
+Kimi
+GPT OSS
+tools
+4
+3.7
+Mini
+Mini
+32B
+Scout
+K2
+20B
+What bags do you have in /path/to/folder
+B2
+✓
+✓+ B1
+✓
+✓
+✓
+✓
+✓
+✓
+Plot the velocity (linear and angular) from t=Xs to t=Ys
+P1
+✓
+✗
+✗
+✓
+✓
+✗
+✓
+✓
+Generate a trajectory summary for the entire bag: total distance, mean/max speeds
+AT
+✓
+✓
+✓
+✓
+✓
+✗
+✓
+✓
+Plot the trajectory of the robot
+P2
+✓
+✓+ AT
+✓+ AT
+✓
+✓
+✗
+✓+ AT
+✓+ AT, AS
+Has the robot ever passed close by this position: ( x=X, y=Y ), within Z meters?
+M3
+✓
+✗
+✓+ M2
+✓+ M2
+✓
+✗
+✓
+✓
+Does a lidar indicate any obstacle? When is the first time the robot sees an obstacle within X
+AS, M3
+✓
+✗
+✗
+✗
+✗
+✗
+✓
+✗
+Plot the lidar scan when t=Xs and plot a histogram of the cmd_vel linear x
+P1, P3
+✓
+✗
+✗
+✓
+✓+ M1
+✗
+✓
+✓
+List all the frames and their relationships
+GT
+✓
+✓
+✓
+✓
+✗
+✗
+✓
+✗
+Filter the rosbag and create a new rosbag with only cmd_vel and odom
+FB
+✓
+✓
+✓
+✓
+✓
+✗
+✓
+✓
+Robot’s maximum commanded linear vel. between X-Ys , time and position when it occurs?
+M2, M1
+✓
+✓
+✗
+✓
+✗
+✗
+✓+ B3,M2,M3
+✗
+5
+
+
+(a) Sample conversation with Claude Desktop.
+(b) Sample conversation in our custom MCP-lab web interface.
+Fig. 3: Conversation workflow showing the MCP tool interaction within the Claude Desktop App and MCP-Lab interfaces.
+get position (2, –2). Its closest approach was 0.217 m
+(21.7 cm) at position (1.793, –1.933), recorded at timestamp
+1755341898.5013318.
+User: During the first 30 seconds, when the robot has com-
+manded an angular velocity greater than 0.4?
+MCP get_message_in_range Tool Request:
+{
+"topic": "/cmd_vel",
+"end_time": 1755341708.758273,
+"start_time": 1755341678.758273,
+"max_messages": 50
+}
+Agent: During the first 30 seconds, the robot had angular
+velocity greater than 0.4 rad/s at 3 times (6.19s, 16.61s, 25.78s),
+all with angular velocity of 0.656 rad/s.
+User: What range of x and y has the robot traveled?
+MCP analyze_trajectory Tool Request:
+{
+"bag_path": "/path/rosbags/turtlebot_5m",
+"pose_topic": "/odom",
+"start_time": 1755341678.758273,
+"end_time": 1755341985.7409644,
+"include_waypoints": false
+}
+Agent: The robot traveled within:
+X range: -2.074 to 2.168 meters (total span: 4.243 meters)
+Y range: -2.017 to 2.000 meters (total span: 4.017 meters)
+User: Plot the commanded and actual velocities, linear and
+angular, for the first 30 seconds
+MCP plot_timeseries Tool Request:
+{
+"fields": [
+"cmd_vel.linear.x",
+"odom.twist.twist.linear.x",
+"cmd_vel.angular.z",
+"odom.twist.twist.angular.z"
+],
+"start_time": 1755341678.758273,
+"end_time": 1755341708.758273,
+"title": "Commanded vs Actual Velocities (First 30
+seconds)",
+"x_label": "Time (s)",
+"y_label": "Velocity"
+}
+Agent: I’ve created a time series plot showing both the com-
+manded and actual velocities for the first 30 seconds of the
+ROSbag.
+A. Experiment Setup
+The evaluation was performed using eight different language
+models, including GPT-4o, Claude 3.5 Sonnet, and several
+6
+
+
+0
+5
+10
+15
+20
+25
+30
+35
+40
+45
+50
+kimi-k2
+gpt-oss-20b
+qwen3-32b
+gpt-5-mini
+gpt-4o-mini
+claude-4
+claude-3.7
+Total Query Response Time (s)
+Model
+Fig. 4: Response time distribution per model across successful tool-calling tasks. Lower and more consistent response time indicates superior
+computational efficiency and more reliable decision-making processes.
+1
+2
+3
+4
+5
+6
+kimi-k2
+gpt-oss-20b
+qwen3-32b
+gpt-5-mini
+gpt-4o-mini
+claude-4
+claude-3.7
+Number of tool calls.
+Model
+Fig. 5: Distribution of number of tools used per successful response across different models. The visualization reveals how many tools each
+model requires to complete identical tasks, with lower values indicating more efficient problem-solving approaches.
+open-source models. All experiments were conducted within
+MCP Lab [28], see Figure 3 for an example conversation.
+Each model was given identical task prompts, with access
+to the same ROSbag data and analysis utilities. A task was
+considered successful if the model called the correct tools
+and produced valid results without manual intervention. Partial
+success was recorded if the reasoning process was correct but
+required human guidance or additional tool calls beyond those
+baseline tools.
+B. Model Performance Analysis
+Performance varied considerably across the tested models.
+Table II provides a detailed comparison of task completion and
+tool usage. The required tools column indicates the baseline
+tools that should be invoked for each query. Among the tested
+models, Claude Sonnet 4 and Kimi K2 demonstrated the most
+consistent performance, successfully completed all the tasks,
+followed closely by GPT-5 mini with 9 successful completions
+(90% success rate). These frontier models show particular
+strength in handling complex tasks that required combining
+multiple tool calls. Both Qwen3 and GPT OSS completed
+7 tasks (70% success rate), struggling on the search specific
+data and frame transformations. In contrast, Sonnet 3.7, GPT-
+40 mini and Llama 4, as smaller models, showed notable
+limitations. These models frequently failed to complete multi-
+step analytical tasks, often producing incomplete results or
+requiring extensive guidance on tool calling.
+In addition, we evaluated the models based on their end-
+to-end response time and the number of tool calls required to
+complete the tasks presented in Table II. Figure 4 reveals the
+response time consistency across models. Kimi-k2 and Claude-
+4 demonstrate the most stable and predictable response times,
+with tight distributions around low median values and minimal
+variance, indicating reliable and efficient tool-calling behavior.
+Conversely, smaller models exhibit substantially higher re-
+sponse time variability, characterized by broader distributions.
+7
+
+
+This increased response time and inconsistency likely reflects
+suboptimal decision-making processes, where these models
+may take unnecessary computational approaches rather than
+efficiently utilizing available tools. Figure 5 shows that Kimi-
+k2, Claude-4, and Claude-3.7 exhibit superior performance
+with the most efficient tool usage patterns, consistently requir-
+ing fewer tools to complete the same tasks. In contrast, GPT
+models and other open-source models demonstrate less effi-
+cient behavior, frequently invoking more tools than necessary
+for task completion.
+V. DISCUSSION & CONCLUSION
+This paper introduced an MCP server for ROS and ROS
+2 bag analysis, enabling natural language interaction with
+robotic datasets through LLMs and VLMs. Our implemen-
+tation provides domain-specific tooling for trajectory analysis,
+laser scan processing, coordinate frame transformations, and
+time series visualization, bridging the gap between complex
+robotic data and conversational AI interfaces. The experi-
+mental evaluation across eight state-of-the-art models revealed
+substantial disparities in tool calling capabilities, with Kimi K2
+and Claude Sonnet 4 achieving 100% task completion rates,
+while smaller models struggled with multi-step analytical
+workflows. These results demonstrate that while MCP offers
+a standardized protocol for tool integration, model selection
+remains critical for effective deployment in agentic embodied
+AI applications.
+Our final results emerge from extensive iterative refinement
+of tool descriptions and interfaces. Through this process, we
+identified several factors that significantly influence tool call-
+ing success rates: schema clarity directly impacts invocation
+accuracy, with ambiguous descriptions leading to malformed
+requests; argument complexity poses challenges for smaller
+models, which frequently fail to construct valid parameter
+sets; context preservation across sequential tool calls proves
+problematic, as models often forget previously established pa-
+rameters like folder paths; and perhaps most critically, the total
+number of available tools inversely correlates with success
+rates, particularly when tools share similar functionalities or
+overlapping parameter spaces. These observations suggest that
+optimal MCP server design requires careful balance between
+functionality breadth and interface simplicity.
+Future work will focus on systematic ablation studies to
+dissect successful tool design patterns and establish best
+practices for MCP-based robotic systems. Specifically, we plan
+to investigate schema optimization strategies, develop context-
+aware tool chaining mechanisms, and explore adaptive tool
+exposure based on model capabilities. Additionally, extending
+the framework to support real-time robot control and multi-
+robot coordination presents compelling opportunities for ad-
+vancing agentic embodied AI applications. The open-source
+release of our implementation aims to accelerate community-
+driven development of natural language interfaces for robotics,
+ultimately making robotic data analysis more accessible to
+non-expert users while maintaining the precision required for
+professional deployment.
+REFERENCES
+[1] F. Zeng, W. Gan, Y. Wang, N. Liu, and P. S. Yu, “Large language models
+for robotics: A survey,” arXiv preprint arXiv:2311.07226, 2023.
+[2] T. Wang, P. Zheng, S. Li, and L. Wang, “Multimodal human–robot
+interaction for human-centric smart manufacturing: a survey,” Advanced
+Intelligent Systems, vol. 6, no. 3, p. 2300359, 2024.
+[3] K. Kawaharazuka, J. Oh, J. Yamada, I. Posner, and Y. Zhu, “Vision-
+language-action models for robotics: A review towards real-world ap-
+plications,” Authorea Preprints, 2025.
+[4] J. Wang, E. Shi, H. Hu, C. Ma, Y. Liu, X. Wang, Y. Yao, X. Liu, B. Ge,
+and S. Zhang, “Large language models for robotics: Opportunities,
+challenges, and perspectives,” Journal of Automation and Intelligence,
+vol. 4, no. 1, pp. 52–64, 2025.
+[5] B. Zitkovich, T. Yu, S. Xu, P. Xu, T. Xiao, F. Xia, J. Wu, P. Wohlhart,
+S. Welker, A. Wahid et al., “Rt-2: Vision-language-action models
+transfer web knowledge to robotic control,” in Conference on Robot
+Learning.
+PMLR, 2023, pp. 2165–2183.
+[6] S. Salimpour, L. Fu, F. Keramat, L. Militano, G. Toffetti, H. Edelman,
+and J. P. Queralta, “Towards embodied agentic ai: Review and classi-
+fication of llm-and vlm-driven robot autonomy and interaction,” arXiv
+preprint arXiv:2508.05294, 2025.
+[7] R. Royce, M. Kaufmann, J. Becktor, S. Moon, K. Carpenter, K. Pak,
+A. Towler, R. Thakker, and S. Khattak, “Enabling novel mission opera-
+tions and interactions with rosa: The robot operating system agent,” in
+2025 IEEE Aerospace Conference.
+IEEE, 2025, pp. 1–16.
+[8] K. Rachwal, M. Majek, B. Boczek, K. Dabrowski, P. Liberadzki,
+A. Dabrowski, and M. Ganzha, “Rai: Flexible agent framework for
+embodied ai,” arXiv preprint arXiv:2505.07532, 2025.
+[9] Anthropic, “Model context protocol,” https://modelcontextprotocol.io/
+introduction, 2024, accessed: 2025-03-18.
+[10] C. E. Mower, Y. Wan, H. Yu, A. Grosnit, J. Gonzalez-Billandon,
+M. Zimmer, J. Wang, X. Zhang, Y. Zhao, A. Zhai et al., “Ros-llm:
+A ros framework for embodied ai with task feedback and structured
+reasoning,” arXiv preprint arXiv:2406.19741, 2024.
+[11] ros2ai: https://github.com/fujitatomoya/ros2ai.
+[12] S. H. Vemprala, R. Bonatti, A. Bucker, and A. Kapoor, “Chatgpt for
+robotics: Design principles and model abilities,” Ieee Access, vol. 12,
+pp. 55 682–55 696, 2024.
+[13] S. Salimpour, J. Pe˜na-Queralta, D. Paez-Granados, J. Heikkonen, and
+T. Westerlund, “Sim-to-real reinforcement learning for local mobile
+robot navigation in dynamic environments,” in 2025 European Confer-
+ence on Mobile Robots (ECMR).
+IEEE, 2025, pp. 1–7.
+[14] W. Zhao, J. P. Queralta, and T. Westerlund, “Sim-to-real transfer in deep
+reinforcement learning for robotics: a survey,” in 2020 IEEE symposium
+series on computational intelligence (SSCI).
+IEEE, 2020, pp. 737–744.
+[15] K. Bousmalis, G. Vezzani, D. Rao, C. Devin, A. X. Lee, M. Bauz´a,
+T. Davchev, Y. Zhou, A. Gupta, A. Raju et al., “Robocat: A self-
+improving generalist agent for robotic manipulation,” arXiv preprint
+arXiv:2306.11706, 2023.
+[16] K. Black, N. Brown, D. Driess, A. Esmail et al., “π0: A vision-language-
+action flow model for general robot control. corr, abs/2410.24164, 2024.
+doi: 10.48550,” arXiv preprint ARXIV.2410.24164, 2024.
+[17] R. Shah, A. Yu, Y. Zhu, Y. Zhu, and R. Martin-Martin, “Bumble:
+Unifying reasoning and acting with vision-language models for building-
+wide mobile manipulation,” arXiv preprint arXiv:2410.06237, 2024.
+[18] G. Zhou, Y. Hong, and Q. Wu, “Navgpt: Explicit reasoning in vision-
+and-language navigation with large language models,” in Proceedings
+of the AAAI Conference on Artificial Intelligence, vol. 38, no. 7, 2024,
+pp. 7641–7649.
+[19] G. Wang, Y. Xie, Y. Jiang, A. Mandlekar, C. Xiao, Y. Zhu, L. Fan, and
+A. Anandkumar, “Voyager: An open-ended embodied agent with large
+language models,” arXiv preprint arXiv:2305.16291, 2023.
+[20] S. Liu, Y. Li, K. Zhang, Z. Cui, W. Fang, Y. Zheng, T. Zheng, and
+M. Song, “Odyssey: Empowering minecraft agents with open-world
+skills,” arXiv preprint arXiv:2407.15325, 2024.
+[21] Foxglove: https://foxglove.dev.
+[22] PlotJuggler: https://plotjuggler.io.
+[23] ROS-MCP: https://github.com/Yutarop/ros-mcp.
+[24] ROS-MCP-Server: https://github.com/lpigeon/ros-mcp-server.
+[25] auto-mcp: https://github.com/snick-m/auto mcp/tree/main.
+[26] ROS-MCP-Server: https://github.com/robotmcp/ros-mcp-server.
+[27] Bagel: https://github.com/Extelligence-ai/bagel.
+[28] MCP Lab: https://github.com/binabik-ai/mcp-lab.
+8

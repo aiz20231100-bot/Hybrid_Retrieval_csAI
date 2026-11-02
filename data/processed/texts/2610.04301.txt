@@ -1,0 +1,1337 @@
+EnvDreamer: Large-Scale
+Multimodal-to-Environment Generation for Embodied
+AI
+Kabir Swain
+MIT
+kswain@mit.edu
+Sijie Han
+University of Toronto
+hs.han@mail.utoronto.ca
+Antonio Torralba
+MIT
+torralba@mit.edu
+Abstract
+Large datasets and high capacity models have accelerated progress in vision and
+language. This work introduces a platform aimed at bringing comparable gains
+to embodied learning, world models, and robotics. We present EnvDreamer, a
+framework that uses large language and vision language models to generate Unreal
+Engine 5 environments for embodied AI and robot training. EnvDreamer enables
+sampling of large, diverse, interactive, customizable, and validator passed virtual
+environments for training and evaluation across navigation, interaction, and ma-
+nipulation. We illustrate the platform with a large set of generated scenes and
+simple baselines. Policies trained on EnvDreamer generated environments, without
+explicit mapping or human task supervision, achieve competitive results on multi-
+ple embodied benchmarks spanning navigation, rearrangement, and manipulation.
+EnvDreamer also supports image-conditioned reconstruction for real-to-sim studies.
+Finally, we release EnvDreamer-20k, a dataset of 20,000 validator passed envi-
+ronments with task programs, scene graphs, trajectories, and metadata to support
+reproducible benchmarking.
+1
+Introduction
+Large scale training on diverse data has accelerated progress in vision and language. In contrast,
+embodied AI and world model research still rely on simulators with far fewer scenes and limited task
+diversity, which makes it difficult to study long horizon behavior and robust generalization. Although
+recent simulators have improved physics, manipulation, and sensor realism, scaling interactive
+environments to tens or hundreds of thousands of scenes while preserving quality and reproducibility
+remains challenging Shen et al. [2021] Ehsani et al. [2021]. Pipelines based on manual authoring or
+3D scans are expensive to expand by orders of magnitude and are not designed for language first task
+authoring or rapid iteration Chang et al. [2017] Dai et al. [2017].
+We present EnvDreamer (Figure 1), a framework that generates fully interactive, physics enabled
+Unreal Engine 5 environments for embodied AI, world models, and robotics. Given a natural language
+description and optionally images, EnvDreamer plans assets, layout, and task specifications; compiles
+these plans to Unreal Python; and iteratively revises scenes and task logic using simulator feedback
+with unit style validators that check playability, physics consistency, and goal completeness. A large
+asset library with semantic categories, materials, and articulated parts is used to populate scenes
+automatically while enforcing physical plausibility and commonsense constraints. Lighting, textures,
+and materials can vary on load to increase diversity and reduce overfitting. Beyond text to scene
+synthesis Tan et al. [2019] Nauata et al. [2020] Wu et al. [2019] Wang et al. [2021], EnvDreamer
+supports image conditioned generation for sim to real studies, allowing researchers to reconstruct
+target environments in simulation for training and evaluation.
+40th Conference on Neural Information Processing Systems (NeurIPS 2026).
+arXiv:2610.04301v1  [cs.AI]  3 Oct 2026
+
+
+Figure 1: EnvDreamer system overview. The system builds environments from scratch using
+vision–language models (vLLMs) to plan and control Unreal Engine 5. User-provided text or image
+prompts along with system information such as Remote Control API commands and viewport
+screenshots (left) are passed to a vLLM-based Home Agent which decomposes the request into
+sub-tasks with Chain of ThoughtWei et al. [2022], generates a structured layout plan and task list in
+JSON, and compiles them into EnvDreamer API Python code for execution (middle). An Evaluator
+Agent then performs iterative task-completion checks on scene layout, furniture placement, and
+rationality, providing feedback until the environment passes validation (right). Finally, users can
+inspect the completeness of the environment by entering a play session in either an ego-centric or
+bird’s-eye view.
+To demonstrate scalability, we construct EnvDreamer 20k, a collection of 20,000 validator passed
+environments that span indoor and outdoor settings and include executable task programs, scene
+graphs, trajectories, and metadata. We train simple baselines for world model pretraining on interac-
+tive rollouts and for embodied policy learning in navigation, rearrangement, and manipulation using
+RGB and other modest sensory inputs, without explicit mapping or human task supervision. We
+report competitive results across multiple embodied benchmarks and study transfer by pretraining on
+EnvDreamer and evaluating in zero shot and few shot settings. For robotics, we aim to train policies
+that interact with objects to complete tasks in EnvDreamer and hope to deploy them to real hardware;
+we also plan to examine sim to real performance when simulators are fit to target scenes via image
+conditioned reconstruction.
+In summary, our contributions are: (1) EnvDreamer, a language first, code generative framework
+for diverse, fully interactive UE5 environments with unit style validators for playability, physics
+consistency, and goal completeness; (2) EnvDreamer 20k, a public dataset of 20,000 validator
+passed environments with executable task programs, scene graphs, trajectories, and metadata for
+reproducible benchmarking across indoor and outdoor settings; (3) Comprehensive evaluation
+showing competitive results for world model pretraining and embodied policy learning with analyses
+of zero shot and few shot transfer relative to procedural and non interactive baselines.
+2
+Related Work
+Embodied AI platforms.
+A range of simulators support embodied research with different emphases
+and tradeoffs. VirtualHome Puig et al. [2018] focuses on programmatic household activities with
+scene graphs and scripted routines. AI2–THOR Kolve et al. [2017] offers interactive objects, object
+states, and accurate physics across common indoor rooms, and ProcTHOR Deitke et al. [2022]
+extends it with large scale procedural generation of apartments and houses. Habitat Savva et al.
+[2019] prioritizes fast simulation and 3D scanned scenes, historically with less emphasis on richly
+2
+
+
+Figure 2: Diverse and realistic floor plan generation with EnvDreamer. Unlike traditional
+procedural methods that rely on fixed generation pipelines with limited variation, EnvDreamer
+leverages language-driven synthesis to create diverse, realistic home layouts. Each layout shown was
+generated from natural language prompts (e.g., "Create a modern 2-bedroom apartment," "Design a
+spacious family home with open kitchen"), producing architectural arrangements that follows real-
+world constraints. The diversity spans from compact studios (left) to complex multi-room residences
+(right), with rooms color-coded by type: bedrooms (yellow), bathrooms (green), living areas (red),
+and other spaces. This prompt-based approach enables researchers to specify exact requirements for
+embodied AI and robotics experiments while maintaining architectural realism that fixed procedural
+pipelines struggle to achieve.
+editable object dynamics. OmniGibson/BEHAVIOR Li et al. [2024] advances physics grounded
+interaction and task definitions. Across these platforms, scene creation is typically manual or template
+procedural, and task specifications are often goal descriptions rather than executable programs with
+explicit preconditions and success predicates. EnvDreamer differs by using language as the primary
+specification, compiling to Unreal Python, and applying validator checks for playability, physics
+consistency, and goal completeness before release.
+LLM evaluation in embodied environments.
+Closely related is VirtualEnv Swain et al. [2026], an
+Unreal Engine 5 platform for evaluating LLM-driven embodied agents on navigation, manipulation,
+and procedurally generated tasks such as escape rooms. EnvDreamer builds on this platform, extend-
+ing it with language-driven environment generation, unit-style validators for playability and physics
+consistency, and a large-scale dataset designed for embodied policy and world-model pretraining.
+System
+InteractiveLanguageReal-to-SimTask Type Scale (Envs) Open-Vocab
+ProcTHOR Deitke et al. [2022]
+✓
+CS
+10k+
+Infinigen Indoors Raistrick et al. [2024]
+S
+5k+
+PGDrive Li et al. [2022]
+✓
+CST
+100k+
+Phone2Proc Deitke et al. [2023]
+✓
+✓
+SH
+100+/scan
+Holodeck Yang et al. [2024]
+✓
+✓
+CSH
+1k+
+✓
+Architect Zhang et al. [2024]
+✓
+CS
+∼100/category
+✓
+EnvDreamer (Ours)
+✓
+✓
+✓
+CSTH
+20k
+✓
+Table 1: Comparison of procedural environment generation systems. Interactive: agent em-
+bodiment with physics and actuation. Language: prompt-guided scene generation. Real-to-Sim:
+conditioning on real scenes to rebuild them in simulation Task Type: coverage across constraint-free
+generation (C), spatial/layout diversity (S), temporal dynamics (T), and heterogeneous domains (H).
+Scale: approximate number of distinct environments. Open-Vocab: support for unbounded prompt
+categories at environment generation. EnvDreamer achieves full CSTH coverage with scalable,
+language-driven generation and UE5-based interactivity.
+Large scale datasets.
+Broad datasets have propelled progress in vision and language; the embodied
+setting has fewer interactive corpora of comparable scale. ProcTHOR Deitke et al. [2022] procedurally
+generates indoor houses to enable arbitrarily many scenes. Scanned repositories used with Habitat
+offer visual realism but are expensive to expand and less suited to program level task authoring.
+BEHAVIOR and related OmniGibson efforts Li et al. [2024] target household skills with physics and
+object states. EnvDreamer complements these directions by providing language driven scene and
+3
+
+
+Figure 3: Interactive prompt-driven environment editing with EnvDreamer. A GPT-5–based
+vLLM-based smart agent receives natural-language chat prompts from the user to constantly edit
+the environment, translates them into EnvDreamer API calls, and applies edits to a running UE5
+scene over the web. Users can inspect the updated environment, accept or refine the changes, and
+leverage additional web-session tools such as restoring prior states, direct drag-and-drop editing, and
+image-instructed edits, while the system maintains a synchronized JSON representation of the scene.
+task synthesis, unit style validation at generation time, and multimodal creation, and by releasing
+EnvDreamer 20k, a dataset of 20,000 validator passed environments with task programs, scene
+graphs, trajectories, and metadata for reproducible benchmarking across indoor and outdoor settings.
+Scene generation and editing.
+Work on generating indoor environments spans text-to-scene
+pipelines, floorplan synthesis, and procedural layout methods. Recent agentic systems such as
+SceneSmith Anonymous [2026] hierarchically compose simulation-ready indoor scenes from natural
+language through designer–critic–orchestrator agent interactions over stages of architectural layout,
+furniture, and small-object placement, combining text-to-3D asset synthesis with physics-based
+feasibility post-processing to produce dense, statically stable rooms with explicit physical properties
+(mass, friction, inertia, articulation) for direct robotics simulation. EnvDreamer takes a complemen-
+tary stance focused on corpus-scale embodied training rather than per-scene realism: scenes are
+interactive and physics enabled, placements obey commonsense and physical constraints, appearance
+and lighting can vary on load, and tasks compile to executable programs that are verified by validators
+before inclusion in the released dataset, supporting downstream world-model and embodied policy
+pretraining.
+Robotics simulators and sim to real.
+For robot learning, simulators place greater weight on sensor
+models, accurate dynamics, and integration with control stacks. Isaac Sim NVIDIA [2023] provides
+high fidelity physics, photoreal rendering, and native links to robotics middleware, which makes it
+well suited for manipulation and perception studies, though scene construction is often manual and
+not language first. RLBench James et al. [2020], RoboSuite Zhu et al. [2020], and Sapien Xiang
+et al. [2020] focus on fine grained manipulation skills and benchmark tasks with detailed kinematics
+and contact dynamics. EnvDreamer is complementary: it provides language driven scene and task
+synthesis in Unreal Engine 5 with validator checks and exposes APIs for navigation and manipulation
+so that policies trained in EnvDreamer can be transferred to real hardware, with image conditioned
+reconstruction available for sim to real studies when needed.
+3
+EnvDreamer
+EnvDreamer is a framework for language driven generation of interactive Unreal Engine 5 Epic
+Games [2024] environments. It integrates large language and vision language models Radford et al.
+[2021] OpenAI [2023], including a GPT-5–class vLLM backend for interactive editing, with the UE5
+Remote Control and Python interfaces so that scenes can be authored, edited, and validated at scale.
+Figure 3 illustrates an interactive web-session setup in which a vLLM-based smart agent receives
+user prompts and issues Remote Control commands to modify a running UE5 environment. As in
+hand authored UE5 levels, environments produced by EnvDreamer support navigation, manipulation,
+and multi agent interaction with accurate physics and rich materials.
+Overview.
+Given a specification in natural language or a small set of images, EnvDreamer plans
+assets, layout, and task logic, compiles the plan to Unreal Python, applies changes through Remote
+Control, and returns renders and a compact scene graph. A validator suite checks playability, physics
+4
+
+
+Figure 4: Interactive scene in EnvDreamer. Ego-centric view from the embodied agent with
+annotated object relations (on, under, between, near, inside) and a bird’s-eye view of the procedurally
+generated multi-room layout. The robot is rendered in-scene, and objects are spawned with realistic
+and diverse geometry, materials, and placements that afford navigation and manipulation.
+consistency, and goal completeness before a scene or task is accepted. The system exposes a web
+interface for authoring and review and supports rapid iteration.
+Plan–compile–apply–validate loop.
+Figure 1 illustrates the generation loop. A planner proposes
+either a scene program (assets, placements, relations) or a layout description (rooms, bounds, cameras,
+materials). A normalizer aligns proposals to a lightweight mirror of the scene graph. A compiler
+emits Unreal Python for immediate edits and falls back to C++ only when custom rules, sensors, or
+physics components are required. An executor applies actions via Remote Control, captures renders
+and a scene graph diff, and the validators assess reachability, collisions, articulation constraints, and
+task predicates. The loop supports two modes: direct build, which applies edits live to the running
+level, and layout build, which materializes reusable layouts into scenes.
+Diversity.
+EnvDreamer produces diversity across multiple facets relevant to embodied evaluation.
+Layouts: from single rooms to multi room houses and outdoor lots, with variable room counts, aspect
+ratios, and connectivity patterns (Figure 2). Assets: a large library of household, office, and outdoor
+objects with articulated parts and semantic categories; placement rules reflect commonsense room
+and location preferences. Materials and lighting: materials, textures, and lighting parameters vary
+across loads to simulate time of day and appearance changes. Behaviors and tasks: tasks range from
+object search and rearrangement to tool use and multi step manipulation, encoded as executable
+programs with explicit preconditions and success metrics Yu et al. [2019].
+Interactivity.
+Objects in EnvDreamer environments support comprehensive physical interactions.
+Items can be grasped, placed, opened, closed, toggled between states, or articulated through their
+joints. UE5’s physics engine enforces realistic constraints, collisions, and dynamics, enabling complex
+behaviours such as stacking, tool use, and multi-step manipulation. Appliances have functional states
+(e.g., ovens that open and heat), containers can be filled or emptied, and furniture can be rearranged.
+Scenes are authored to preserve navigable free space while maximizing interaction opportunities,
+with objects placed at reachable heights and orientations that afford natural manipulation. This
+enables long-horizon tasks requiring sequential interactions with multiple objects capabilities that
+static scan-based environments cannot provide.
+Customization.
+Scene specifications admit simple controls over room counts, categories present or
+absent, clutter level, lighting ranges, articulation availability, and task families. Small prompt changes
+or parameter sweeps yield families of related scenes, facilitating controlled generalization tests and
+curriculum-style progression over layouts and object configurations, as exemplified by the variations
+in Fig. 4.
+5
+
+
+Figure 5: Task-conditioned dataset generation pipeline for EnvDreamer–20k. A user specifies a
+scenario by providing a prompt and a high-resolution viewport screenshot plus the current environment
+JSON description (left). A language model decomposes the request into a sequence of grounded
+sub-tasks such as “Walk to the kitchen” or “Put pizza on the plate” (middle). The system then
+checks which preconditions are satisfied by comparing object relations and automatically adding
+missing objects required to solve each task (e.g., placing a plate on the table). Finally, the validated
+environment details and the set of available tasks are exported as JSON and rendered through the
+EnvDreamer API to produce entries in the EnvDreamer–20k dataset (right).
+Scale and efficiency.
+EnvDreamer represents scenes as compact JSON-like programs with de-
+terministic seeds, enabling both static datasets and on-the-fly generation during training. The
+plan–compile–apply–validate loop is fully automatic and returns short iterations suitable for large-
+scale sampling. Scenes load directly in UE5 at training time, keeping storage overhead modest while
+maintaining high frame rates.
+Embodied robots.
+EnvDreamer ships with ready-to-use robot configurations for manipulation and
+locomotion; Fig. 4 shows one humanoid agent in a bedroom configuration. We include a Franka arm
+for pick-and-place, tool use, and contact-rich tasks, and a Unitree Go1 for exploration, navigation, and
+retrieval. Policies can access navigation and manipulation interfaces, RGB and depth observations,
+semantic and instance masks, and domain randomization over textures, lighting, clutter, and physics.
+Image to environment for sim to real.
+For sim to real studies, EnvDreamer supports image
+conditioned generation. Given photographs of a target space, a vision language model proposes a
+scene graph aligned to the images, and EnvDreamer instantiates semantically matched assets in UE5.
+This capability enables reconstruction of target environments in simulation with minimal manual
+authoring.
+4
+EnvDreamer–20k
+We demonstrate the utility of our platform with a sampled set of 20,000 fully interactive environments
+produced by the generation loop in Section 3, which we refer to as EnvDreamer–20k. Figure 5
+summarizes the task-conditioned pipeline used to convert prompts and environment snapshots into
+validated scenes and executable task programs. Unless noted otherwise, experiments use a 16k/2k/2k
+split for train/validation/test; asset and task program splits are detailed in the Appendix. All scenes
+are fully navigable and support interaction and manipulation without additional authoring. In scale
+and interactivity, EnvDreamer–20k is among the largest public corpora designed for embodied AI,
+world models, and robotics. Scaling beyond 20k is straightforward because each scene is specified
+by a compact program with deterministic seeds and can be generated on demand during training.
+Figure 4 shows ego centric and top down views.
+Scene statistics.
+EnvDreamer–20k currently focuses on indoor environments such as single rooms,
+multi-room apartments, and offices.
+We control distributions over room count and connectivity via high-level specifications, and empirical
+statistics are reported in Figure 6. Across the dataset, most environments contain 3–6 rooms, with
+smaller studio-like scenes and larger multi-room layouts appearing less frequently. Within each room,
+object counts follow a controlled distribution centered around 10–16 items, with occasional clutter-
+heavy rooms containing up to 30 objects. In addition to structural layout, the system also generates
+6
+
+
+(a) Object counts per room.
+(b) Tasks generated per room.
+(c) Room counts per environment.
+Figure 6: EnvDreamer–20k statistics. Left: distribution of the number of objects per room; most
+rooms contain 8–18 objects, with a modest tail to 30+ for cluttered spaces. Middle: distribution of
+the number of tasks generated per room, with the majority of rooms supporting 1–4 grounded tasks
+and a small fraction supporting 5–6. Right: bar plot of the number of rooms per environment in
+EnvDreamer–20k, showing that 3–6 room layouts dominate while very small and very large homes
+are less common.
+room-conditioned task programs: most rooms support between 1–4 grounded tasks (Figure 6, middle),
+reflecting functional diversity while avoiding overspecified or unrealistic behaviors. Scenes draw
+from a broad set of categories spanning furniture, containers, tools, appliances, structural elements,
+and fixtures. Placement follows room-type preferences to preserve free space for navigation and
+afford contact-rich manipulation. Materials, textures, and lighting vary across loads to simulate
+different times of day and appearance conditions.
+Tasks and validators.
+Each scene includes one or more executable task programs with explicit
+preconditions and success predicates. Tasks span object search, waypoint navigation, pick and place
+and rearrangement, tool use, and multi step manipulation. Unit style validators check playability,
+physics consistency, and goal completeness before inclusion. We report task counts and pass rates
+per family in Figure 6b and provide failure taxonomies in the Appendix.
+Release format.
+Each entry in EnvDreamer–20k includes: the original prompt or authoring images,
+the scene program, the scene graph, rendering metadata, task programs and validator outcomes, and
+optional reference trajectories. We also provide seed files for exact regeneration and scripts for batch
+materialization inside Unreal Engine 5. This format reduces setup cost and supports reproducible
+benchmarking for world models, embodied agents, and robotics.
+5
+Experiments
+We empirically evaluate EnvDreamer–20k on navigation and manipulation benchmarks that mirror
+the ProcTHOR evaluation protocol. Concretely, we focus on ObjectNav-style navigation in several
+simulators and on two manipulation-style tasks: ArmPointNav and one-phase Room Rearrangement.
+This allows us to directly compare pretraining on EnvDreamer–20k to pretraining on ProcTHOR-10K
+using the same task definitions and metrics.
+5.1
+Tasks and Benchmarks
+Navigation.
+We consider ObjectNav (navigation towards a specific object category) in five bench-
+marks: ProcTHOR-style houses, ArchitecTHOR, RoboTHOR, HM3D, and AI2-iTHOR. Episodes
+begin from a random spawn within the environment and specify a target object category. The agent
+receives egocentric RGB observations and must navigate to within a small distance of an instance
+of the target category while avoiding collisions. Following standard practice, we report success rate
+(SR), success weighted by path length (SPL) Anderson et al. [2018].
+Manipulation and rearrangement.
+We follow the ProcTHOR setup and evaluate on two
+manipulation-style tasks:
+• ArmPointNav: the agent controls a robotic arm to move an object from a source location
+to a destination specified in a 3D coordinate frame. Success is measured by the fraction of
+episodes in which the object ends within a threshold radius of the target .
+7
+
+
+Benchmark
+Scratch
+P-10K
+ED-20k
+ProcTHOR ObjNav
+18.5±0.8 / 11.8±0.6 31.4±1.2 / 19.5±0.9 32.7±1.1 / 20.3±0.8
+ArchitecTHOR ObjNav
+14.3±0.7 / 9.2±0.5
+29.8±1.3 / 18.7±0.8 31.2±1.2 / 19.4±0.7
+RoboTHOR ObjNav
+28.3±1.1 / 15.2±0.7 55.0±1.8 / 23.7±1.0 56.4±1.7 / 24.2±0.9
+HM3D ObjNav
+6.8±0.4 / 4.2±0.3
+9.0±0.5 / 5.5±0.4
+9.8±0.5 / 5.7±0.4
+AI2-iTHOR ObjNav
+52.1±1.9 / 38.4±1.4 75.7±2.1 / 64.4±1.8 76.3±2.0 / 64.9±1.7
+Room Rearrangement
+3.2±0.3
+7.4±0.6
+8.1±0.5
+ArmPointNav
+24.6±1.3
+37.9±1.6
+39.2±1.5
+Table 2: Benchmark performance. Scratch: trained only on the benchmark; P-10K: ProcTHOR-
+10K pretraining; ED-20k: EnvDreamer-20k pretraining. All use the same RGB-only backbone and
+matched training budgets. EnvDreamer-20k shows consistent improvements over ProcTHOR-10K
+across all benchmarks.
+• One-phase Room Rearrangement: the agent must move objects or change their state
+to match a target scene configuration. We report standard rearrangement metrics, such as
+success rate under fixed and strict thresholds Batra et al. [2020].
+EnvDreamer–20k provides the training environments for these tasks via its validator-checked task
+programs and object-centric scene graphs, described in Section 4. For downstream evaluation, we
+follow the official splits and protocols of each benchmark and restrict ourselves to RGB inputs only.
+All EnvDreamer performance numbers reported below were obtained on NVIDIA RTX 5090 GPUs;
+further compute and parallelism details are provided in the Supplementary Material.
+5.2
+Comparison to ProcTHOR
+For fair comparison, all models use identical simple RGB-only architectures without explicit mapping
+or depth sensing. We evaluate in two modes: zero-shot (pretrained only, no downstream training) and
+fine-tuning (pretrained then adapted on benchmark data).
+ProcTHOR-10K demonstrated that large-scale procedural houses plus a simple RGB-only model can
+achieve state-of-the-art results across six embodied benchmarks. EnvDreamer-20k follows the same
+philosophy but is built in Unreal Engine 5 and tightly integrates language-driven generation, task
+programs, and validator checks. Before comparing performance, we first summarize key dataset-level
+differences.
+Benchmark-level comparison.
+We next compare three training regimes on each downstream
+benchmark:
+1. Training from scratch on the benchmark.
+2. Pretraining on ProcTHOR-10K followed by fine-tuning.
+3. Pretraining on EnvDreamer–20k followed by fine-tuning.
+All models share the same architecture and are trained under matched environment-step budgets.
+Following ProcTHOR, we report SR and SPL for ObjectNav and success metrics for rearrangement
+and ArmPointNav. Table 2 shows these results.
+5.3
+Scaling and Ablations
+Finally, we study how performance scales with the size and quality of the EnvDreamer–20k pretraining
+set, following the scale ablation reported for ProcTHOR. We vary the number of training environments
+and the strictness of validator checks, and we measure downstream ObjectNav performance under a
+fixed training budget.
+Dataset size.
+We train identical policies on subsets of EnvDreamer–20k containing 5k, 10k, 15k,
+and 20k environments, and evaluate zero-shot on representative ObjectNav benchmarks. Table 3
+shows these results.
+8
+
+
+# ED envs
+Arch SR/SPL
+Robo SR/SPL
+HM3D SR/SPL
+AI2 SR/SPL
+5k
+24.2±0.9 / 15.3±0.7 42.1±1.4 / 18.9±0.8 7.9±0.5 / 4.8±0.3 70.3±1.8 / 58.2±1.5
+10k
+27.3±1.0 / 16.9±0.8 47.2±1.5 / 20.8±0.9 8.4±0.5 / 5.2±0.4 72.6±1.9 / 60.9±1.6
+15k
+30.1±1.1 / 18.6±0.9 51.9±1.6 / 22.6±1.0 9.0±0.5 / 5.6±0.4 74.8±1.9 / 63.1±1.6
+20k
+32.9±1.2 / 20.3±0.9 56.8±1.7 / 24.5±1.1 9.7±0.6 / 5.9±0.4 76.9±2.0 / 65.2±1.7
+Table 3: Dataset size ablation. Policies are pretrained on subsets of EnvDreamer-20k (5k, 10k, 15k,
+and the full 20k environments) and evaluated zero-shot on four ObjectNav benchmarks. Results show
+consistent improvements with scale, validating our decision to generate 20k environments.
+A paired ablation isolating per-environment quality from raw scale, together with a study of validator
+strictness, is reported in the Supplementary Material (Section 8.7).
+6
+Discussion and Limitations
+While EnvDreamer-20k advances the scale of interactive embodied AI environments, several limita-
+tions suggest future directions.
+Scope and coverage.
+EnvDreamer-20k currently focuses on indoor environments; outdoor scenes
+are supported by the framework and will be included in future releases. The system lacks complex
+physics (liquids, deformables) and supports only single-agent tasks. Generation takes 2–5 minutes
+per environment, and CPU bottlenecks reduce per-instance throughput at high parallelism, though
+aggregate performance suffices for training.
+Task complexity.
+Tasks are limited to relatively short horizons (10–50 steps) with single solutions.
+Future work will extend to longer-horizon, open-ended specifications with multiple valid approaches
+that better reflect real-world complexity.
+Future directions.
+Key extensions include outdoor environments, advanced physics (liquids,
+deformables), multi-agent validators, curriculum learning, longer-horizon tasks with multiple solution
+paths, and a pipeline under development for exporting scenes to NVIDIA Omniverse for use within
+Isaac Sim and the broader Omniverse robotics tooling. The open-source release enables community
+extensions to assets, tasks, and validators.
+Despite these limitations, EnvDreamer-20k demonstrates that language-driven, validator-checked
+generation produces diverse, high-quality training data at scale, achieving competitive performance
+across benchmarks while maintaining rapid iteration capabilities.
+7
+Conclusion
+We presented EnvDreamer, a language-first framework for generating arbitrarily large sets of interac-
+tive, physics-enabled Unreal Engine 5 environments for embodied AI, world models, and robotics.
+EnvDreamer-20k—our dataset of 20,000 validated environments with executable task programs,
+scene graphs, and metadata—enables policies that consistently outperform ProcTHOR-10K pretrain-
+ing across all tested navigation, rearrangement, and manipulation benchmarks, with strong zero-shot
+transfer capabilities. Scaling experiments confirm that performance continues to improve with dataset
+size, validating the investment in large-scale generation. The open-source release of EnvDreamer and
+the full EnvDreamer-20k dataset aims to democratize access to high-quality training environments
+and accelerate progress in embodied AI research. By bridging vision-language models with physics
+simulation and unit-style validation, EnvDreamer provides a scalable, reproducible foundation for
+embodied intelligence.
+9
+
+
+References
+Peter Anderson, Angel Chang, Devendra Singh Chaplot, Alexey Dosovitskiy, Saurabh Gupta, Vladlen
+Koltun, Jana Kosecka, Jitendra Malik, Roozbeh Mottaghi, Manolis Savva, and Amir R. Zamir. On
+evaluation of embodied navigation agents. arXiv preprint arXiv:1807.06757, 2018.
+Anonymous. SceneSmith: Agentic composition of simulation-ready indoor scenes from natural
+language. In Under review, 2026. Placeholder citation.
+Dhruv Batra, Angel X. Chang, Sonia Chernova, Andrew J. Davison, Jia Deng, Vladlen Koltun,
+Sergey Levine, Jitendra Malik, Igor Mordatch, Roozbeh Mottaghi, Manolis Savva, and Hao Su.
+Rearrangement: A challenge for embodied AI. arXiv preprint arXiv:2011.01975, 2020.
+Angel Chang, Angela Dai, Thomas Funkhouser, Maciej Halber, Matthias Niessner, Manolis Savva,
+Shuran Song, Andy Zeng, and Yinda Zhang. Matterport3D: Learning from RGB-D data in indoor
+environments. In International Conference on 3D Vision (3DV), 2017.
+Angela Dai, Angel X. Chang, Manolis Savva, Maciej Halber, Thomas Funkhouser, and Matthias
+Niessner. ScanNet: Richly-annotated 3D reconstructions of indoor scenes. In IEEE Conference on
+Computer Vision and Pattern Recognition (CVPR), 2017.
+Matt Deitke, Eli VanderBilt, Alvaro Herrasti, Luca Weihs, Jordi Salvador, Kiana Ehsani, Winson Han,
+Eric Kolve, Ali Farhadi, Aniruddha Kembhavi, and Roozbeh Mottaghi. ProcTHOR: Large-scale
+embodied AI using procedural generation. In Advances in Neural Information Processing Systems
+(NeurIPS), 2022.
+Matt Deitke, Rose Hendrix, Ali Farhadi, Kiana Ehsani, and Aniruddha Kembhavi. Phone2Proc:
+Bringing robust robots into our chaotic world. In IEEE/CVF Conference on Computer Vision and
+Pattern Recognition (CVPR), 2023.
+Kiana Ehsani, Winson Han, Alvaro Herrasti, Eli VanderBilt, Luca Weihs, Eric Kolve, Aniruddha
+Kembhavi, and Roozbeh Mottaghi. ManipulaTHOR: A framework for visual object manipulation.
+In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 2021.
+Epic Games. Unreal engine 5. https://www.unrealengine.com/en-US/unreal-engine-5,
+2024.
+Stephen James, Zicong Ma, David Rovick Arrojo, and Andrew J. Davison. RLBench: The robot
+learning benchmark & learning environment. In IEEE Robotics and Automation Letters (RA-L),
+2020.
+Eric Kolve, Roozbeh Mottaghi, Winson Han, Eli VanderBilt, Luca Weihs, Alvaro Herrasti, Daniel
+Gordon, Yuke Zhu, Abhinav Gupta, and Ali Farhadi. AI2-THOR: An interactive 3D environment
+for visual AI. arXiv preprint arXiv:1712.05474, 2017.
+Chengshu Li, Ruohan Zhang, Josiah Wong, Cem Gokmen, Sanjana Srivastava, Roberto Martín-
+Martín, Chen Wang, Sergey Levine, Michael Lingelbach, Jiankai Sun, et al. BEHAVIOR-1k: A
+human-centered, embodied AI benchmark with 1,000 everyday activities and realistic simulation.
+In Conference on Robot Learning (CoRL), 2024.
+Quanyi Li, Zhenghao Peng, Lan Feng, Qihang Zhang, Zhenghai Xue, and Bolei Zhou.
+MetaDrive/PGDrive: Composing diverse driving scenarios for generalizable reinforcement learn-
+ing.
+In IEEE Transactions on Pattern Analysis and Machine Intelligence (TPAMI), 2022.
+arXiv:2109.12674.
+Nelson Nauata, Kai-Hung Chang, Chin-Yi Cheng, Greg Mori, and Yasutaka Furukawa. House-GAN:
+Relational generative adversarial networks for graph-constrained house layout generation. In
+European Conference on Computer Vision (ECCV), 2020.
+NVIDIA. NVIDIA Isaac Sim: Robotics simulation and synthetic data generation. https://
+developer.nvidia.com/isaac/sim, 2023.
+OpenAI. GPT-4 technical report. Technical report, OpenAI, 2023. arXiv:2303.08774.
+10
+
+
+Xavier Puig, Kevin Ra, Marko Boben, Jiaman Li, Tingwu Wang, Sanja Fidler, and Antonio Torralba.
+VirtualHome: Simulating household activities via programs. In IEEE Conference on Computer
+Vision and Pattern Recognition (CVPR), 2018.
+Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal,
+Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, Gretchen Krueger, and Ilya Sutskever.
+Learning transferable visual models from natural language supervision. In International Conference
+on Machine Learning (ICML), 2021.
+Alexander Raistrick, Lingjie Mei, Karhan Kayan, Stamatis Yan, Yiming Zheng, Lahav Han, Hugh
+Lipson, Yuyan Wang, Steven Stanley, David Lin, and Jia Deng Chen. Infinigen Indoors: Photoreal-
+istic indoor scenes using procedural generation. In IEEE/CVF Conference on Computer Vision
+and Pattern Recognition (CVPR), 2024.
+Manolis Savva, Abhishek Kadian, Oleksandr Maksymets, Yili Zhao, Erik Wijmans, Bhavana Jain,
+Julian Straub, Jia Liu, Vladlen Koltun, Jitendra Malik, Devi Parikh, and Dhruv Batra. Habitat: A
+platform for embodied AI research. In IEEE/CVF International Conference on Computer Vision
+(ICCV), 2019.
+Bokui Shen, Fei Xia, Chengshu Li, Roberto Martín-Martín, Linxi Fan, Guanzhi Wang, Claudia
+Pérez-D’Arpino, Shyamal Buch, Sanjana Srivastava, Lyne Tchapmi, Micael Tchapmi, Kent Vainio,
+Li Fei-Fei, and Silvio Savarese. iGibson 1.0: A simulation environment for interactive tasks in
+large realistic scenes. In IEEE/RSJ International Conference on Intelligent Robots and Systems
+(IROS), 2021.
+Kabir Swain, Sijie Han, Ayush Raina, Jin Zhang, Shuang Li, Michael Stopa, and Antonio Torralba.
+VirtualEnv: A platform for embodied AI research, 2026. URL https://arxiv.org/abs/2601.
+07553.
+Fuwen Tan, Song Feng, and Vicente Ordonez. Text2Scene: Generating compositional scenes from
+textual descriptions. In IEEE Conference on Computer Vision and Pattern Recognition (CVPR),
+2019.
+Xinpeng Wang, Chandan Yeshwanth, and Matthias Niessner. SceneFormer: Indoor scene generation
+with transformers. In International Conference on 3D Vision (3DV), 2021.
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Brian Ichter, Fei Xia, Ed H. Chi,
+Quoc V. Le, and Denny Zhou. Chain-of-thought prompting elicits reasoning in large language
+models. In Advances in Neural Information Processing Systems (NeurIPS), 2022.
+Wenming Wu, Xiao-Ming Fu, Rui Tang, Yuhan Wang, Yu-Hao Qi, and Ligang Liu. Data-driven
+interior plan generation for residential buildings (RPLAN). In ACM Transactions on Graphics
+(SIGGRAPH Asia), 2019.
+Fanbo Xiang, Yuzhe Qin, Kaichun Mo, Yikuan Xia, Hao Zhu, Fangchen Liu, Minghua Liu, Hanxiao
+Jiang, Yifu Yuan, He Wang, Li Yi, Angel X. Chang, Leonidas J. Guibas, and Hao Su. SAPIEN: A
+simulated part-based interactive environment. In IEEE/CVF Conference on Computer Vision and
+Pattern Recognition (CVPR), 2020.
+Yue Yang, Fan-Yun Sun, Luca Weihs, Eli VanderBilt, Alvaro Herrasti, Winson Han, Jiajun Wu, Nick
+Haber, Ranjay Krishna, Lingjie Liu, Chris Callison-Burch, Mark Yatskar, Aniruddha Kembhavi,
+and Christopher Clark. Holodeck: Language guided generation of 3D embodied AI environments.
+In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR), 2024.
+Tianhe Yu, Deirdre Quillen, Zhanpeng He, Ryan Julian, Karol Hausman, Chelsea Finn, and Sergey
+Levine. Meta-World: A benchmark and evaluation for multi-task and meta reinforcement learning.
+In Conference on Robot Learning (CoRL), 2019.
+Yian Zhang, Xiaoshi Wang, Yuyang Lyu, Wenliang Zhao, Jingdong Liu, Yinpeng Wang, and Jingyi
+Yu. Architect: Generating vivid and interactive 3D scenes with hierarchical 2D inpainting. In
+Advances in Neural Information Processing Systems (NeurIPS), 2024.
+Yuke Zhu, Josiah Wong, Ajay Mandlekar, Roberto Martín-Martín, Abhishek Joshi, Soroush Nasiriany,
+and Yifeng Zhu. robosuite: A modular simulation framework and benchmark for robot learning.
+In arXiv preprint arXiv:2009.12293, 2020.
+11
+
+
+Figure 7: High-level architecture of the EnvDreamer Remote Control API. Python clients issue JSON
+commands to AJsonSceneBuilder, which resolves assets, spawns actors, and returns structured
+responses.
+8
+Supplementary Materials
+8.1
+EnvDreamer Remote Control API
+EnvDreamer exposes a lightweight Remote Control (RC) API that allows Python tools and external
+agents to programmatically construct, inspect, and manipulate scenes inside Unreal Engine. The
+API is implemented by the AJsonSceneBuilder actor on the engine side and a small set of client
+utilities on the Python side (e.g., rc_call() in HomeAgent). This section summarizes the design
+and typical usage patterns of the API.
+8.1.1
+JsonSceneBuilder Actor
+The AJsonSceneBuilder actor is responsible for:
+• maintaining a map from user-level identifiers (Id) to spawned actors using tags of the form
+"RCID:<Id>",
+• interpreting RC commands (add/remove assets, set transforms, apply materials/textures),
+and
+• exposing camera and snapshot utilities for debugging and data collection.
+Existing
+actors
+marked
+as
+"JsonGenerated"
+are
+re-indexed
+at
+startup
+via
+ReindexExistingJsonActors(), allowing scenes built in previous sessions to be reused
+without re-spawning from scratch.
+8.1.2
+Asset Resolution and Registry
+To decouple layout descriptions from engine paths, EnvDreamer uses a simple asset registry:
+• Config
+file.
+At
+editor
+startup,
+AssetRegistry::Initialize()
+loads
+Config/asset_registry.json, which stores assets grouped by semantic categories
+(e.g., "kitchen", "office") and an optional alias map.
+• Name resolution. AssetRegistry::Resolve(NameOrPath) returns a fully qualified Un-
+real path when given a shortcut name (e.g., "bp_table") or passes through raw /Game/...
+paths unchanged.
+• Type detection. RC_AddAsset uses Unreal’s IAssetRegistry to distinguish between
+static mesh assets and Blueprint classes, falling back to "_C" suffix heuristics when metadata
+is unavailable.
+12
+
+
+Table 4: Key EnvDreamer RC methods callable via Python.
+Method
+Purpose
+RC_AddAsset
+Spawn mesh/Blueprint at pose
+RC_Remove
+Destroy actor by ID
+RC_SetLocation
+Update translation
+RC_SetScale
+Update actor scale
+RC_SetMaterialColor
+Apply colored material
+RC_SetMaterialTexture
+Apply texture asset
+ClearAllJsonActors
+Remove all generated
+8.1.3
+Core Asset and Material Operations
+Table 4 summarizes the most frequently used RC functions exposed by AJsonSceneBuilder. All
+commands are identified by a string Id that serves as a stable handle for future updates.
+RC_AddAsset.
+Given an Id, AssetPath, pose, and scale, the engine first resolves the asset name
+through the registry, then auto-detects whether the asset is a static mesh or a Blueprint:
+• For static meshes, a new AStaticMeshActor is spawned and its UStaticMeshComponent
+is configured (mobility, mesh, optional color material).
+• For Blueprints, LoadBlueprintClass converts the asset object path to a class path (ap-
+pending "_C" as needed) and spawns an instance of that class.
+In both cases, the resulting actor is tagged with "JsonGenerated" and "RCID:<Id>", added to the
+internal index, and returned to the client as a success indicator.
+Material and texture control.
+Two complementary operations are provided:
+• RC_SetMaterialColor(Id, Color) uses a cached UMaterial (e.g., M_Basic_Wall)
+to create per-color dynamic material instances, keyed by the RGBA tuple.
+• RC_SetMaterialTexture(Id, TexturePath) first attempts to load a full material at the
+given path (normalizing redundant .MaterialName suffixes). If successful, the material
+is applied directly. Otherwise, the code falls back to loading the asset as a UTexture2D
+and wiring it into a dynamic material instance via an existing or common texture parameter
+name (e.g., "BaseColor", "Albedo").
+This dual-path strategy allows the same API to handle both authored materials and raw textures
+referenced by the Python side.
+8.1.4
+Camera Control and Snapshots
+For inspection and dataset generation, the RC API provides basic camera and screenshot control
+(editor-only):
+• RC_SetCameraLocation, RC_SetCameraRotation, and RC_MoveCameraRelative di-
+rectly manipulate the active editor viewport via FEditorViewportClient.
+• RC_Snapshot(Name, ResX, ResY, OutPath) configures the high-resolution screenshot
+system, clears previous PNGs under Saved/AIShots/, and requests a new screenshot with
+the given name and resolution. The absolute path is returned to the caller for downstream
+processing.
+8.1.5
+Introspection Utilities
+To support higher-level reasoning and placement logic, the API exposes two introspection methods:
+• RC_GetActorInfo(Id): Returns a compact JSON string containing the actor’s class name,
+location, rotation, and scale. This is used by Python tools to confirm that layout edits have
+taken effect and to compute relative transforms between objects.
+13
+
+
+Figure 8: Remote web session for EnvDreamer. The live UE5 viewport is streamed to the browser,
+while a simple builder UI issues layout updates through HTTP endpoints backed by the RC API.
+• RC_GetComponentInfo(Id, OutJson): Serializes all components attached to the ac-
+tor, including per component transform, bounding box, and inferred semantic tags (e.g.,
+"surface" or "floor" based on name heuristics). For surface-like components, the
+method also reports a suggested placement_height above the top of the bounding box,
+which is used by placement policies to drop new objects on tables or floors without hard-
+coding offsets.
+Together, these endpoints turn EnvDreamer into an inspection-friendly environment: external agents
+can not only spawn and restyle assets, but also query geometric affordances and build richer internal
+scene representations without direct access to engine internals.
+8.2
+Remote Unreal Web Session
+To make EnvDreamer accessible without opening the Unreal Editor, a minimal “simple builder” web
+session is provided. It couples a Pixel Streaming viewport running inside UE5 with a small FastAPI
+backend and a single-page HTML/JavaScript client. This interface is used for quick qualitative
+inspection, debugging, and human-in-the-loop layout editing.
+8.2.1
+Pixel-Streamed Viewer
+On the engine side, Unreal’s Pixel Streaming stack exposes the current editor or game viewport as a
+low-latency WebRTC stream. The web client embeds this stream in an <iframe> (pointing to the
+local Pixel Streaming address) and forwards mouse and keyboard events directly to UE5. This allows
+a remote user to orbit, pan, and fly through the generated environment and visually confirm that
+RC-issued layout changes have taken effect. No simulation logic runs in the browser; the page is a
+thin remote viewer and input forwarder.
+14
+
+
+8.2.2
+Simple Builder Server
+The simple builder backend is a FastAPI application that exposes a small set of HTTP endpoints:
+• GET / serves the static HTML page (web_simple.html) containing the viewer and chat-
+style layout assistant.
+• GET /shots/latest.png returns the latest high-resolution screenshot produced by UE5.
+Screenshots are copied into a public directory and served with no-cache headers.
+• POST /api/simple/build-from-prompt accepts a JSON payload with a free-form text
+description, calls generate_layout_from_prompt(), writes the resulting layout JSON,
+and invokes apply_layout_update() to rebuild the scene.
+• POST /api/simple/build-from-image accepts an uploaded reference image plus an
+optional text prompt, calls generate_layout_from_image(), and applies the resulting
+layout in the same way as the text-only endpoint.
+Both build endpoints return a compact update summary describing the change mode (full vs. in-
+cremental), which rooms were touched, and which items were updated. The web client uses this
+summary to render concise status messages in the chat log.
+8.2.3
+Browser UI and Interaction Loop
+The HTML client exposes two main panels: a viewer panel with the embedded Pixel Streaming
+iframe, and a “Layout Assistant” panel that implements a chat-style interface. Each user request
+is echoed as a user message, and each successful build is summarized as an assistant message.
+Drag-and-drop handlers allow a user to paste or drop an image directly into the chat area, which
+triggers the image-conditioned endpoint.
+The JavaScript logic maintains a small amount of local state, including a reference count of active
+HTTP requests (used to disable the send button and prevent overlapping builds) and error handling
+that surfaces non-2xx responses as concise error messages in the chat log. Layout state is not cached
+in the browser; the authoritative layout and history live on disk and are queried when needed.
+8.2.4
+Layout History and Checkpoints
+To support backtracking and side-by-side comparisons, the simple builder records layout checkpoints
+under Config/LayoutHistory/. Each successful build creates a JSON snapshot and appends a
+version entry to history.json with a timestamp, source type (prompt, image, clear, etc.), and an
+optional note. The browser queries GET /api/simple/layout/state, which returns the current
+layout, the list of versions, and the identifier of the active checkpoint; this list populates the “Layout
+History” sidebar with simple “Previous”, “Next”, and “Restore” controls.
+Dedicated
+endpoints
+(/api/simple/layout/restore,
+/api/simple/layout/clear,
+/api/simple/layout/set-wall-color) allow a user to restore a previous snapshot, clear the
+layout, or apply targeted edits (such as changing a room’s wall color) without re-running the
+planner. Restoring a checkpoint updates the default layout file, invokes apply_layout_update()
+to resynchronize UE5, and marks the selected version as current in history.json.
+8.2.5
+Intended Usage
+The remote web session is intended for rapid manual exploration and debugging rather than large-
+scale training. Typical uses include: interactive testing of planner behaviour without opening the
+Unreal Editor, quick qualitative evaluation of layout diversity and failure modes by non-expert users,
+and easy reproduction of specific layouts from the paper by loading the corresponding checkpoint
+and streaming the resulting scene. Because the interface is built entirely on top of the RC API and
+planner endpoints, it can be deployed on remote hosts or extended with task-specific controls without
+changes to the core engine.
+8.3
+Layout Planner and Prompt Design
+The main paper describes the overall EnvDreamer pipeline at a high level. Here we focus on the
+layout planner component that translates text (and optionally images) into editable layouts.
+15
+
+
+Figure 9: High-level control flow of the layout planner.
+8.3.1
+Planner API and Control Flow
+The planner exposes a small API used by the UE5 tools:
+• generate_layout_from_prompt(prompt, current_layout) produces a full layout
+JSON given a natural-language instruction and, optionally, a pre-existing layout to edit.
+• generate_layout_from_image(prompt, image_bytes, current_layout) recon-
+structs a layout from a reference image plus optional text.
+• validate_layout_schema(layout) and write_layout_file(path, layout) pro-
+vide lightweight validation and serialization.
+Internally, both generation functions construct a list of messages that combine: (1) a global system
+prompt describing geometric and semantic constraints; (2) an optional summary of the current
+layout (when editing); and (3) a strict JSON schema specification that pins down the output format.
+The user instruction is appended as the final user message. We request a structured response via
+response_format={ "type":
+"json_object" }, which avoids the need for ad-hoc text post-
+processing.
+8.3.2
+Incremental Editing Behaviour
+In interactive sessions the user rarely specifies an entire apartment in one prompt. Instead, EnvDreamer
+receives a sequence of localized edits: “extend the kitchen by one grid cell,” “replace the sofa with
+two arm chairs,” or “turn the study into a bedroom.” To support these workflows:
+• The planner always passes the most recent layout as an additional system message tagged
+as current_layout. The prompt emphasizes that unspecified rooms and items should be
+preserved.
+• When the user request is ambiguous (e.g., “make the living room brighter”), we treat the
+instruction as a soft preference and allow the LLM to choose between adjusting lighting,
+swapping materials, or both. The resulting layout is still filtered by the validator.
+• If schema validation fails, the tool surfaces a concise error message and offers to either (i)
+re-issue the prompt with a stronger constraint hint, or (ii) revert to the previous layout.
+8.3.3
+Vision-conditioned Layouts
+For image-conditioned generation, we embed the input photograph as an image_url in the user
+message and prepend a short instruction such as “Infer a plausible floor plan for this room” or “Align
+the furniture arrangement with this photo while keeping the existing topology.” Unlike the text-only
+16
+
+
+Figure 10: Illustrative incremental editing session.
+Figure 11: Distribution of room counts and usable floor area.
+case, the planner treats the image as soft evidence: it aims to match visible structure and object types
+while still respecting grid snapping and validator constraints.
+We found that allowing the model to slightly deviate from the exact pixel geometry leads to layouts
+that are easier to navigate and reuse across tasks, at the cost of a small loss in photometric fidelity.
+8.4
+Additional EnvDreamer Dataset Diagnostics
+The main paper reports aggregate dataset statistics and task coverage. Here we provide additional
+diagnostics that are useful for understanding what kinds of environments EnvDreamer tends to
+produce.
+8.4.1
+Room Count and Floor Area
+Figure 11 sketches the distribution over room counts per environment and total usable floor area
+(walkable area minus large fixtures). While the generator allows single-room studios and large
+multi-room apartments, the bulk of the distribution lies between 3 and 6 rooms and 40–120 m2.
+8.4.2
+Object Co-occurrence Structure
+To better understand how objects cluster across rooms, we estimate a co-occurrence matrix over asset
+categories and compute pointwise mutual information (PMI). Figure 12 reveals:
+• strong positive associations between beds, wardrobes, and night stands in bedrooms;
+• typical kitchen items involving fridges, stoves, sinks, and counters; and
+• weaker but still positive correlations between electronic devices (e.g., laptops, TVs) and
+seating furniture.
+These statistics can be used to drive more structured curriculum design (e.g., progressively increasing
+the “clutter” factor) in future work.
+8.4.3
+Layout Diversity over Prompts
+Finally, we examine prompt-level diversity by sampling multiple layouts for the same high-level
+description (e.g., “a compact two-bedroom apartment for students”) and measuring variation in: (1)
+17
+
+
+Figure 12: Category-level PMI highlighting typical furniture clusters.
+Table 5: Prompt-level diversity: statistics for 16 samples per prompt.
+Prompt
+Rooms
+Degree
+Objects
+2BR student apt.
+4.4 ± 1.3
+2.8 ± 0.9
+29 ± 8
+Open studio
+2.2 ± 0.5
+1.6 ± 0.4
+21 ± 4
+3BR family home
+7.1 ± 1.9
+3.0 ± 0.7
+46 ± 12
+1BR minimalist
+3.7 ± 0.8
+2.3 ± 0.6
+25 ± 7
+Luxury penthouse
+7.9 ± 2.2
+3.2 ± 1.0
+64 ± 15
+Rustic cottage
+5.3 ± 1.1
+2.6 ± 0.5
+38 ± 10
+Urban loft
+4.1 ± 0.7
+2.2 ± 0.4
+32 ± 6
+4BR traditional
+8.6 ± 1.8
+3.1 ± 0.8
+69 ± 11
+Tiny home
+2.6 ± 0.6
+1.8 ± 0.3
+19 ± 5
+Senior bungalow
+4.5 ± 0.9
+2.5 ± 0.7
+34 ± 8
+number of rooms, (2) connectivity structure, and (3) object counts. Table 5 is reserved for these
+statistics.
+8.5
+Robot Configurations
+EnvDreamer-20k ships with two ready-to-use robot configurations covering manipulation and loco-
+motion (Figure 13), and the framework supports robotics throughout: every generated environment
+is fully interactive and physics-enabled, exposes the same RGB/depth/proprioception observation
+contract, and allows policies trained inside EnvDreamer to be deployed on real hardware via image-
+conditioned reconstruction of the target scene. Both robots share a common observation and action
+interface so that policies can be reused across embodiments with minimal changes.
+Franka Emika Panda (manipulation).
+A 7-DoF Franka arm with a parallel-jaw gripper, used for
+pick-and-place, tool use, and contact-rich rearrangement tasks. The arm is mounted on a configurable
+base (fixed table or wheeled platform), and policies issue end-effector pose targets that are resolved
+by a UE5-side IK solver to per-joint commands. The ArmPointNav and Room Rearrangement
+experiments in Section 5 use this configuration.
+18
+
+
+(a) Franka Emika Panda (manipulation).
+(b) Unitree Go1 (locomotion).
+Figure 13: Robot configurations supported in EnvDreamer-generated environments. En-
+vDreamer ships with a 7-DoF Franka Emika Panda arm for contact-rich manipulation tasks (left)
+and a Unitree Go1 quadruped for navigation and locomotion tasks (right). Both robots are spawned
+directly into procedurally generated EnvDreamer scenes and share a common sensor and action
+contract, making the dataset suitable for training general-purpose embodied policies.
+Unitree Go1 (locomotion).
+A quadrupedal locomotion platform used for ObjectNav and exploration
+tasks. Discrete navigation actions emitted by the policy are mapped to a locomotion controller, and
+egocentric RGB observations match those produced by the Franka configuration so that a shared
+visual backbone can drive both embodiments. The four ObjectNav benchmarks reported in Section 5
+use this configuration.
+Shared sensor and action contract.
+Both robots expose RGB and depth observations, semantic
+and instance masks, proprioception (joint positions, and end-effector pose where applicable), and the
+same domain-randomization hooks (textures, lighting, clutter, and selected physics parameters such
+as friction and mass). New robot platforms can be added by registering a controller and matching this
+contract through the RC API described in Section 8.1.
+8.6
+Training and Evaluation Protocol
+The main paper reports the high-level RL setup. Here we add details that are mainly of interest for
+reproduction and extension.
+8.6.1
+Compute Budget and Parallelism
+All pretraining and evaluation runs reported in the main paper were executed on a small cluster of
+NVIDIA RTX 5090 GPUs using synchronous PPO. Environments are stepped in parallel across
+16–32 workers, with each worker hosting multiple UE5 instances where hardware permits. We cap
+the wall-clock time per update to avoid stragglers; experience from slow workers in a given round is
+discarded rather than delaying gradient updates.
+Rendering and throughput.
+EnvDreamer instances are capped at 120 FPS per environment to
+maintain stable physics simulation. While a single GPU efficiently runs 3 parallel instances at full
+framerate, scaling to multiple GPUs introduces CPU bottlenecks that reduce per-instance throughput.
+Despite these limitations, the system achieves aggregate framerates sufficient for large-scale training.
+Table 6 reports measured throughput across configurations.
+8.6.2
+Curriculum and Task Sampling
+Within a given pretraining run, we sample tasks as follows:
+• Stage 1: Navigation-heavy. The agent is exposed primarily to goal-reaching tasks with
+sparse rewards to bootstrap basic exploration and map-building skills.
+• Stage 2: Rearrangement and short-horizon manipulation. Once navigation success
+stabilizes, we gradually increase the fraction of pick–place and toggle tasks.
+19
+
+
+Configuration
+Instances
+FPS/Instance
+Total FPS
+Efficiency
+1 GPU (3 inst.)
+3
+119.8±2.1
+359.4±6.3
+100%
+1 GPU (6 inst.)
+6
+86.7±4.2
+520.2±25.2
+72.5%
+1 GPU (12 inst.)
+12
+53.6±6.8
+643.2±81.6
+44.7%
+4 GPUs (48 inst.)
+48
+40.8±5.3
+1,958.4±254.4
+34.2%
+8 GPUs (96 inst.)
+96
+28.9±5.7
+2,774.4±547.2
+24.2%
+Table 6: Rendering performance and scaling. Per-instance and aggregate throughput on NVIDIA
+RTX 5090 GPUs (AMD Ryzen 9 7950X CPU). Efficiency is relative to ideal linear scaling. Per-
+instance FPS drops with parallelism due to CPU bottlenecks, but aggregate throughput continues to
+grow.
+• Stage 3: Mixed regimes. The final phase interleaves all available task types to avoid
+over-specialization.
+Transition points between stages are defined by simple performance thresholds (e.g., moving from
+Stage 1 to Stage 2 once the smoothed navigation success exceeds a preset target).
+8.6.3
+Evaluation Details
+For each benchmark, we use the official evaluation scripts and metrics released by its authors. In
+addition to the aggregated success and SPL numbers reported in the main paper, we log per-skill
+success (e.g., “open-only” vs. “open-and-pick” tasks) and per-room-type success.
+8.7
+Extended Ablations
+This section outlines ablations that did not fit into the main text. We only summarize the trends here.
+8.7.1
+Prompt Strictness
+We vary the strictness of the system prompt along two axes: (1) whether the model is explicitly
+reminded to keep unspecified rooms and items unchanged, and (2) how emphatically we describe the
+mutual exclusivity of color and texture fields.
+Preliminary experiments suggest that relaxing these constraints reduces schema violations but in-
+creases the frequency of unintended global edits (e.g., rooms being resized when only a material
+change was requested). Ablation results will be shown in Table S2.
+8.7.2
+Validator Components
+We also test the impact of turning off individual validator components: schema checks, navigation
+connectivity, and collision checks. Qualitatively, disabling connectivity checks yields many more
+“pretty but impassable” layouts, whereas disabling collision checks mainly introduces localized visual
+artifacts. Figure 14 is reserved for side-by-side visualizations.
+8.7.3
+Dataset Quality versus Scale
+To isolate the contribution of scene quality from raw dataset size, we compare policies pretrained
+on subsets of EnvDreamer–20k generated with and without the full validator suite. For each scale,
+“raw” environments skip physics and reachability checks; “validated” environments pass all unit-style
+validators. Table 7 shows that even at half the scale, validated environments yield better downstream
+performance than larger collections of unfiltered scenes, confirming that quality is a more efficient
+lever than scale alone.
+20
+
+
+Figure 14: Layouts generated with different subsets of validator checks.
+Scale Type
+Arch SR/SPL
+Robo SR/SPL
+HM3D SR/SPL
+AI2 SR/SPL
+10k
+Raw
+23.1±0.9 / 14.2±0.7 40.5±1.4 / 17.8±0.8 7.3±0.5 / 4.4±0.3 68.9±1.8 / 56.3±1.5
+10k
+Validated 27.3±1.0 / 16.9±0.8 47.2±1.5 / 20.8±0.9 8.4±0.5 / 5.2±0.4 72.6±1.9 / 60.9±1.6
+20k
+Raw
+28.7±1.0 / 17.5±0.8 49.8±1.5 / 21.5±0.9 8.8±0.5 / 5.4±0.4 73.4±1.9 / 61.8±1.6
+20k
+Validated 32.9±1.2 / 20.3±0.9 56.8±1.7 / 24.5±1.1 9.7±0.6 / 5.9±0.4 76.9±2.0 / 65.2±1.7
+Table 7: Dataset quality vs. scale. Policies pretrained on raw (unvalidated) vs. validated environments
+at two scales. Validated environments consistently outperform raw ones of the same scale, and 10k
+validated environments match or exceed 20k raw ones, showing that scene quality is a more efficient
+lever than raw dataset size.
+8.7.4
+Validator Strictness
+EnvDreamer–20k scenes are generated under unit-style validators that check physics consistency,
+reachability, and goal completeness. We study the effect of varying validator strictness by parameter-
+izing each check with a threshold and sweeping over three levels: loose (thresholds relaxed to pass
+≈90% of candidates), medium (our default, ≈70% pass rate), and strict (≈50% pass rate).
+Stricter validation improves downstream ObjectNav success by 2–4 points across benchmarks but
+roughly doubles the number of generator calls required to fill a fixed dataset quota. We adopt the
+medium setting as a pragmatic balance: it yields a 70% acceptance rate that keeps generation costs
+reasonable while still filtering the most common failure modes—clipped furniture, disconnected
+rooms, and unreachable task targets.
+8.7.5
+Material Randomization Strength
+EnvDreamer supports per-load variation in materials and lighting. We sweep over three randomization
+levels (none, moderate, aggressive) during pretraining and observe that moderate variation tends to
+give the best cross-domain transfer, while aggressive randomization occasionally hurts downstream
+performance on visually consistent benchmarks. Numerical results can be inserted into Table S3.
+8.8
+Qualitative Visualizations and Failure Modes
+8.8.1
+Additional Layout Samples
+Figure 15 is for a gallery of EnvDreamer layouts across a range of prompts.
+8.8.2
+Failure Modes
+Finally, we collect a small set of representative failure cases, grouped by underlying cause:
+21
+
+
+Figure 15: Additional EnvDreamer layouts conditioned on diverse prompts.
+Figure 16: Representative EnvDreamer failure cases grouped by cause.
+• Under-specified prompts. Prompts like “make the apartment look more modern” can lead
+to large-scale material changes that inadvertently reduce task feasibility (e.g., removing
+surfaces needed for placement).
+• Ambiguous reference images. When the input photograph contains mirrors or glass walls,
+the planner occasionally hallucinates additional rooms or openings.
+• Validator blind spots. Rare configurations can pass all automatic checks while still being
+awkward (e.g., a chair technically reachable but visually embedded in a corner).
+8.9
+House Building Engine
+The layout planner produces a JSON description of rooms, bounds, and materials. The HomeAgent
+module is responsible for compiling this description into a concrete UE5 scene by instantiating
+parameterized primitives, assigning textures, and inserting door transitions.
+8.9.1
+Texture Registry and Material Shortcuts
+To keep layouts compact and decoupled from engine paths, HomeAgent uses a small texture reg-
+istry. At import time, _load_texture_registry() reads Config/texture_registry.json
+and caches a mapping from user-friendly shortcuts (e.g., "wood_light", "concrete") to full
+Unreal material paths:
+• The registry is loaded once at module level into _TEXTURE_REGISTRY to avoid repeated
+I/O.
+• _get_texture_path(name) resolves a shortcut to a full path, or returns the input un-
+changed if no mapping is found. This makes the system robust to both abstract labels and
+explicit engine paths.
+22
+
+
+Figure 17: Overview of the house building engine implemented by HomeAgent.
+Textures are applied lazily: after a cube is spawned, apply_texture(id, texture_name) issues
+an RC_SetMaterialTexture call with the resolved material path. When a texture is present, the
+agent intentionally omits per-vertex color parameters so that materials control appearance consistently.
+8.9.2
+Primitive-Based Geometry
+The engine builds environments entirely from a single cube asset, scaled and positioned to realize
+floors and walls:
+• Tile and pivot. The cube is parameterized in units of a configurable tile size (default
+100 cm). A global pivot mode ("base" or "center") controls whether cubes are anchored
+at their bottom face or at their center; this is handled by _cube_z(height, bottom_z).
+• Spawn API. spawn_cube(id, x, y, z, sx, sy, sz, color) wraps a single call to
+RC_AddAsset with position, scale, and orientation. Colors are passed only when no texture
+is specified, mirroring the schema convention that color and texture are mutually exclusive.
+• Global parameters. Scene-wide quantities such as wall thickness, floor thickness, door
+width, and building boundaries are read from the layout file, allowing different layouts to
+share the same builder logic.
+8.9.3
+Wall Construction and Door Carving
+Walls are constructed by scanning each room and each side of its bounding box. Let name be the
+current room and side ∈{north, south, east, west}.
+1. Adjacency detection. _adjacent_room_on_side(name, side) searches for a neigh-
+boring room whose bounds touch the current side along one axis and overlap along the
+orthogonal axis. If no neighbor exists, the side is exposed to the building boundary.
+2. Ownership and door span.
+To avoid double walls, a simple lexical tie-break
+_owns_shared_wall(a,b) chooses which room is responsible for a shared wall. If name
+owns the wall, _door_span(name, other, side) computes a candidate door interval
+along the shared segment using the configured door width.
+3. Segment splitting. The helper spawn_segments_for_side decomposes the full wall
+segment into:
+• solo segments with no neighbor (external walls),
+• shared segments without doors, and
+• shared segments with a carved-out door interval.
+Each non-empty segment is realized as a scaled cube with the appropriate wall color or
+texture.
+4. Door floor patches.
+When a door is carved between two rooms, the agent records
+two small floor patches—one for each room—with their respective floor colors or tex-
+tures.
+These patches are not spawned immediately; instead they are accumulated in
+door_floor_patches and instantiated in the floor pass, ensuring consistent layering.
+23
+
+
+Figure 18: Wall segmentation and door carving, including door floor patches.
+8.9.4
+Floor Slabs and Insets
+Floors are generated in a second pass via build_all_floors():
+• For each room, the builder computes an inner rectangle obtained by insetting the bounds
+by half the wall thickness. This prevents floors from protruding through the walls while
+keeping a clean visual seam.
+• If the inset would collapse the interior (e.g., extremely thin rooms), the code gracefully falls
+back to using the full bounds.
+• A single cube is spawned per room to represent its floor slab, with either a solid color or a
+texture, matching the layout’s floor_color / floor_texture fields.
+• Door floor patches recorded during wall construction are then instantiated as additional thin
+slabs, using per-room floor settings. This produces visually continuous transitions between
+rooms while preserving room-specific appearances.
+The result is a watertight arrangement of walls and floors that strictly respects the planner’s bounds
+and adjacency relationships, while remaining easy to edit: small changes in the JSON layout (e.g.,
+moving a wall by one grid cell) directly translate to different cube placements.
+8.9.5
+Agent Interface and Entry Points
+The public entry point setup_home() exposes a simple interface for downstream tools and scripts:
+• The layout argument selects between a default layout file, a small test layout, or an arbitrary
+user-provided JSON.
+• The room argument enables partial builds (e.g., to rapidly iterate on a single room without
+rebuilding the whole apartment).
+24
+
+
+• The delay and pivot parameters control spawn pacing (useful for debugging) and cube
+pivot mode, respectively.
+The HomeAgent.clear_home() and move_camera() helpers are used by interactive front-ends to
+reset the scene and position the camera before and after a build, but do not affect the underlying
+layout.
+Overall, this design allows EnvDreamer to compile high-level, LLM-generated layouts into con-
+crete UE5 scenes using a small, deterministic Python module, while keeping textures and assets
+configurable via external registries.
+25
+
+
+NeurIPS Paper Checklist
+1. Claims
+Question: Do the main claims made in the abstract and introduction accurately reflect the
+paper’s contributions and scope?
+Answer: [Yes]
+Justification: The abstract and Section 1 enumerate three concrete contributions (the En-
+vDreamer framework, the EnvDreamer-20k dataset, and embodied benchmark evaluation),
+each of which is supported by Sections 3–5.
+2. Limitations
+Question: Does the paper discuss the limitations of the work performed by the authors?
+Answer: [Yes]
+Justification: Section 5 is followed by a dedicated “Discussion and Limitations” section that
+covers scope (indoor only), task complexity (short horizons, single solutions), generation
+latency (2–5 minutes per scene), and CPU-bound throughput when scaling parallel instances.
+3. Theory assumptions and proofs
+Question: For each theoretical result, does the paper provide the full set of assumptions and
+a complete (and correct) proof?
+Answer: [N/A]
+Justification: The paper presents an environment-generation framework and an empirical
+dataset evaluation; it makes no theoretical claims that require formal proof.
+4. Experimental result reproducibility
+Question: Does the paper fully disclose all the information needed to reproduce the main ex-
+perimental results of the paper to the extent that it affects the main claims and/or conclusions
+of the paper (regardless of whether the code and data are provided or not)?
+Answer: [Yes]
+Justification: Section 5 specifies benchmarks, splits, evaluation metrics, and the three
+training regimes used; Supplementary Sections 8.6 and 8.5 give compute budget, parallelism,
+curriculum, and shared sensor/action contracts. Each scene is also stored as a deterministic-
+seeded program, enabling exact regeneration.
+5. Open access to data and code
+Question: Does the paper provide open access to the data and code, with sufficient instruc-
+tions to faithfully reproduce the main experimental results, as described in supplemental
+material?
+Answer: [Yes]
+Justification: We will release the EnvDreamer framework and the EnvDreamer-20k dataset
+(scene programs, scene graphs, task programs, validator outcomes, and reference trajectories)
+as stated in Section 4 and the Conclusion; the Supplementary describes the API surface,
+web session, and batch materialization scripts needed for reproduction.
+6. Experimental setting/details
+Question: Does the paper specify all the training and test details (e.g., data splits, hyperpa-
+rameters, how they were chosen, type of optimizer) necessary to understand the results?
+Answer: [Yes]
+Justification: Section 5 states the 16k/2k/2k train/val/test split, the three training regimes,
+RGB-only inputs, and matched environment-step budgets; Supplementary Section 8.6 adds
+optimizer (synchronous PPO), parallelism (16–32 workers), and curriculum stages.
+7. Experiment statistical significance
+Question: Does the paper report error bars suitably and correctly defined or other appropriate
+information about the statistical significance of the experiments?
+Answer: [Yes]
+26
+
+
+Justification: Tables 2, 3, and 7 report mean±1σ values across multiple seeds for each
+benchmark; Table 6 reports throughput with the same convention.
+8. Experiments compute resources
+Question: For each experiment, does the paper provide sufficient information on the com-
+puter resources (type of compute workers, memory, time of execution) needed to reproduce
+the experiments?
+Answer: [Yes]
+Justification: Section 5 reports that all runs used NVIDIA RTX 5090 GPUs; Table 6 reports
+per-instance and aggregate throughput across 1–8 GPUs, and Supplementary Section 8.6
+describes worker counts and wall-clock policies.
+9. Code of ethics
+Question: Does the research conducted in the paper conform, in every respect, with the
+NeurIPS Code of Ethics https://neurips.cc/public/EthicsGuidelines?
+Answer: [Yes]
+Justification: The work uses procedurally generated synthetic indoor scenes with no human
+subjects, no scraped media, and no personally identifiable information; the authors have
+reviewed the NeurIPS Code of Ethics and the work conforms to it.
+10. Broader impacts
+Question: Does the paper discuss both potential positive societal impacts and negative
+societal impacts of the work performed?
+Answer: [Yes]
+Justification: Positive impact: scalable simulation environments lower the cost of embodied-
+AI and robotics research and improve reproducibility. Potential negative impact: better sim-
+to-real pipelines could accelerate deployment of robotic systems in homes and workplaces;
+we discuss this and the indoor-only scope as caveats in the Discussion and Limitations
+section.
+11. Safeguards
+Question: Does the paper describe safeguards that have been put in place for responsible
+release of data or models that have a high risk for misuse (e.g., pre-trained language models,
+image generators, or scraped datasets)?
+Answer: [N/A]
+Justification: EnvDreamer-20k consists of synthetic indoor scenes generated from prompts
+and a curated asset library; it contains no scraped imagery, no personal data, and no pre-
+trained generative model weights, so it does not pose the misuse risks targeted by this
+question.
+12. Licenses for existing assets
+Question: Are the creators or original owners of assets (e.g., code, data, models), used in
+the paper, properly credited and are the license and terms of use explicitly mentioned and
+properly respected?
+Answer: [Yes]
+Justification: Existing simulators and datasets we compare against (ProcTHOR, AI2-THOR,
+Habitat, ProcTHOR-10K, RoboTHOR, ArchitecTHOR, HM3D, BEHAVIOR-1K) and tool-
+ing (Unreal Engine 5) are credited via citations in Sections 3 and the Related Work; license
+terms for each external asset will be reproduced in the dataset README accompanying the
+release.
+13. New assets
+Question: Are new assets introduced in the paper well documented and is the documentation
+provided alongside the assets?
+Answer: [Yes]
+27
+
+
+Justification: Section 4 (“Release format”) lists every artifact shipped with each EnvDreamer-
+20k entry (prompt, scene program, scene graph, rendering metadata, task programs, validator
+outcomes, optional reference trajectories) and Supplementary Sections 8.1–8.9 document
+the API, the web session, the planner, and the house-builder pipeline that produced them.
+14. Crowdsourcing and research with human subjects
+Question: For crowdsourcing experiments and research with human subjects, does the paper
+include the full text of instructions given to participants and screenshots, if applicable, as
+well as details about compensation (if any)?
+Answer: [N/A]
+Justification: The paper does not involve any crowdsourcing or research with human subjects;
+all data are synthetically generated by the EnvDreamer pipeline.
+15. Institutional review board (IRB) approvals or equivalent for research with human
+subjects
+Question: Does the paper describe potential risks incurred by study participants, whether
+such risks were disclosed to the subjects, and whether Institutional Review Board (IRB)
+approvals (or an equivalent approval/review based on the requirements of your country or
+institution) were obtained?
+Answer: [N/A]
+Justification: No human-subjects research was conducted, so IRB review is not applicable.
+16. Declaration of LLM usage
+Question: Does the paper describe the usage of LLMs if it is an important, original, or
+non-standard component of the core methods in this research? Note that if the LLM is used
+only for writing, editing, or formatting purposes and does not impact the core methodology,
+scientific rigor, or originality of the research, declaration is not required.
+Answer: [Yes]
+Justification: LLMs/vLLMs are a core component: a GPT-5–class vLLM serves as the
+planner that translates natural-language prompts into scene programs and task specifications
+(Sections 3, 4, and Supplementary Section 8.3).
+28

@@ -1,0 +1,1900 @@
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+Jake Tuero 1 2 Michael Buro 1 Levi H. S. Lelis 1 2
+Abstract
+Policy tree search is a family of tree search algo-
+rithms that use a policy to guide the search. These
+algorithms provide guarantees on the number of
+expansions required to solve a given problem that
+are based on the quality of the policy. While these
+algorithms have shown promising results, the pro-
+cess in which they are trained requires complete
+solution trajectories to train the policy. Search
+trajectories are obtained during a trial-and-error
+search process. When the training problem in-
+stances are hard, learning can be prohibitively
+costly, especially when starting from a randomly
+initialized policy. As a result, search samples are
+wasted in failed attempts to solve these hard in-
+stances. This paper introduces a novel method
+for learning subgoal-based policies for policy tree
+search algorithms. The subgoals and policies con-
+ditioned on subgoals are learned from the trees
+that the search expands while attempting to solve
+problems, including the search trees of failed at-
+tempts. We empirically show that our policy for-
+mulation and training method improve the sample
+efficiency of learning a policy and heuristic func-
+tion in this online setting.
+1. Introduction and Overview
+This work focuses on solving single-agent deterministic
+search problems, using minimal domain knowledge. In
+particular, we are interested in “needle-in-haystack” prob-
+lems, where finding any solution can be challenging. Many
+important problems can be represented as a deterministic
+single-agent search problem, such as robotic navigation
+(Tan et al., 2021) and network routing (Liu & Ramakrish-
+nan, 2001). A recent line of research to address this class
+of problems is policy tree search algorithms (Orseau et al.,
+1Department of Computing Science, University of Al-
+berta, Edmonton, Canada 2Alberta Machine Intelligence Insti-
+tute (Amii), Edmonton, Canada. Correspondence to: Jake Tuero
+<tuero@ualberta.ca>.
+Proceedings of the 42 nd International Conference on Machine
+Learning, Vancouver, Canada. PMLR 267, 2025. Copyright 2025
+by the author(s).
+2018; Orseau & Lelis, 2021), which use a learned policy
+to guide the search, i.e., a probability distribution over the
+set of actions available to the agent. Orseau et al. (2018)
+showed that a benefit of using policy tree search methods
+over traditional heuristic search methods is that they provide
+an upper bound on the number of node expansions required
+to find a solution that depends on the quality of the policy,
+and Orseau & Lelis (2021) showed that a policy can be
+learned while minimizing such an upper bound.
+Policy-Guided Heuristic Search (PHS*) (Orseau & Lelis,
+2021) is a policy-guided search algorithm that combines a
+learned policy and a heuristic function. While there have
+been previous approaches to combining a policy and heuris-
+tic/value function, such as the PUCT-based search algo-
+rithms (Rosin, 2011; Kocsis & Szepesvári, 2006) like Alp-
+haZero (Silver et al., 2017) and MuZero (Schrittwieser et al.,
+2020) in adversarial search domains like Go and Chess,
+Orseau & Lelis (2021) show that PHS* is better suited for
+the single-agent search problems we consider in this work.
+Policy tree search methods, including PHS*, are usually
+trained online using the Bootstrap search-and-learn process
+(Arfaee et al., 2011). The Bootstrap process initially uses
+randomly initialized neural models encoding the heuristic
+and the policy to iteratively solve a subset of the problems.
+If the search cannot solve problems within a search budget,
+the resulting trees are discarded; if at least one problem is
+solved, the models are optimized on the solution trajectories
+found. A problem with this approach is that much of the
+search effort is wasted on failed attempts, especially in the
+early iterations of learning, with untrained neural models.
+A key innovation of our approach is that we use these failed
+search attempts to learn subgoals, which can shorten the
+planning horizon and ease the learning process. These failed
+attempts allow us to learn policies that navigate between
+subgoals. Using subgoals to break down the search horizon
+into smaller pieces has shown success in complex domains,
+as demonstrated in kSubS (Czechowski et al., 2021), Ada-
+SubS (Zawalski et al., 2022), and HIPS (Kujanpää et al.,
+2023). An issue with some of these approaches is that they
+lack completeness, i.e., they might fail to return a solution
+even if one exists. HIPS-ε (Kujanpää et al., 2024) is a vari-
+ant of HIPS that is complete. However, HIPS-ε, as well as
+kSubS, AdaSubS, and HIPS, require precomputed datasets
+1
+arXiv:2506.07255v3  [cs.AI]  2 Dec 2025
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+of solution trajectories, which may be prohibitively costly
+in complex environments.
+We propose a hierarchical policy for policy-guided tree
+search algorithms that is complete and does not require
+precomputed solution trajectories. This is achieved by learn-
+ing subgoal-guided low-level policies from the Bootstrap
+data. In our approach, a subgoal generator produces a set
+of subgoals for a given state encountered in the search. The
+low-level policy is then conditioned on each of these sub-
+goals and on the current state, thus providing one probabil-
+ity distribution over actions for each subgoal. A high-level
+policy produces a distribution over the generated subgoals,
+which gives an importance weighting for each of the low-
+level policies. The low-level policies are then mixed, based
+on the weighting given by the high-level policy, to produce
+a final policy that guides the search. In addition, we propose
+a method to learn these subgoals and policies using the data
+provided by the tree search, even in contexts where a budget
+for the search causes early termination without a solution.
+In experiments, we demonstrate the sample efficiency our
+method enables in that it requires substantially fewer node
+expansions to learn effective policies than other search al-
+gorithms trained with the Bootstrap algorithm in a variety
+of problem domains. We also show that policy tree search
+algorithms using our subgoal-based policy can learn how to
+solve problems from domains that HIPS-ε cannot solve.
+Our contributions can be summarized as follows. We pro-
+vide a novel subgoal discovery method for policy-guided
+tree search algorithm that learns from data collected dur-
+ing search. Our method for learning policies automatically
+reduces complex problems into easier sub-problems, by au-
+tomatically learning subgoals. Moreover, it can train neural
+policies from both successful and failed searches, unlike
+other algorithms that learn with the Bootstrap process.
+2. Preliminaries
+We define a single-agent deterministic search problem as the
+tuple (S, A, T, s0, Sg), where S is the set of states, A is the
+finite set of actions available to the agent, T : S × A →S
+is a deterministic transition function, s0 is the initial state,
+Sg is the set of goal states. The state reached after applying
+a sequence of actions a0:t = a0, a1, . . . , at is denoted as
+T(a0:t). The underlying state space of the search problem
+is modeled as a graph G = (S, A). This graph has one edge
+(s, s′) in A for each a in A such that T(s, a) = s′.
+The algorithms we consider search over the state space by
+generating a tree. Let N be the set of nodes of the tree, with
+n0 ∈N being the root node corresponding to the initial
+state s0. Any node in the tree can be defined as a sequence
+of actions from the initial state s0, with the root node being
+the empty sequence of actions. For any node n in N, its set
+of children is denoted as C(n), its parent as par(n), and its
+set of ancestors excluding n is anc(n) and we also define
+anc∗(n) = anc(n) ∪{n}. The process in which a search
+algorithm generates the set of children for a node n is called
+expansion, and we say that the node was expanded. The first
+node to be expanded is the root n0, and all nodes n can only
+be expanded if its parent par(n) has been expanded. The
+search ends when there are no more nodes to expand or the
+search finds a node representing an s in Sg. The set Sg is
+not known a priori, but can be checked with a Boolean test.
+The search algorithm incurs a loss of ℓ: N →(0, ∞]
+every time a node is expanded. The path loss g(n) of a
+node is the sum of losses from the root node to n, given by
+g(n) = P
+n′∈anc(n) ℓ(n′). If ℓ(n) = 1 for all nodes, then
+g(n) is equal to the depth of the node, denoted d(n).
+A policy π
+:
+N →[0, 1] assigns probabilities to se-
+quences of actions which represents each node. It is de-
+fined recursively for a child n′ of node n by π(n′) =
+π(n)π(n′|n), where the conditional probability π(n′|n) in
+[0, 1], P
+n′∈C(n) π(n′|n) ≤1 (the inequality can occur due
+to state pruning during the search), and π(n0) = 1. Thus,
+π(n) is the product of probabilities along the path from the
+root to n: π(n) = Q
+n′∈anc∗(n)\{n0} π(n′ | par(n′)).
+2.1. Background
+Best-First Search. Best-First Search (BFS) algorithms
+(Pearl, 1984), expand nodes with increasing cost. The root
+node is added to a priority queue sorted by a cost function.
+In every iteration, the cheapest node in the queue is removed
+and expanded; the nodes thus generated are added into the
+queue. A node will not be expanded if its underlying state
+has already been expanded. In the context of policy-guided
+search, the search terminates when a node representing a
+state in NG is encountered (see Appendix A for details).
+Policy Tree Search. LevinTS (Orseau et al., 2018) is a BFS
+algorithm using the evaluation function
+φLevinTS(n) = d(n) + 1
+π(n)
+.
+(1)
+Policy-Guided Heuristic Search (PHS*) (Orseau & Lelis,
+2021) generalized LevinTS by using both a policy and
+heuristic function to guide the search, which can be defined
+as BFS using the evaluation function
+φPHS(n) = η(n) g(n)
+π(n),
+(2)
+where η(n) is the heuristic factor for node n defined as
+η(n) = 1 + h(n)/g(n)
+π(n)h(n)/g(n) ,
+(3)
+with h(n) being a heuristic, which estimates the cost-to-go
+2
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+to a goal state. For g(·) = 0, we define η(n) = 1. LevinTS
+and PHS* are shown in Appendix B, Algorithms 2 and 3.
+The Bootstrap Process. The Bootstrap algorithm (Arfaee
+et al., 2011) learns a neural policy and/or heuristic functions
+from search. The initial policy/heuristic is represented by
+randomly initialized neural network, and are improved in
+each iteration as follows. A search algorithm using the
+current neural model runs on a subset of the training problem
+instances with a bound on the number of node expansions
+allowed for each problem. Problems that are solved have
+their solution trajectory used to update the models, and
+the process continues. After every sweep through a set
+of training problems, a separate validation set is used to
+determine when to stop. If the search can solve all problems
+from the validation set, then the training is complete and the
+neural model is returned. If the search cannot solve any new
+problems after a sweep of the training set, the expansion
+budget is increased. See Appendix C for its pseudocode.
+2.2. Problem Statement
+Given a set of problem instances K, the objective is to solve
+them while minimizing the total search loss. Concretely,
+we use the formulation provided by Orseau & Lelis (2021):
+For a search algorithm S, a loss of ℓ(n) > 0 is incurred
+by S expanding node n, and the search loss L(S, n) is the
+sum of individual losses ℓ(n′) for all nodes n′ that have
+been expanded by algorithm S up to and including n. The
+total search loss is then given by P
+k∈K L(S, n∗
+k), where
+L(S, n∗
+k) is the search loss of algorithm S while finding a
+solution node n∗
+k on the k-th problem in K. For example, if
+ℓ(n) = 1 for all nodes n, then the objective is to solve the
+problem instances using as few node expansions as possible.
+3. Method
+We propose learning a subgoal-guided policy for policy
+search algorithms, which uses learned subgoals from a sub-
+goal generator to guide the search through the use of policies
+conditioned on subgoals. In this work, we define subgoals
+as states from the underlying state space that the search
+attempts to achieve. Unlike previous policy search methods,
+our policy uses data from budget-bounded searches that fail
+to find a solution to train its neural policy.
+Our method is given in Figure 1. Figure 1.a shows how the
+low-level policy, high-level policy, heuristic, and subgoal
+generator models interact when expanding a node during
+the search (Sections 3.1 and 3.2). During the Bootstrap pro-
+cess used to train the policy, the heuristic, and the subgoal
+generator models, the budgeted search will either termi-
+nate without a solution or with a solution trajectory. When
+the budgeted search terminates without a solution found,
+Figure 1.b shows how the search tree can be used to gener-
+ate subgoals and trajectories between them for the subgoal
+generator and low-level policy to learn from, respectively
+(Section 3.3). Finally, Figure 1.c shows how we use solution
+trajectories to train the heuristic model, low-level policy,
+high-level policy, and subgoal generator (Section 3.4).
+3.1. Subgoal-Guided Policy Search
+Instead of a single policy π(·) that produces a probabil-
+ity distribution over actions, we employ several subgoal-
+conditioned low-level policies together with a high-level
+policy over subgoals. The low-level policy πlow
+θ (a|s, ˆsgi) is
+conditioned on a state s and a subgoal ˆsgi, and represents
+a probability distribution over actions to achieve ˆsgi from
+s. For k subgoals, we generate a set of k probability distri-
+butions by conditioning πlow
+θ
+on each of the k subgoals ˆsgi.
+The high-level policy πhi
+ψ(ˆsgi|s) gives a distribution over
+the k subgoals. These low-level and high-level policies are
+implemented as neural networks parameterized by θ and ψ,
+respectively.
+The resulting policy πSG(a|s), which we will refer to as the
+subgoal-guided policy, is formulated by using a weighted ge-
+ometric mixing of the low-level policies, in which the weight
+given to policy πlow
+θ (a|s, ˆsgi) is the probability for the ith
+subgoal given by the high-level subgoal policy πhi
+ψ(ˆsgi|s):
+πSG(a|s) =
+Pk
+i=1 πhi
+ψ(ˆsgi|s) · πlow
+θ (a|s, ˆsgi)
+P
+a
+Pk
+i=1 πhi
+ψ(ˆsgi|s) · πlow
+θ (a|s, ˆsgi)
+.
+(4)
+The search algorithm then works by calling BFS with the
+corresponding evaluation function (φLevtinTS or φPHS), but
+uses πSG(·) instead of π(·).
+3.2. VQVAE Subgoal Generator
+We use a Vector Quantized Variational Autoencoder (Van
+Den Oord et al., 2017) (VQVAE), represented by a neural
+network parameterized by ϕ, as a subgoal generator. Our
+design is similar to the one used in HIPS-ε (Kujanpää et al.,
+2023). The Encoder takes as input a pair of states (scur, star)
+and and produces a continuous latent code ze. The latent
+code is quantized by finding the nearest entry in the code-
+book ec, which is a table of k vectors. The decoder takes as
+input the pair (scur, ec) and produces a reconstructed target
+ˆstar. The intuition behind the pair of current and target states
+given to the encoder is that the encoder learns to capture the
+difference between the two states into the encoding code-
+book vector. When the current state is given to the decoder
+at runtime during search, the encoding codebook vector can
+be used to recover the changes required to be made from the
+current state to reconstruct the target state.
+To generate the i-th subgoal during search, the node’s state
+s and the i-th codebook entry ei of the VQVAE are given
+3
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+φPHS
+s
+Codebook Entries
+e1, . . . , ek
+VQVAE
+Decoder
+ˆsg0
+ˆsg1...
+ˆsgk
+πlow
+θ (a|ˆsgi, s)
+πhi
+ψ (ˆsgi|s)
+hω(s)
+πSG(a|s)
+Expansion
+Generate Subgoals
+Policy & Heuristic
+Inference
+(a) Policy Search Algorithm
+G0
+G1
+G2
+G0
+(G0, . . . , GN)
+(i) Louvain Algorithm
+(ii) Sample training data for VQVAE
+1. Let (G0, G1, · · · , GN) be the output of the Louvain algorithm.
+2. Select graph Gk = (Vk, Ak) for a given cluster level k in [0, N]
+from (G0, G1, · · · , GN).
+3. Sample edge (vk, v′
+k) in from Ak.
+4. Sample scur and star from vk and v′
+k respectively
+such that scur and star are in V0.
+(b) Training (Non-Solution)
+a0
+a1
+a2
+scur
+star
+s0
+s1
+s2
+s3
+Codebook Entry ei
+VQVAE
+Encoder
+VQVAE
+Decoder
+ˆsg
+LVQ(ˆsg, star)
+πlow
+θ (a|ˆsg, s)
+(iii) Reconstruct path in G0 from scur to star,
+Update subgoal generator and low-level policy
+si
+si+t′
+VQVAE
+Encoder
+VQVAE
+Decoder
+c
+ˆsi+t′
+LVQ(ˆsi+t′, si+t′)
+Codebook Entries
+e1, . . . , ek
+VQVAE
+Decoder
+si
+ˆsg0
+ˆsg1...
+ˆsgk
+πlow
+θ (a|ˆsgi, s)
+πhi
+ψ (ˆsgi|s)
+(i) Update heuristic model
+1. Generate training set D = {(si, t−i)}t
+i=0
+given s0, a0, s1, ..., st−1, at−1, st
+2. Update hω with D
+(ii) Segment solution trajectory
+1. Calculate running mean and variance of
+sampled trajectories from (b.ii)
+µ = mean trajectory length from (b.ii)
+σ2 = variance of the trajectory lengths
+from (b.ii)
+2. Sample segment length
+t′ ∼N (µ, σ2)
+3. Segment solution trajectory into
+subtrajectories of length t′
+s0, a0, s1, ..., st′
+st′, at′, st′+1, ..., s2t′
+s(t−t′), a(t−t′), s(t−t′+1), ..., st
+...
+(iii) Update subgoal generator
+(iv) Update high-level and
+low-level policy
+(c) Training (Solution)
+Figure 1: (a) Tree Search. Policy tree search generates subgoals to use with πSG. (b) Training (Non-Solution). (i)
+The underlying graph that induced the tree search is generated from the parent-child relationships found during search,
+which is used to create a hierarchy of cluster graphs using the Louvain algorithm. (ii) States scur and star are sampled from
+neighbouring states in Gi from the graphs created by the Louvain Algorithm. (iv) The resulting trajectory from scur to star
+is used to update the subgoal generator and low-level policy. (c) Training (Solution). (i) The heuristic is updated using
+the solution trajectory. (ii) The solution trajectory is segmented. (iii) The subgoal generator is updated using the partial
+trajectory. (iv) The high-level and low-level policies are updated using the segmented trajectories.
+as input to the VQVAE’s decoder, which produces a tar-
+get subgoal state ˆsgi. The k generated subgoals are then
+used as inputs to the low-level and high-level policies, then
+combined to produce πSG(·), as described in Section 3.1.
+The difference between our work and HIPS-ε is how the
+VQVAE subgoal generator is used. We condition low-level
+policies on the generated subgoal states to guide the search
+to reach these subgoals, but search is performed at the
+search problem’s action level. HIPS-ε performs search at
+the subgoal-level, where the resulting state-transition from
+a node expansion comes from the generated state of the VQ-
+VAE. This can be problematic if the generated subgoal states
+are not accurate reconstructions of actual states because the
+reconstructed states might not be reachable by the search
+trying to find the subgoals. We hypothesize that HIPS-ε
+will not be able to effectively guide the search in complex
+environments for which state reconstruction is hard. By con-
+trast, our policy πSG(·) uses the reconstructed states only
+to condition the low-level policies. We further hypothesize
+that, in this πSG(·) scheme, even imperfect reconstructions
+of subgoal states can be helpful in guiding the search.
+To train the VQVAE subgoal generator to generate candidate
+subgoal states, (scur, star) are encoded into the continuous la-
+tent code ze, quantized to the nearest entry in the codebook
+ec, then given to the decoder along with scur to produce a
+reconstructed target ˆstar. A reconstruction loss Lrec(star, ˆstar)
+is used to encourage the reconstructed target subgoal state
+to match the given target state, along with a penalty to en-
+courage the encoding vector to become closer to a trainable
+codebook entry. The full loss is denoted as LVQ, and this
+procedure is used to train the VQVAE in scenarios where the
+search terminates without solution found (Section 3.3) and
+when the search returns a solution trajectory (Section 3.4),
+with the only difference being how scur and star are selected.
+For full details of the loss function used, see Appendix D.
+4
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+3.3. Training From Non-Solution Search Trees
+We leverage data from search trees that during the online
+Bootstrap training process would normally be discarded.
+This allows the subgoal-conditioned low-level policy and
+subgoal generator networks to be trained on problem in-
+stances where LevinTS and PHS* cannot find solutions.
+This process is shown in Figure 1.b, and in the empirical
+section, we show how this can lead to significant savings in
+the total search loss incurred during the Bootstrap training
+process.
+Different BFS algorithms potentially expand different trees,
+which form different subgraphs of the underlying state space.
+We denote the subgraph containing the states represented
+by the nodes expanded in the tree as G0. If the search
+cannot solve a problem instance during the online training
+process, we use this subgraph as the initial graph G0 for the
+Louvain clustering algorithm (Blondel et al., 2008). The
+Louvain algorithm iteratively creates a hierarchy of graphs
+(G0, . . . , GN) through clustering (Figure 1.b.i). Each itera-
+tion of the Louvain algorithm consists of creating a hierar-
+chical graph Gi+1 = (Vi+1, Ai+1) from the current graph
+Gi = (Vi, Ai), where Vi+1 represents a partition of Vi,
+where each v in Vi+1 represents a part in this partition. The
+set Ai+1 contains edges (vi+1, v′
+i+1) for vi+1 and v′
+i+1 in
+Vi+1 only if there are a vi in vi+1 (vi is in the part vi+1) and
+a v′
+i in v′
+i+1 (v′
+i is in the part v′
+i+1) such that (vi, v′
+i) in Ai.
+This process continues until a graph consisting of a single
+node is produced, or if Gi+1 = Gi. The pseudocode of this
+algorithm is given in Appendix E, Algorithm 5.
+We use the Louvain algorithm because Evans & ¸Sim¸sek
+(2023) showed it to find meaningful structure in other state
+spaces. The difference between our method and that of
+Evans & ¸Sim¸sek is that we learn to generalize subgoals
+across instances, where they assumed the state-transition
+graph for each individual problem was known a priori.
+For a given clustering level k, the graph Gk produced by the
+Louvain algorithm is selected. Two states scur and star are
+sampled from vk and v′
+k respectively such that (vk, v′
+k) ∈
+Ak (Figure 1.2.ii). If the graph is directed, then a graph
+traversal is performed in G0 between the two sampled states
+to determine the order of scur and star such that star can
+be reached from scur through a sequence of actions. The
+VQVAE subgoal generator is then trained using (scur, star)
+as input to generate the reconstructed target subgoal state ˆsg
+of star, as described in Section 3.2. The low-level πlow
+θ
+policy
+is trained using the sequence of states and actions between
+scur and star in G0, while conditioned on ˆsg (Figure 1.b.iii).
+3.4. Training From Solution Search Trees
+If the search finds a solution, then the solution trajectory
+is used to train the heuristic model hω using the costs of
+the current state along the solution path to the goal state
+(Figure 1.c.i). Similarly to previous work, the heuristic
+function is learned by minimizing the mean squared error
+between the model’s predicted value and the actual cost to
+go for the states along the solution path (Arfaee et al., 2011).
+Instead of clustering, we segment the solution trajec-
+tory (s0, s1, . . . , st) into sub-trajectories of length at most
+t′ < t of the form (si, si+1, . . . , smin(i+t′,t)). Here, i ∈
+{0, t′, 2t′, · · · , ⌊
+t
+t′+1⌋t′} and t′ is sampled from a Normal
+distribution, with mean and variance calculated from the
+lengths of sampled trajectories from the non-solution trees
+(Figure 1.c.ii). Sampling t′ ensures that the average number
+of state transitions between the si and si+t′ states is close
+to scur and star sampled in the non-solution case.
+For each sub-trajectory, scur and star are represented by si
+and si+t′, respectively. Similarly to Section 3.3, the VQ-
+VAE subgoal generator is trained using (si, si+t′) as input
+to generate the reconstructed target subgoal state ˆsi+t′ (Fig-
+ure 1.c.iii). The low-level policy πlow
+θ
+is trained using the
+sequence of states and actions (si, si+1, . . . , si+t′) while
+conditioned on the subgoal ˆsi+t′. The high-level policy πhi
+ψ
+is trained by generating the k subgoals following the process
+outlined in Section 3.2 for the state si, of which ˆsi+t′ is one
+of them, and uses ˆsi+t′ as the target for training the policy
+πhi
+ψ (Figure 1.c.iv). All policies are trained while minimizing
+the Levin loss (Orseau & Lelis, 2021).
+3.5. Analysis of πSG
+Policy-guided search algorithms can be implemented as
+BFS, but using our policy definition given in Equation 4. As
+a result, any policy-guided search algorithm using our policy
+πSG comes with all the guarantees which PHS* provides
+with completeness being one of them. Specifically, the
+requirement for completeness is that the loss incurred for
+each expansion step is non-negative, and that no infinite
+path has finite path loss (Orseau & Lelis, 2021). This is
+unlike other subgoal tree search algorithms such as kSubS,
+AdaSubS, and HIPS, with the exception of HIPS-ε.
+4. Experiments
+The goal of our experiments is to test our hypothesis that
+our learning process of πSG is more sample efficient than ex-
+isting approaches to learning policies for search algorithms.
+In the extreme case, our method’s sample efficiency enables
+policies to be learned on complex environment domains in
+which the existing approaches require a search budget (both
+in terms of the number of node expansions and in time)
+which are prohibitively expensive to the point where those
+methods cannot make any progress. We also evaluate the
+quality of the learned policies in terms of expansions and
+solution cost on a separate test set.
+5
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+0.0
+0.5
+1.0
+1.5
+Expansions
+1e8
+0
+2000
+4000
+6000
+8000
+10000
+Outstanding Problems
+BoulderDash (Standard)
+0
+1
+2
+3
+Expansions
+1e7
+Box-World (Standard)
+0.0
+0.5
+1.0
+1.5
+Expansions
+1e8
+CraftWorld (Standard)
+0.0
+0.5
+1.0
+1.5
+Expansions
+1e8
+Sokoban (Standard)
+LevinTS( )
+(Ours) LevinTS(
+SG)
+PHS*( )
+(Ours) PHS*(
+SG)
+WA* (1.5)
+(a) Standard problem instances.
+0
+2
+4
+6
+Expansions
+1e8
+0
+2000
+4000
+6000
+8000
+10000
+Outstanding Problems
+BoulderDash (Hard)
+0
+1
+2
+3
+Expansions
+1e8
+CraftWorld (Hard)
+0.00
+0.25
+0.50
+0.75
+1.00
+Expansions
+1e9
+TSP (Hard)
+LevinTS( )
+(Ours) LevinTS(
+SG)
+PHS*( )
+(Ours) PHS*(
+SG)
+WA* (1.5)
+(b) Hard problem instances.
+Figure 2: The line is the average number outstanding problems for the respective number of expansions accumulated during
+training. Shaded regions show maximum and minimum outstanding problems across all seeds.
+4.1. Environment Domains
+Box-World: A 20 × 20 room with colored keys and locked
+boxes (Zambaldi et al., 2018). Keys are consumed when
+used on a lock of the matching color, with the agent receiv-
+ing a new key matching the color of the box. The objective
+is to open the designated goal box by opening the correct se-
+quence of locks. If the agent opens a corresponding lock on
+the wrong box, the resulting scenario can become dead-end.
+CraftWorld: A 14 × 14 room with various raw materials
+and workbenches (Andreas et al., 2017). The agent can
+collect raw materials to create tools. We generate prob-
+lems with the open-source level generator1 of the procedure
+detailed by Andreas et al. (2017).
+BoulderDash: A 14 × 14 room where the agent must gather
+a number of diamonds to unlock the exit door, and proceed
+to enter it. Diamonds can be inside locked sub-rooms in
+which the corresponding key must be gathered first. Various
+dirt elements exist, which disappear once the agent walks
+over them, and can significantly increase the state-space
+size. We generate problems by randomly placing the keys,
+diamonds, and an exit door.
+Sokoban: A 10 × 10 room where the agent must push
+boxes onto specified goal locations. The box can only be
+pushed; not pulled, so boxes can get stuck on walls of the
+1https://github.com/jacobandreas/psketch/tree/master
+grid. Sokoban is PSPACE-hard (Culberson, 1999). We use
+the Boxoban training and test problems (Guez et al., 2018).
+Traveling Salesman Problem (TSP): A 10 × 10 grid-based
+environment where the agent must visit all of the cities
+before returning back to the first city it visited. The TSP is
+NP-hard (Garey & Johnson, 1979).
+4.2. Algorithms Evaluated
+Algorithms with πSG. We evaluate our subgoal-guided
+policy πSG on both PHS* and LevinTS, which we denote
+PHS*(πSG) and LevinTS(πSG), respectively. Both PHS*
+and LevinTS were shown to perform well in single-agent
+deterministic search problems (Orseau & Lelis, 2021).
+Baselines. To evaluate the training sample efficiency our
+subgoal-guided policy and data generation method provides
+from the trees when search terminates prematurely, we
+compare PHS*(πSG) to PHS* and LevinTS(πSG) to Lev-
+inTS using their original single policy formulation, denoted
+PHS*(π) and LevinTS(π), respectively. Following Orseau
+& Lelis (2021), we also evaluate our policy formulation
+against Weighted A* (Pohl, 1970) with w = 1.5, which was
+shown to be more sample efficient than PHS* in some envi-
+ronments. We also test our method against HIPS-ε, which
+is another complete subgoal-guided tree search method.
+6
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+4.3. Experimentation Procedure
+For evaluating the sample efficiency of different methods
+to learn an effective policy, we use the setup of Orseau
+& Lelis (2021). A loss of ℓ(·) = 1 is used, which corre-
+sponds to the search L(S, n∗
+k) being the number of node
+expansions that an algorithm S requires to solve problem
+instance k. PHS*(π), LevinTS(π), and WA* are trained
+using the Bootstrap process (Section 2.1 and Appendix C).
+PHS*(πSG) and LevinTS(πSG) are trained using the pro-
+cess outlined in Section 3 (with full pseudocode given in
+Appendix F). The Bootstrap process starts with a budget
+of 4000 expansions and use a budgeting update schedule
+noted in Appendix F. During the online training Bootstrap
+process, we record the number of outstanding training prob-
+lems which have yet to be solved, and the total accumulated
+loss (expansions) incurred after every iteration.
+The training procedure outlined for HIPS-ε requires a pre-
+computed dataset of solution trajectories. Since it is not
+clear how to train HIPS-ε online using the Bootstrap pro-
+cess, we do not include HIPS-ε in our training efficiency
+results. The policy, heuristic, and subgoal generator mod-
+els used in HIPS-ε are trained following the procedure of
+Kujanpää et al. (2024). For Sokoban, we use the offline
+datasets provided by Kujanpää et al. (2024). For Box-World,
+CraftWorld, and Boulderdash, we use trajectories found by
+domain-specific solvers over the same training set used to
+train the other systems with the Bootstrap process.
+Every domain has a disjoint set of 10,000 problem instances
+to train, 1,000 as validation, and 100 in the test set. Each
+algorithm is trained on 5 separate seeds, which determine
+the model initialization, the train and validate problem in-
+stances partitions, and how the problems are shuffled when
+batched. For the training efficiency experiment, we report
+the maximum, minimum, and average number of outstand-
+ing problems in our plot of results. For testing, we record
+the number of problem instances each algorithm was able to
+solve, the average number of expansions required to solve
+those instances, and the average solution length. We report
+the version of the trained network which allowed it to solve
+the highest number of problems, with tie breaks going to the
+one whose total solution lengths were the shortest (Orseau
+& Lelis, 2021). Due to the large runtime costs of HIPS-ε,
+we limit the budget during testing to 8,000.
+4.4. Results
+The first set of training loss experiments focuses on domains
+that all the baseline methods can solve. The total search
+loss incurred over the course of training, as measured by
+the number of node expansions, is shown in Figure 2.a.
+In the Box-World, CraftWorld, and BoulderDash environ-
+ments, the subgoal-guided policy formulation PHS*(πSG)
+and LevinTS(πSG) require substantially fewer node expan-
+Table 1: Results on the hard environments. “Expansions”
+represents the sum over all problems, time is measured in
+hours, and the maximum value for “Solved” is 10,000.
+ALGORITHM
+EXPANSIONS
+TIME
+SOLVED
+CRAFTWORLD (HARD)
+WA* (1.5)
+350,169,632
+16.01
+1,850
+LEVINTS(π)
+360,454,214
+16.02
+73
+PHS*(π)
+324,718,860
+16.04
+54
+LEVINTS(πSG)
+172,188,794
+16.02
+9
+PHS*(πSG)
+125,089,420
+13.74
+9,985
+BOULDERDASH (HARD)
+WA* (1.5)
+599,818,595
+16.01
+18
+LEVINTS(π)
+636,718,638
+16.04
+16
+PHS*(π)
+591,135,427
+16.02
+19
+LEVINTS(πSG)
+284,044,919
+16.02
+31
+PHS*(πSG)
+85,470,564
+6.25
+10,000
+TSP (HARD)
+WA* (1.5)
+1,019,840,000
+16.01
+0
+LEVINTS(π)
+1,107,904,000
+16.02
+0
+PHS*(π)
+980,928,000
+16.02
+0
+LEVINTS(πSG)
+105,838,613
+4.55
+10,000
+PHS*(πSG)
+20,593,798
+1.23
+10,000
+sions than PHS*(π) and LevinTS(π), respectively, to solve
+all 10,000 training instances. Sokoban is the only environ-
+ment where PHS*(π) initially can solve more problems
+using fewer expansions, but both PHS*(π) and PHS*(πSG)
+converge towards the end of training when only the harder
+problems remain to be solved. We hypothesize that our
+method performs worse in Sokoban than in the other prob-
+lems due to the training data that the clustering algorithm
+generates. While clustering finds important structures in the
+other problems, it fails to find helpful structures in Sokoban.
+The next set of experiments is similar to the above, but in-
+stead, it showcases how the sample efficiency of our method
+enables policies to be learned in more challenging prob-
+lems. For the domain environments with access to level-
+generators, problem instances were generated to be suffi-
+ciently hard, such as adding more diamonds for the agent
+to collect in BoulderDash. All methods were given a maxi-
+mum of 16 hours for the online bootstrap training process,
+with the training loss curves given in Figure 2.b and summa-
+rized in Table 1. The baseline algorithms were not able to
+solve many of the training instances within the time budget,
+and incurred a large training loss. PHS*(πSG) was able to
+complete the training process well under the time allocated
+on all problems evaluated. Despite our method requiring a
+higher computational cost per node expansion due to the use
+of several networks, its sample efficiency allows it to solve
+challenging problems while incurring a substantially smaller
+cost in terms of both node expansions and computation time.
+7
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+0.00
+0.25
+0.50
+0.75
+1.00
+1.25
+1.50
+1.75
+Expansions
+1e8
+0
+2000
+4000
+6000
+8000
+10000
+Outstanding Problems
+PHS*( )
+PHS*(
+SG)
+PHS*(
+SG) (Solution Only)
+Figure 3: Reduction in search loss during training when
+using data from non-solution trees. The line represents the
+average and the shaded regions show maximum, minimum,
+and average outstanding problems across all seeds.
+The results on the easier and more difficult domains support
+our hypothesis that our subgoal-guided policies can improve
+the sampling efficiency of policy-guided search algorithms.
+Search Loss Efficiency from Non-Solution Trees.
+One of the main contributions of our method for learning
+policies is that it can use data from failed searches to train its
+low-level policy and subgoal generator. While the previous
+experiment evaluated the training efficiency that the com-
+bination of subgoal-guided policy and the training method
+provides, this experiment aims to analyze the contribution
+of each. In Figure 3, we show the search loss during train-
+ing for PHS*(πSG) in the BoulderDash environment when
+we limit it to only using solution trajectories to update the
+models. These results show that learning πSG from solution
+trajectories already substantially improves the sample ef-
+ficiency of PHS*. We see another improvement when the
+system learns πSG from both successful and failed searches.
+Test Results. To test the quality of the learned policies,
+Table 2 reports the average number of expansions and av-
+erage solution length of each algorithm on the test set of
+the standard problems. On all domains except for Sokoban,
+PHS*(πSG) solved the test problems using the least number
+of expansions on average. WA* is able to find solutions that
+are the closest on average to the optimal cost, but it requires
+considerably more node expansions. With the exception of
+BoulderDash, LevinTS(πSG) and PHS*(πSG) can solve the
+test problems using fewer node expansions than LevinTS(π)
+and PHS*(π), respectively. Taken together, Table 2 and Fig-
+ure 2 show that learning πSG can be more sample efficient
+than learning non-subgoal-based policies (Figure 2), while
+asymptotically producing policies of similar quality in terms
+of expansions and solution cost (Table 2).
+HIPS-ε was unable to solve any problem in BoulderDash,
+and the majority of problems in CraftWorld within budget
+Table 2: Results on the test set for each of the standard
+domain environments. Expansions and solution length are
+averaged over solved problems. (†) Expansions reported for
+HIPS-ε are only for the latent-level space, and thus are not
+directly comparable to the other algorithms.
+ALGORITHM
+SOLVED
+EXPANSIONS
+LENGTH
+BOX-WORLD (STANDARD)
+WA* (1.5)
+100
+2,398.68
+66.19
+LEVINTS(π)
+100
+605.05
+67.91
+PHS*(π)
+100
+767.06
+68.07
+HIPS-ε
+100
+467.79(†)
+67.39
+LEVINTS(πSG)
+100
+411.38
+66.73
+PHS*(πSG)
+100
+378.58
+66.75
+CRAFTWORLD (STANDARD)
+WA* (1.5)
+100
+2,318.22
+90.01
+LEVINTS(π)
+100
+262.76
+93.93
+PHS*(π)
+100
+172.04
+93.49
+HIPS-ε
+19
+116.11(†)
+92.47
+LEVINTS(πSG)
+100
+208.28
+93.93
+PHS*(πSG)
+100
+103.23
+94.54
+BOULDERDASH (STANDARD)
+WA* (1.5)
+100
+1,193.60
+51.44
+LEVINTS(π)
+100
+61.33
+52.90
+PHS*(π)
+100
+53.65
+52.74
+HIPS-ε
+0
+—
+—
+LEVINTS(πSG)
+100
+65.48
+53.30
+PHS*(πSG)
+100
+53.34
+52.68
+SOKOBAN (STANDARD)
+WA* (1.5)
+100
+1,091.45
+32.81
+LEVINTS(π)
+100
+1,177.26
+41.04
+PHS*(π)
+100
+1,523.38
+39.40
+HIPS-ε
+100
+80.55(†)
+45.24
+LEVINTS(πSG)
+100
+496.87
+41.85
+PHS*(πSG)
+100
+808.42
+39.61
+constraints. HIPS-ε performs poorly in these domains be-
+cause its search is performed at the learned subgoal level.
+In domains whose observations are complex to represent,
+such as BoulderDash and CraftWorld, HIPS-ε requires the
+VQVAE subgoal generator to be very accurate and not miss
+important features, such as the agent, goal, or key object
+locations. In environments where the VQVAE can reliably
+reconstruct the states, such as Sokoban, HIPS-ε performed
+well and solved all problem instances. Note that expansions
+being reported by HIPS-ε are not directly comparable to the
+other algorithms, as it only counts the expansions performed
+in the learned subgoal space, which does not include the
+costs such as grounding and verifying the actual paths in the
+original state space. Since PHS*(πSG) and LevinTS(πSG)
+perform the search in the original space, it is more forgiving
+with reconstruction errors from the subgoal generator.
+Table 3 reports similar metrics for each algorithm on the test
+set of the hard problems. Each problem instance was given a
+8
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+Table 3: Results on the test set for each of the hard domain
+environments. Expansions and solution length are averaged
+over solved problems.
+ALGORITHM
+SOLVED
+EXPANSIONS
+LENGTH
+CRAFTWORLD (HARD)
+WA* (1.5)
+100
+313,572.52
+117.03
+LEVINTS(π)
+0
+—
+—
+PHS*(π)
+0
+—
+—
+LEVINTS(πSG)
+100
+395,557.94
+123.29
+PHS*(πSG)
+100
+3,071.83
+120.77
+BOULDERDASH (HARD)
+WA* (1.5)
+16
+271,636.94
+58.19
+LEVINTS(π)
+0
+—
+—
+PHS*(π)
+0
+—
+—
+LEVINTS(πSG)
+22
+315,807.91
+69.5
+PHS*(πSG)
+100
+172.32
+84.5
+TSP (HARD)
+WA* (1.5)
+1
+502,624.0
+45.0
+LEVINTS(π)
+0
+—
+—
+PHS*(π)
+0
+—
+—
+LEVINTS(πSG)
+100
+570.09
+40.89
+PHS*(πSG)
+100
+41.93
+41.73
+maximum budget of 512,000 node expansions. PHS*(πSG)
+was able to solve all test problems, while the other compar-
+ison methods struggled to solve a majority of them. The
+exception is WA* on CraftWorld, but it required over 100
+times more node expansions as compared to PHS*(πSG).
+Due to the complexity of the problem instances, HIPS-ε is
+omitted from these results as it requires a dataset of solution
+trajectories to train its policies and subgoal generator.
+5. Related Work
+Subgoal Search. Our work is primarily related to other
+works that use subgoals in search. kSubS (Czechowski
+et al., 2021) learns a subgoal generator to predict resulting
+states that are k steps ahead of the current state. AdaSubS
+(Zawalski et al., 2022) extends kSubS by learning multiple
+subgoal generators, each for a different look-ahead depth k.
+Since both kSubS and AdaSubS search at the subgoal level,
+they are not complete. HIPS (Kujanpää et al., 2023) learns
+to segment trajectories through reinforcement learning, then
+trains a subgoal generator using these trajectories and a
+low-level policy to reach the generated subgoals. HIPS
+also searches at the subgoal level, and thus is not complete.
+HIPS-ε (Kujanpää et al., 2024) augments the subgoal search
+by combining the subgoals and the actions of the environ-
+ment. These approaches require a precomputed dataset of
+solution trajectories, which our approach does not require.
+Also, we showed empirically that HIPS-ε might fail to solve
+problems when reconstructing the state is challenging, while
+our approach is robust to reconstruction inaccuracies.
+Goal-Conditioned Reinforcement Learning: Identifying
+useful subgoal states for policies to navigate between has
+shown promising results for solving long-horizon tasks.
+There are many different approaches to how these subgoal
+states are generated from the history of states the agent has
+visited. HIGL (Kim et al., 2021) builds a graph of landmark
+states, from which a goal is selected. HILL (Zhang et al.,
+2023) and HESS (Li et al., 2021) sample goal states from
+a learned embedding using distance metrics. L3P (Zhang
+et al., 2021) learns a latent space and then learns latent land-
+marks through clustering, and finally decodes the cluster
+centroids as goals. DisTop (Aubret et al., 2023) clusters an
+embedding of the state space and samples a goal from one of
+the selected clusters. Our method is different in that it sub-
+goals are found using only the underlying properties of the
+state-space graph, without relying on additional metrics to
+select subgoals such as novelty and reachability measures.
+VQVAEs as Subgoal Generators: Vector Quantized Vari-
+ational Autoencoders (Van Den Oord et al., 2017) have
+become a popular model to use as subgoal generator. DGRL
+(Islam et al., 2022), Choreographer (Mazzaglia et al., 2022),
+and QPHIL (Canesse et al., 2024) use VQVAEs to gener-
+ate a target subgoal observation, which is used with the
+current state as input to policies. VQVAEs are generally
+trained on an offline dataset, separate from the reinforcement
+learning task. CQM (Lee et al., 2023) trains a VQVAE to
+discretize continuous observations, which is used to create
+a curriculum over landmarks. Our method trains a VQVAE
+to generate subgoal observations, but does so online, while
+learning the policy. This allows our method to be used in
+scenarios where generating quality training trajectories is
+too costly.
+6. Conclusion
+In this paper, we presented a novel way to combine subgoal
+discovery with subgoal-guided policies, which can be used
+as a drop-in replacement to policies used in existing policy
+tree search algorithms, such as LevinTS and PHS*. The
+neural network models in our method can be trained online
+without needing an offline solution dataset. Moreover, it can
+be trained from both successful and failed searches, which
+we showed to improve the sampling efficiency of tree search
+algorithms substantially. This is due to the fact that a sub-
+goal conditioned policy can be trained using non-solution
+trajectories from the search tree. In the domains evaluated,
+our experiments showed that the large reduction in environ-
+ment interactions does not reduce the quality of the solutions
+found, while requiring fewer expansions at test time. As
+we increased the problem’s difficulty, the gap between our
+subgoal-based approach and other approaches increased—
+while our learned policies solved all test problems, previous
+approaches failed to learn effective ones.
+9
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+Acknowledgements
+This research was supported by Canada’s NSERC and the
+CIFAR AI Chairs program. This research was enabled in
+part by support provided by the Digital Research Alliance
+of Canada. The authors thank the anonymous reviewers for
+valuable feedback on this work.
+Impact Statement
+This paper advances the field of Machine Learning by
+demonstrating how to improve existing tree search ap-
+proaches to solve difficult “needle-in-the-haystack” single-
+agent problems. While the primary impact of our work is
+technical and our evaluated domains are game-like, this re-
+search direction could have broader applications in the long
+run. We do not see immediate societal risks, but as with any
+research in this field, ethical considerations should be taken
+into account when deploying these methods in real-world
+settings.
+References
+Andreas, J., Klein, D., and Levine, S. Modular multitask
+reinforcement learning with policy sketches. In Inter-
+national conference on machine learning, pp. 166–175.
+PMLR, 2017.
+Arfaee, S. J., Zilles, S., and Holte, R. C. Learning heuristic
+functions for large state spaces. Artificial Intelligence,
+175(16-17):2075–2098, 2011.
+Aubret, A., Matignon, L., and Hassas, S. Distop: Discov-
+ering a topological representation to learn diverse and
+rewarding skills. IEEE Transactions on Cognitive and
+Developmental Systems, 15(4):1905–1915, 2023.
+Blondel, V. D., Guillaume, J.-L., Lambiotte, R., and Lefeb-
+vre, E. Fast unfolding of communities in large networks.
+Journal of statistical mechanics: theory and experiment,
+2008(10):P10008, 2008.
+Brandes, U., Delling, D., Gaertler, M., Görke, R., Hoefer,
+M., Nikoloski, Z., and Wagner, D. Maximizing modular-
+ity is hard. arXiv preprint physics/0608255, 2006.
+Canesse, A., Petitbois, M., Denoyer, L., Lamprier, S., and
+Portelas, R. Navigation with qphil: Quantizing plan-
+ner for hierarchical implicit q-learning. arXiv preprint
+arXiv:2411.07760, 2024.
+Culberson, J. C. Sokoban is PSPACE-complete. In Inter-
+national Conference on Fun with Algorithms (FUN), pp.
+65–76, 1999.
+Czechowski, K., Odrzygó´zd´z, T., Zbysi´nski, M., Zawal-
+ski, M., Olejnik, K., Wu, Y., Kuci´nski, Ł., and Miło´s, P.
+Subgoal search for complex reasoning tasks. Advances
+in Neural Information Processing Systems, 34:624–638,
+2021.
+Evans, J. B. and ¸Sim¸sek, Ö. Creating multi-level skill hi-
+erarchies in reinforcement learning. Advances in Neural
+Information Processing Systems, 36:48472–48484, 2023.
+Garey, M. R. and Johnson, D. S. Computers and Intractabil-
+ity: A Guide to the Theory of NP-Completeness. W. H.
+Freeman, 1979.
+Guez, A., Mirza, M., Gregor, K., Kabra, R., Racaniere, S.,
+Weber, T., Raposo, D., Santoro, A., Orseau, L., Eccles,
+T., Wayne, G., Silver, D., Lillicrap, T., and Valdes, V.
+An investigation of model-free planning: boxoban levels.
+https://github.com/deepmind/boxoban-levels/, 2018.
+He, K., Zhang, X., Ren, S., and Sun, J. Deep residual learn-
+ing for image recognition. In Proceedings of the IEEE
+conference on computer vision and pattern recognition,
+pp. 770–778, 2016.
+Islam, R., Zang, H., Goyal, A., Lamb, A., Kawaguchi, K.,
+Li, X., Laroche, R., Bengio, Y., and Combes, R. T. D.
+Discrete factorial representations as an abstraction for
+goal conditioned reinforcement learning. arXiv preprint
+arXiv:2211.00247, 2022.
+Kim, J., Seo, Y., and Shin, J. Landmark-guided subgoal
+generation in hierarchical reinforcement learning. Ad-
+vances in neural information processing systems, 34:
+28336–28349, 2021.
+Kingma, D. P. Adam: A method for stochastic optimization.
+arXiv preprint arXiv:1412.6980, 2014.
+Kocsis, L. and Szepesvári, C. Bandit based monte-carlo
+planning. In European conference on machine learning,
+pp. 282–293. Springer, 2006.
+Kujanpää, K., Pajarinen, J., and Ilin, A. Hierarchical im-
+itation learning with vector quantized models. In Inter-
+national Conference on Machine Learning, pp. 17896–
+17919. PMLR, 2023.
+Kujanpää, K., Pajarinen, J., and Ilin, A. Hybrid search for ef-
+ficient planning with completeness guarantees. Advances
+in Neural Information Processing Systems, 36, 2024.
+Lee, S., Cho, D., Park, J., and Kim, H. J. Cqm: Curriculum
+reinforcement learning with a quantized world model. In
+Oh, A., Naumann, T., Globerson, A., Saenko, K., Hardt,
+M., and Levine, S. (eds.), Advances in Neural Informa-
+tion Processing Systems, volume 36, pp. 78824–78845.
+Curran Associates, Inc., 2023.
+10
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+Leicht, E. A. and Newman, M. E. Community structure
+in directed networks. Physical review letters, 100(11):
+118703, 2008.
+Li, S., Zhang, J., Wang, J., Yu, Y., and Zhang, C. Active hi-
+erarchical exploration with stable subgoal representation
+learning. arXiv preprint arXiv:2105.14750, 2021.
+Liu, G. and Ramakrishnan, K. A*prune: an algorithm for
+finding k shortest paths subject to multiple constraints.
+In Proceedings IEEE INFOCOM 2001. Conference on
+Computer Communications. Twentieth Annual Joint Con-
+ference of the IEEE Computer and Communications Soci-
+ety (Cat. No.01CH37213), volume 2, pp. 743–749 vol.2,
+2001. doi: 10.1109/INFCOM.2001.916263.
+Mazzaglia, P., Verbelen, T., Dhoedt, B., Lacoste, A., and
+Rajeswar, S. Choreographer: Learning and adapting
+skills in imagination. arXiv preprint arXiv:2211.13350,
+2022.
+Newman, M. E. and Girvan, M. Finding and evaluating
+community structure in networks. Physical review E, 69
+(2):026113, 2004.
+Orseau, L. and Lelis, L. H. Policy-guided heuristic search
+with guarantees. In Proceedings of the AAAI Conference
+on Artificial Intelligence, volume 35, pp. 12382–12390,
+2021.
+Orseau, L., Lelis, L., Lattimore, T., and Weber, T. Single-
+agent policy tree search with guarantees. Advances in
+Neural Information Processing Systems, 31, 2018.
+Orseau, L., Hutter, M., and Lelis, L. H. Levin tree search
+with context models. arXiv preprint arXiv:2305.16945,
+2023.
+Paszke, A., Gross, S., Massa, F., Lerer, A., Bradbury, J.,
+Chanan, G., Killeen, T., Lin, Z., Gimelshein, N., Antiga,
+L., Desmaison, A., Kopf, A., Yang, E., DeVito, Z., Raison,
+M., Tejani, A., Chilamkurthy, S., Steiner, B., Fang, L.,
+Bai, J., and Chintala, S. Pytorch: An imperative style,
+high-performance deep learning library. In Advances
+in Neural Information Processing Systems 32, pp. 8024–
+8035. Curran Associates, Inc., 2019.
+Pearl, J. Heuristics: intelligent search strategies for com-
+puter problem solving. Addison-Wesley Longman Pub-
+lishing Co., Inc., 1984.
+Pohl, I. Heuristic search viewed as path finding in a graph.
+Artificial intelligence, 1(3-4):193–204, 1970.
+Rosin, C. D. Multi-armed bandits with episode context.
+Annals of Mathematics and Artificial Intelligence, 61(3):
+203–230, 2011.
+Schrittwieser, J., Antonoglou, I., Hubert, T., Simonyan, K.,
+Sifre, L., Schmitt, S., Guez, A., Lockhart, E., Hassabis,
+D., Graepel, T., et al. Mastering atari, go, chess and shogi
+by planning with a learned model. Nature, 588(7839):
+604–609, 2020.
+Silver, D., Hubert, T., Schrittwieser, J., Antonoglou, I., Lai,
+M., Guez, A., Lanctot, M., Sifre, L., Kumaran, D., Grae-
+pel, T., et al. Mastering chess and shogi by self-play
+with a general reinforcement learning algorithm. arXiv
+preprint arXiv:1712.01815, 2017.
+Tan, C. S., Mohd-Mokhtar, R., and Arshad, M. R. A com-
+prehensive review of coverage path planning in robotics
+using classical and heuristic algorithms. IEEE Access, 9:
+119310–119342, 2021.
+Van Den Oord, A., Vinyals, O., et al. Neural discrete rep-
+resentation learning. Advances in neural information
+processing systems, 30, 2017.
+Zambaldi, V., Raposo, D., Santoro, A., Bapst, V., Li, Y.,
+Babuschkin, I., Tuyls, K., Reichert, D., Lillicrap, T.,
+Lockhart, E., et al. Relational deep reinforcement learn-
+ing. arXiv preprint arXiv:1806.01830, 2018.
+Zawalski, M., Tyrolski, M., Czechowski, K., Odrzygó´zd´z,
+T., Stachura, D., Pi˛ekos, P., Wu, Y., Kuci´nski, Ł.,
+and Miło´s, P.
+Fast and precise: Adjusting planning
+horizon with adaptive subgoal search. arXiv preprint
+arXiv:2206.00702, 2022.
+Zhang, L., Yang, G., and Stadie, B. C. World model as
+a graph: Learning latent landmarks for planning.
+In
+International conference on machine learning, pp. 12611–
+12620. PMLR, 2021.
+Zhang, Q., Yang, Y., Ruan, J., Xiong, X., Xing, D., and Xu,
+B. Balancing exploration and exploitation in hierarchical
+reinforcement learning via latent landmark graphs. In
+2023 International Joint Conference on Neural Networks
+(IJCNN), pp. 1–8. IEEE, 2023.
+11
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+A. Best-First Search
+Algorithm 1 Best-First Search (BFS)
+1: Input: Initial state s0, evaluation function φ, budget B
+2: Output: Solution node, or status of failed search
+3: struct Node {state s, float g}
+4: q ←priority_queue(order_by = φ)
+5: v ←set()
+{Set of visited states.}
+6: n0 = Node(s0, 0)
+{Root node.}
+7: insert(q, n0, φ(n0))
+8: b ←0
+9: while q not empty and b < B do
+10:
+n ←extract_min(q)
+11:
+s ←state(n)
+12:
+b ←b + 1
+13:
+if s ∈v then
+14:
+continue
+{Previously expanded state.}
+15:
+end if
+16:
+insert(v, s)
+17:
+for each n′ ∈expand(n) do
+18:
+s′ ←state(n′)
+19:
+if is_goal(s′) then
+20:
+return n′
+21:
+end if
+22:
+insert(q, n′, φ(n′))
+23:
+end for
+24: end while
+25: return timeout if b ≥B else no_solution
+B. Policy Tree Search
+Algorithm 2 and Algorithm 3 depict the policy tree search algorithms Levin Tree Search (LevinTS) and Policy-Guided
+Heuristic Search (PHS*) respectively.
+Algorithm 2 Levin Tree Search (LevinTS)
+1: Input: Initial state s0, budget b
+2: Output: Solution node, or status of failed search
+3: return BFS(s0, φLevinTS, b)
+Algorithm 3 Policy-Guided Heuristic Tree Search (PHS*)
+1: Input: Initial state s0, budget b
+2: Output: Solution node, or status of failed search
+3: return BFS(s0, φPHS, b)
+12
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+C. The Bootstrap Training Process
+Algorithm 4 depicts the Bootstrap Process. After each iteration of the algorithm, a new budget needs to be selected. Arfaee
+et al. (2011) unconditionally double the budget every iteration. Orseau & Lelis (2021) double the budget only if no new
+problems are solved in the current iteration.
+Algorithm 4 The Bootstrap Process
+1: Input: Initial budget B0, root states S0 (training problems), search algorithm S, neural policy/heuristic models Θ
+2: solved ←set()
+3: for t = 0, 1, . . . do
+4:
+for each s0 ∈S0 do
+5:
+result ←S(s0, Θ, Bt)
+6:
+if result̸ = timeout and result̸ = no_solution then
+7:
+insert(solved, n0)
+8:
+update Θ using solution trajectory from result
+9:
+end if
+10:
+end for
+11:
+if |solved| = |N 0| then
+12:
+break
+13:
+end if
+14:
+choose budget Bt+1
+15: end for
+D. Vector Quantized Variational Autoencoders
+VQVAEs utilize a codebook containing k trainable D-dimensional embedding vectors ei ∈RD, i = 1, . . . , k. Inputs x are
+encoded by the encoder, resulting in an encoded vector ze. The encoding vector is then mapped to a quantized encoding
+vector zq which is the nearest embedding vector using Euclidean distance:
+zq = ec,
+where c = arg min
+i
+∥ze −ei∥2 .
+(5)
+The discretized encoding vector is then passed through the decoder which produces a reconstructed output ˆx. The loss
+function used to optimize the encoder, decoder, and codebook is given by
+LVQ = Lrec(ˆx, x) + ∥sg(ze) −ei∥2
+2 + β ∥ze −sg(ei)∥2
+2
+(6)
+where Lrec is the reconstruction loss, and sg(·) is the stop gradient operation. The stop gradient is required so that we can
+independently update the codebook to converge to the encoding vector, and the encoding vector to converge to the codebook.
+13
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+E. Louvain Algorithm
+A partition of a graph is a grouping of its nodes into mutually exclusive groups called clusters. The modularity (Newman &
+Girvan, 2004; Leicht & Newman, 2008) of a graph measures the relative density of edges inside the clusters to outgoing
+edges. The modularity of a cluster Qc is given by
+Qc = ΣC
+in
+2m −ρ
+ΣC
+tot
+2m
+2
+,
+(7)
+where ΣC
+in is the total edge weight between nodes in cluster c, ΣC
+tot is the total edge weight within the cluster (which includes
+edges leading out to other clusters), m is the sum of all edge weights in the graph, and ρ > 0 is a balancing parameter. The
+modularity of a graph G is then given by the sum of all cluster modularities: Q = P
+c Qc. A clustering that maximizes
+the modularity of the graph is one that has dense connections between nodes in the same clusters, with sparse connections
+between each of the clusters.
+It has been shown that finding a partition of a graph that maximizes the modularity is NP-hard (Brandes et al., 2006), so
+approximation algorithms are generally used. The Louvain algorithm (Blondel et al., 2008) is an iterative hierarchical
+graph clustering algorithm. It works by first placing every node of the given graph G0 into its own cluster. Nodes are then
+moved into a neighbouring cluster iteratively if it increases the overall modularity of the graph. This process stops once no
+additional progress can be made. The result is a clustering over the graph, which can then be used to create a new aggregate
+graph G1 as follows: clusters of G0 become nodes in graph G1, and two nodes in G1 have an edge joining them if there
+exists an edge that connects neighbouring clusters in G0. The resulting graph G1 can then be used in this process again,
+which will produce another aggregate graph G2, and so on until either the final graph has a single node or the returned graph
+Gi+1 is the same graph as Gi (i.e., no nodes were able to be moved to a different cluster). The result from this process is
+hierarchy of graph clusterings, in which earlier graphs contain many smaller clusters which are then merged into fewer
+larger clusters.
+The Louvain algorithm is given as pseudocode in Algorithm 5, which is adapted from Evans & ¸Sim¸sek (2023).
+Algorithm 5 The Louvain Algorithm
+1: Input: Base graph G0 = (V0, E0)
+2: Output: Hierarchy of graph clusterings
+3: for i = 0, 1, . . . do
+4:
+Ci ←{{u} | u ∈Vi}
+{initialize singleton cluster over each node.}
+5:
+Qold ←P
+i
+
+ΣCi
+in /2m −ρ(ΣCi
+tot )2/(2m)2
+{Modularity of Ci, Equation 7.}
+6:
+repeat
+7:
+for each u ∈Vi do
+8:
+Find cluster c ∈Ci node u belongs to
+9:
+Find neighbouring clusters Nc of c
+10:
+Remove u from cluster c
+11:
+Compute modularity gains by moving u into each neighbouring cluster Nc
+12:
+Move u into neighbouring cluster maximizing modularity, if gain > 0
+13:
+end for
+14:
+until no change in Ci
+15:
+Qnew ←P
+i
+
+ΣCi
+in /2m −ρ(ΣCi
+tot )2/(2m)2
+{Modularity of updated Ci, Equation 7.}
+16:
+if Qnew > Qold then
+17:
+Vi+1 ←{c | c ∈Ci}
+{Parent graph Gi+1 where nodes are clusters from Gi.}
+18:
+Ei+1 ←{(ci, cj) | ci, cj ∈Ci, ci and cj are neighbours in Ci}
+19:
+Gi+1 ←(Vi+1, Ei+1)
+20:
+else
+21:
+break
+{No further gain.}
+22:
+end if
+23: end for
+24: return (G0, . . . , GN)
+14
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+F. Complete Training Procedure
+Algorithm 6 depicts our modified Bootstrap training algorithm which we use for PHS*(πSG) and LevinTS(πSG). After each
+iteration of the algorithm, a new budget needs to be selected. In our experiments, we follow a budget selection method
+which follows Orseau et al. (2023): If more than a factor (1 + b) of problems are solved in the current iteration t than was at
+the previous iteration t −1, the next budget is reduced to Bt+1 = max(B0, Bt/2). Otherwise, the budget is increased to
+Bt+1 = 2Bt + Tt/st, where Tt is the total number of expansions used for the solved problems, and st is the number of
+remaining unsolved problems.
+Algorithm 6 Subgoal-Guided Policy Search Training Procedure
+1: Input: Initial budget B0, root nodes N 0 (training problems), low-level conditional policy πlow
+θ , high-level subgoal
+policy πhi
+ψ, heuristic model hω Subgoal Generator VQϕ, Louvain sampling level k, Policy Search algorithm S
+2: solved ←set()
+3: lengths ←[]
+4: for t = 0, 1, . . . do
+5:
+for each n0 ∈N 0 do
+6:
+result ←S(n0, [πlow
+θ , πhi
+ψ, hω, VQϕ], Bt)
+7:
+if result̸ = timeout and result̸ = no_solution then
+8:
+insert(solved, n0)
+9:
+T = (s0, a0, s1, . . . , st) ←reconstructed path from initial state state(n0) to goal state state(n∗)
+10:
+Optimize hω for each state si ∈T by minimizing the mean-squared error with respect to the distance to st.
+11:
+T ′ ←partition T into sub-trajectories of lengths sampled from a Normal distribution parameterized by the mean
+and variance of lengths
+12:
+for each PT = (si, ai, si+1, . . . , si+t′) ∈T ′ do
+13:
+ˆsi+t′ ←VQϕ(si, si+t′)
+14:
+ˆsg ←{ˆsgi}k
+i=1 = {VQϕ(ei, si)}k
+i=1
+15:
+c ←quantized codebook index from VQϕ(si, si+t′)
+16:
+Optimize VQϕ by minimizing the loss LVQ(ˆsi+t′, si+t′)
+17:
+Optimize πlow
+θ (aj|sj, si+t′) for each sj, aj ∈PT by minimizing the cross-entropy loss with respect to ai
+18:
+Optimize πhi
+ψ(ˆsg|sj) for each sj ∈PT by minimizing the cross-entropy loss with respect to ˆsgc
+19:
+end for
+20:
+else
+21:
+G0 ←underlying graph from search tree
+22:
+Gk ←kth cluster graph from Louvain(G0)
+23:
+Ci, Cj ←sampled neighbour clusters from Gk
+24:
+scur ←sampled state from Ci
+25:
+star ←sampled state from Cj
+26:
+T = (s0, a0, s1, . . . , st) ←reconstructed path from scur to star
+27:
+insert(lengths, t)
+28:
+ˆstar ←VQϕ(scur, star)
+29:
+Optimize VQϕ by minimizing the loss LVQ(ˆstar, star)
+30:
+Optimize πlow
+θ (ai|si, star) for each si, ai ∈T by minimizing the cross-entropy loss with respect to ai
+31:
+end if
+32:
+end for
+33:
+if |solved| = |N 0| then
+34:
+break
+35:
+end if
+36:
+choose budget Bt+1
+37: end for
+15
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+G. Implementation and Machine Details
+The algorithms and environment are implemented in C++, adhering to the C++20 standard. The codebase 2 is compiled
+using the GNU Compiler Collection version 13.3.0, and uses the PyTorch 2.4 C++ frontend (Paszke et al., 2019). Where
+available, the official implementation of comparison methods are used. All experiments were conducted on an Intel i9-7960X
+and Nvidia 3090, with 128GB of system memory running Ubuntu 24.04.
+H. Additional Environment Details
+Most of the problem instances used in this paper are based off of existing open source implementations. Box-World uses
+an open source problem generator 3 with a goal length of 5, and several distractor paths of length 3. A distractor path is a
+sequence of key and locks which can be used by the agent, but does not progress to the goal. CraftWorld uses a custom
+problem generator based off of (Andreas et al., 2017), which has various levels of difficulty for the generated problems.
+BoulderDash also uses a custom problem generator which randomly places coloured keys, doors, diamonds, and the exit in
+different rooms. Sokoban uses the Boxban 4 problems. Finally, TSP uses a custom level generator to randomly place the
+agent starting location and the cities.
+Box-World
+CraftWorld
+BoulderDash
+Sokoban
+TSP
+Figure 4: The environment domains used in the experiments. Box-World: The agent in black needs to open colored locks
+(right pixel) to receive a colored key (left pixel) until it gets to the goal (white). CraftWorld: The agent must create an iron
+pickaxe to get the gem so that they can craft a ring. BoulderDash: The agent must get the green key to unlock the room
+containing the diamond. Once the diamond is collect, the exit in the bottom-right room will open. Sokoban: The agent must
+push boxes to the goal locations without getting boxes stuck in corners. TSP: The agent (black) must visit each city (red)
+then return back to the first city (blue). The gray boxes are non-traversable obstacles.
+I. Additional Experimental Details
+In our experiments, PHS*(πSG), LevinTS(πSG), PHS*(π), LevinTS(π), and WA* all use a ResNet-based (He et al., 2016)
+networks. PHS*(π) uses a single network with two heads, one for the policy and one for the heuristic. For PHS*(πSG),
+we use separate networks for the conditional low policy, and a two-headed network for the subgoal policy and global
+heuristic. LevinTS(πSG) follows the same network structure, without the heuristic head. We use the Adam optimizer
+(Kingma, 2014), with learning rate of 3E-4 and L2-regularization of 1E-4. The policy and heuristic networks for PHS*(π),
+LevinTS(π), PHS*(πSG), and LevinTS(πSG) both use 128 ResNet channels, with PHS*(πSG) and LevinTS(πSG) using half
+the number of blocks (4 versus 8) due to the fact that they both have both a low-level and high-level policy. The VQVAE
+subgoal generator uses a codebook size of 4, a codebook dimension of size 128, and β = 0.25. We use the open source
+implementation for HIPS-ε in our experiments5. We use ϵ = 1E-3 for all environments, and use for version of HIPS-ε
+which assumes access to an environment dynamics model. All other hyperparameter follows the authors choice in their
+Box-World experiments (Kujanpää et al., 2024).
+2https://github.com/tuero/subgoal-guided-policy-search
+3https://github.com/nathangrinsztajn/Box-World
+4https://github.com/deepmind/boxoban-levels/
+5https://github.com/kallekku/HIPS
+16
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+J. Ablation: Impact of Codebook Size
+The size of the codebook in the VQVAE determines the number of how many subgoals are parameterized by the model. In
+Figure 5, we show the search loss during training for various codebook sizes on the CraftWorld environment. The chosen
+codebook size of k = 4 incurs the smallest search loss, but we note that there is a fair amount of overlap between the curves.
+Table 4 shows how each of these models performs on the test set. While the solution length is relatively the same, there is
+quite a large difference in the number of expansions required to solve the problems. If too few subgoals are used, then the
+codebook becomes overburdened in trying to represent a single subgoal state. Interestingly, if too many subgoals are used,
+we also see an increase in the number of expansions required. One possible reason for this could be that if a large number
+of codebook entries are not being used, then the resulting mixture policy will look more like a uniform policy, which will
+increase the number of node expansions required. One avenue for future work is to dynamically remove unused codebook
+entries from being used in the final policy.
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Expansions
+1e8
+0
+2000
+4000
+6000
+8000
+10000
+Outstanding Problems
+k = 1
+k = 4
+k = 16
+Figure 5: Learning curves during training using the Bootstrap process for varying codebook sizes. The line is the average
+outstanding problems for the respective number of expansions accumulated during training. All training runs lie within the
+shaded regions.
+Table 4: Results on CraftWorld test set using various codebook sizes. Expansions and solution length are averaged over
+solved problems.
+ALGORITHM
+SOLVED
+EXPANSIONS
+LENGTH
+K = 1
+100
+263.92
+92.52
+K = 4
+100
+103.23
+94.54
+K = 16
+100
+305.17
+94.16
+17
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+K. Ablation: Impact of Cluster Graph Level when Sampling Subgoals
+From the base graph G0, the Louvain algorithm produces a hierarchy of cluster graphs {G1, . . . , GN} where earlier graphs
+contain many smaller clusters with later graphs merging them into fewer clusters. One decision to make when sampling
+subgoals is which of these cluster graphs in the hierarchy to choose from. Smaller abstraction levels will generally result in
+pairs of states being sampled which are close in space/time, and larger abstraction levels will generally result in pairs of
+states further apart, which is depicted in Table 5.
+Table 5: Average trajectory length between subgoals for each cluster level on the CraftWorld environment.
+CLUSTER GRAPH LEVEL
+SUBGOAL DISTANCE
+1
+1.66
+3
+4.93
+5
+17.29
+Figure 6 shows the search loss during training when sampling subgoals from various cluster graph levels, and Table 6 shows
+the test results on the CraftWorld environment. From the search loss during training and at test time, it appears that one
+must be careful in that they do not sample subgoals which are too close together from G1, as the subgoals will not be as
+meaningful. Sampling subgoals from G5 which were far apart as compared to G3 did lead to a slight loss in performance,
+both in terms of number of node expansions and solution length.
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Expansions
+1e8
+0
+2000
+4000
+6000
+8000
+10000
+Outstanding Problems
+G1
+G3
+G5
+Figure 6: Learning curves during training using the Bootstrap process for varying cluster graph levels from which subgoal
+states were sampled from. The line is the average outstanding problems for the respective number of expansions accumulated
+during training. All training runs lie within the shaded regions.
+Table 6: Results on CraftWorld test set using models which were trained using various cluster graph levels. Expansions and
+solution length are averaged over solved problems.
+ALGORITHM
+SOLVED
+EXPANSIONS
+LENGTH
+G1
+100.00
+287.24
+93.88
+G3
+100.00
+103.23
+94.54
+G5
+100.00
+110.10
+95.05
+18
+
+
+Subgoal-Guided Policy Heuristic Search with Learned Subgoals
+L. Robustness to Out-of-Distribution Scenarios
+Table 7 represents the results of an experiment that evaluates the algorithms on BoulderDash problems which require two
+keys to unlock two consecutive doors before reaching the diamond, whereas the neural policy and heuristic models were
+trained on problems where only a single key was required. PHS*(π) and PHS*(πSG) perform similarly, using a number
+of expansions close to the solution length which means that the policies learned can almost deterministically solve these
+problems. LevinTS(πSG) can handle out-of-distribution problems much better than LevinTS(π) in terms of the number of
+expansions required, while finding solutions slightly longer. WA* could not solve all problems, possibly for having to rely
+only on the guidance of a heuristic function. The heuristic WA* uses was trained to estimate the cost-to-go in a smaller
+interval than the longer out-of-distribution problems. Note that HIPS-ε is not present here as it was unable to solve any
+BoulderDash problems in the original test set, due to the subgoal generator having difficulty to reproduce the complex state
+representation.
+Table 7: Results on an out-of-distribution test set for BoulderDash. Expansions and solution length are averaged over solved
+problems.
+ALGORITHM
+SOLVED
+EXPANSIONS
+LENGTH
+WA* (1.5)
+73
+9,712.64
+68.29
+LEVINTS(π)
+100
+131.41
+70.15
+PHS*(π)
+100
+72.45
+70.37
+LEVINTS(πSG)
+100
+72.30
+72.09
+PHS*(πSG)
+100
+71.35
+70.25
+19

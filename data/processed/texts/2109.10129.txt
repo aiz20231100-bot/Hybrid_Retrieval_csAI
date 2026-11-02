@@ -1,0 +1,1229 @@
+Learning General Optimal Policies with Graph Neural Networks:
+Expressive Power, Transparency, and Limits
+Simon St˚ahlberg,1 Blai Bonet,2 Hector Geffner2,3,1
+1Link¨oping University, Sweden
+2Universitat Pompeu Fabra, Spain
+3Instituci´o Catalana de Recerca i Estudis Avanc¸ats (ICREA), Barcelona, Spain
+simon.stahlberg@liu.se, bonetblai@gmail.com, hector.geffner@upf.edu
+Abstract
+It has been recently shown that general policies for many clas-
+sical planning domains can be expressed and learned in terms
+of a pool of features deﬁned from the domain predicates using
+a description logic grammar. At the same time, most descrip-
+tion logics correspond to a fragment of k-variable counting
+logic (Ck) for k = 2, that has been shown to provide a tight
+characterization of the expressive power of graph neural net-
+works. In this work, we make use of these results to under-
+stand the power and limits of using graph neural networks
+(GNNs) for learning optimal general policies over a number
+of tractable planning domains where such policies are known
+to exist. For this, we train a simple GNN in a supervised man-
+ner to approximate the optimal value function V ∗(s) of a
+number of sample states s. As predicted by the theory, it is ob-
+served that general optimal policies are obtained in domains
+where general optimal value functions can be deﬁned with
+C2 features but not in those requiring more expressive C3 fea-
+tures. In addition, it is observed that the features learned are in
+close correspondence with the features needed to express V ∗
+in closed form. The theory and the analysis of the domains
+let us understand the features that are actually learned as well
+as those that cannot be learned in this way, and let us move
+in a principled manner from a combinatorial optimization ap-
+proach to learning general policies to a potentially, more ro-
+bust and scalable approach based on deep learning.
+Introduction
+Deep learning (DL) and deep reinforcement learning (DRL)
+are behind most of key milestones in AI of recent years
+(Mnih et al. 2015; LeCun, Bengio, and Hinton 2015; Silver
+et al. 2017a,b). Yet, these methods struggle to produce solu-
+tions that are structurally general (Goyal and Bengio 2020).
+Even in simple tasks, such as retrieving a key to open a door
+in a simple environment, they may require a large number
+of simulations, and even then, they may fail to generalize to
+all possible situations (Chevalier-Boisvert et al. 2019). In-
+terestingly, the computation of general policies has been ad-
+dressed recently in a model-based setting that assumes that
+a general model of the actions is known in terms of action
+schemas and predicates (Bonet and Geffner 2018; Franc`es,
+Bonet, and Geffner 2021). This paper is a step aimed at
+bringing these threads together with two motivations: to re-
+place the combinatorial methods that have been proposed
+to learn general policies by more robust and scalable deep
+learning methods, and to do so in a principled manner where
+the intermediate representations and experimental results,
+both positive and negative, can be understood.
+For this, we exploit two existing results. On the one hand,
+the realization that general policies and value functions for
+many classical benchmark domains can be expressed in
+terms of features deﬁned from the domain predicates using a
+description logic (DL) grammar (Mart´ın and Geffner 2004;
+Fern, Yoon, and Givan 2006; Bonet, Franc`es, and Geffner
+2019; Franc`es et al. 2019). On the other, the correspon-
+dence established between the expressive power of a decid-
+able fragment of ﬁrst-order logic, called C2, which includes
+most common DLs (Baader, Horrocks, and Sattler 2008),
+and the expressive power of graph neural networks (GNNs)
+(Barcel´o et al. 2020; Grohe 2020). The two results together
+suggest that general policies could be learned from the do-
+main predicates directly by means of GNNs, except for those
+which are not expressible in terms of C2 features at all.
+In this paper, we carry out this exploration in a context
+where the learned general policies are expected to be opti-
+mal, leading to optimal (shortest) plans in any instance of the
+target class of problems Q. In addition, instead of seeking
+for representations of an optimal policy, we seek representa-
+tions of the optimal value function. If this function V is opti-
+mal, the policy πV greedy in V is optimal as well. The focus
+on optimal values allows us to learn the general function V
+using labeled data in the form of pairs ⟨s, V ∗(s)⟩, and to
+evaluate the learned function V in a crisp manner where the
+execution of a non-optimal transition at any state is an error.
+The optimality requirement is thus a methodological choice
+which simpliﬁes the training and evaluation procedures in
+order to determine whether the graph neural networks man-
+age to learn the value functions that can be expressed in
+terms of C2 features without having to make explicit the
+feature pool or the underlying grammar. Recent works have
+used deep learning methods for addressing similar problems
+in the broader setting of stochastic MDPs (Toyer et al. 2020;
+Garg, Bajpai, and Mausam 2020). Our approach is inspired
+by them and follows on their footsteps, but it is not so much
+focused on performance but on understanding the scope of
+the methods and the features learned.
+The rest of the paper is organized as follows. We review
+classical planning, general policies and value functions, and
+present value functions for a number of tasks in terms of
+arXiv:2109.10129v2  [cs.AI]  6 May 2022
+
+
+logical features, most in C2. We review GNNs, their relation
+to ﬁnite-variable logics, and deﬁne the architecture used for
+learning value functions. We report the experiments and an-
+alyze results, discuss related work, and conclude.
+Classical Planning
+A classical planning instance is a pair P = ⟨D, I⟩where D
+is a ﬁrst-order planning domain and I is instance informa-
+tion (Geffner and Bonet 2013; Ghallab, Nau, and Traverso
+2016). The planning domain D contains a set of predicate
+symbols p and a set of action schemas with preconditions
+and effects given by atoms p(x1, . . . , xk) where each xi is
+an argument of the schema. The instance information is a
+tuple I = ⟨O, Init, Goal⟩where O is a (ﬁnite) set of ob-
+ject names ci, and Init and Goal are sets of ground atoms
+p(c1, . . . , ck). This is the structure of planning problems ex-
+pressed in PDDL (Haslum et al. 2019) where the domain
+and instance information are provided in separate ﬁles.
+A classical problem P = ⟨D, I⟩encodes a state model
+S(P) = ⟨S, s0, SG, Act, A, f⟩in compact form where the
+states s ∈S are sets of ground atoms from P, s0 is the ini-
+tial state I, SG is the set of goal states s such that SG ⊆s,
+Act is the set of ground actions in P, A(s) is the set of
+ground actions whose preconditions are (true) in s, and f
+is the transition function so that f(a, s) for a ∈A(s) rep-
+resents the state s′ that follows action a in the state s. An
+action sequence a0, . . . , an is applicable in P if ai ∈A(si)
+and si+1 = f(ai, si), for i = 0, . . . , n, and it is a plan if
+sn+1 ∈SG. The cost of a plan is assumed to be given by its
+length and a plan is optimal if there is no shorter plan.
+The representation of planning problems P in two parts
+D and I, one that is general, and the other that is speciﬁc,
+is essential for deﬁning and computing general policies, as
+the instances are assumed to come all from the same do-
+main. Recent work has addressed the problem of learning
+such ﬁrst-order representations from unstructured data (Asai
+2019; Bonet and Geffner 2020; Rodriguez et al. 2021).
+General Policies and Value Functions
+Generalized planning studies the representation and com-
+putation of policies that solve many classical planning in-
+stances from the same domain at once (Srivastava, Immer-
+man, and Zilberstein 2008; Bonet, Palacios, and Geffner
+2009; Hu and De Giacomo 2011; Belle and Levesque 2016).
+For example, Qclear consists of all classical problems in
+Blocksworld where a block x must be cleared, regardless of
+the number or initial conﬁguration of blocks, and a general
+policy for Qclear can be expressed in terms of the two fea-
+tures Φ = {H, n}, where H is a true in a state if a block
+is being held, and n represents the number of blocks above
+the target block x, by means of the rules {¬H, n > 0} 7→
+{H, n↓} and {H} 7→{¬H} (Bonet and Geffner 2018). The
+ﬁrst rule says that when the gripper is empty and there are
+blocks above x, any action that decreases n and makes H
+true should be selected. The second that when the gripper is
+not empty, any action that makes H false and does not affect
+n should be selected. It has been shown that general policies
+of this form can be learned without supervision by solving
+a Max-Weighted SAT theory T(S, F) where S is a set of
+sampled state transitions, and F is a large but ﬁnite pool of
+Boolean and numerical features obtained from the domain
+predicates (Franc`es, Bonet, and Geffner 2021).
+In this work, it is convenient to represent policies in terms
+of value functions. As it is usual in dynamic programming
+and RL (Sutton and Barto 1998; Bertsekas 1995), a value
+function V deﬁnes a (non-deterministic) greedy policy πV
+that selects in a state s any possible successor state s′ with
+minimum V (s′) value, under the assumption that actions are
+deterministic and of the same cost. A policy π solves an in-
+stance P if the state transitions compatible with π, starting
+with the initial state, always end up in a goal state, and π
+solves a class of problems Q if it solves each problem in
+the class. Similarly, π solves P and Q optimally when goals
+are always reached optimally. Clearly, if V is optimal, i.e.,
+V is the optimal cost function V ∗, the greedy policy πV is
+optimal too. The general value functions are deﬁned over
+general features φi, which are well-deﬁned state functions
+over the states arising in instances of Q as:
+V (s) = F(φ1(s), . . . , φk(s))
+where φi(s) is the value of the feature φi in state s. Value
+functions that are linear have the form:
+V (s) = P
+1≤i≤k wiφi(s)
+where the coefﬁcients wi are constants that do not depend
+on the states. For example, the general value function for the
+collection of problems Qclear, assuming different actions
+for picking and placing objects, is:
+V = 2n + H
+where the states are left implicit, and the Boolean feature
+H is assumed to have value 1 when true, and 0 otherwise
+(the opposite for ¬H). This value function is optimal for
+Qclear. In planning, two types of linear value functions
+that have been used are “potential heuristics” (Pommeren-
+ing et al. 2015), that are instance-dependent and use features
+that stand for conjunction of atoms, and “generalized poten-
+tial heuristics” (Franc`es et al. 2019) that use the Boolean
+and the numerical description logic features introduced by
+Bonet, Franc`es, and Geffner (2019).
+Domain Predicates, Features, and Logics
+A key problem in reinforcement learning (RL), and in partic-
+ular in RL with linear function approximation, is the choice
+of the features (Wu and Givan 2010; Geramifard et al. 2013;
+Song et al. 2016; Bellemare et al. 2019). A relevant observa-
+tion made early on is that the features can often be deﬁned
+using a simple DL grammar from the domain predicates
+(Mart´ın and Geffner 2004; Fern, Yoon, and Givan 2006). For
+example, if q(z) and r(x, y) are two domain predicates of
+arities 1 and 2 respectively, one can deﬁne new unary pred-
+icates p1(x) and p2(x) as ∃y[q(y)∧r(x, y)] and ∀y r(x, y),
+and use the new unary predicates to deﬁne new ones, etc.
+Unary predicates p can be used to deﬁne numerical features
+np, whose value is the number of objects that satisfy p in a
+state s, and Boolean features bp, whose value is true when
+np is greater than 0 (Bonet, Franc`es, and Geffner 2019).
+
+
+Interestingly, most variants of DLs are parts of a fragment
+of ﬁrst-order logic (FOL) known as FO2, that involves just
+two variables, such as x and y above (Baader, Horrocks, and
+Sattler 2008). In other words, DLs can express some FO-
+formulas that make use of two variables but not three. The
+extension of FOk, with k variables, with counting quantiﬁers
+∃≥i to express that there are at least i different objects that
+comply with a formula is the logic Ck.
+The relation between the features required for expressing
+general policies and value functions, and the ﬁnite-variable
+logics required to express such features is relevant as it has
+been shown recently that guarded C2 (GC2), which corre-
+sponds to a standard description logic, provides a tight char-
+acterization of the expressive power of (message passing)
+graph neural nets (Barcel´o et al. 2020; Grohe 2020). This
+suggests that GNNs can be used to learn general policies us-
+ing the domain predicates without having to generate a pool
+of C2 features by assuming some ﬁxed grammar and a bound
+on the complexity of the features. This is the hypothesis that
+we explore in this work by focusing on the problem of learn-
+ing general value functions that are optimal.
+Value Functions for Tractable Tasks
+We consider optimal value functions for a number of tasks
+and domains, selected mostly from Lipovetzky and Geffner
+(2012), where they are shown to be solvable, optimally, in
+polynomial time, suggesting that a compact optimal value
+function may exist. All features are deﬁned in terms of the
+domain predicates, and for simplicity, they are all Boolean.
+Predicates pG refer to predicates p evaluated in the goal
+(goal predicates); i.e., while an atom like ON(a, b) is true
+or false in a state, the atom ONG(a, b) is true in a state iff it
+is true in the goal of the instance (Mart´ın and Geffner 2004).
+In these domains, the optimal value functions are linear
+and expressed as sums V ∗(s) = PN
+i=1 ci[[ϕi(s)]], where ci
+is a constant and [[ϕi]] is the Iverson bracket that evaluates to
+1 if feature ϕi holds in s, and else to 0. The formulas ϕi all
+belong to the logic Ck for k = 2, and in one case, for k = 3.
+In many domains, we need features that reﬂect the exis-
+tence of paths of length k from object x to some object y
+such that some condition T(y) holds, where objects are con-
+nected by “edges” E(x, y). This can be expressed in C2 as:
+P0(x) = T(x) ,
+Pk(x) = ∃y(E(x, y) ∧Pk−1(y)) .
+The distance of a shortest path of length k is then captured
+by SPk(x) = Pk(x) ∧¬Pk−1(x), while the existence of such
+path of length up to N is captured by CONNN(x) = P0(x)∨
+· · · ∨PN(x). The constant N is related to a hyperparam-
+eter L in the architecture, to be described below. Nota-
+tion SPk[T′, E′] (resp. CONNN[T′, E′]) denotes SPk (resp.
+CONNN) where T/E are replaced by T ′/E′ resp. Addition-
+ally, P1(x) = ∃y P(x, y) and P2(x) = ∃y P(y, x) denote that
+x appears as ﬁrst and second argument of some atom. Lastly,
+P−1(x, y) holds iff P(y, x) holds.
+Blocksworld: Clear and On.
+Gupta and Nau (1992)
+showed that ﬁnding an optimal solution for Blocksworld is
+NP-hard. We thus consider a tractable version where the
+goal CLEAR(x) is to clear a speciﬁc block x. The optimal
+value function decomposes as
+V ∗= [[α ∧H]] + PN
+k=1(2k −1)[[Bk]]
+for features
+α = ∃x(CLEARG(x) ∧¬CLEAR(x)) ,
+H = ∃x HOLDING(x) ,
+Bk = ∃x(CLEARG(x) ∧ηk(x)) ,
+ηk(z) = SPk[CLEAR, ON−1](z)
+where α holds in a state, if it is not a goal state, H, if holding
+some block, and Bk (resp. ηk(z)), if there are k blocks above
+x (resp. z), k ≤N.
+The other version of Blocksworld corresponds to in-
+stances with single-atom goals of the form ON(x, y) for
+some x and y. In this case, the optimal value function for
+problems with up to N blocks above x or y decomposes as
+V ∗= [[α ∧H]] + 2[[α ∧L]] + 2 PN
+k=1 k([[Xk]] + [[Yk]])
+for features
+α = ∃xy(ONG(x, y) ∧¬ON(x, y)),
+L = ∃xy(ONG(x, y) ∧(¬CLEAR(y) ∨¬HOLDING(x))),
+Xk = ∃xy(ONG(x, y) ∧ηk(x) ∧¬CONNN[ON2
+G, ON](x)),
+Yk = ∃xy(ONG(x, y) ∧ηk(y) ∧¬CONNN[ON1
+G, ON](y))
+where L holds if x is not held or cannot be stacked on y, and
+Xk (resp. Yk) holds if there are k blocks above x (resp. y)
+and x (resp. y) is not above y (resp. x).
+Gripper.
+There is a robot with two grippers, and a set of
+rooms containing balls. While the goal is to move every ball
+to the correct room, we consider the subproblem of moving
+a single ball, whose goal is just AT(x, y) for some ball x and
+room y. The optimal value function is
+V ∗= [[α∧P]] + 3[[α∧B]] + [[α∧D]] + 2[[α∧G]] + [[α∧F]]
+for features
+α = ∃xy(ATG(x, y) ∧¬AT(x, y)) ,
+P = ∃xy(AT(x, y) ∧AT1
+G(x) ∧AT-ROBBY(y)) ,
+B = ∃xy(AT(x, y) ∧AT1
+G(x) ∧¬AT-ROBBY(y)) ,
+D = ∃xy(ATG(x, y) ∧AT-ROBBY(y)) ,
+G = ∃xy(ATG(x, y) ∧¬AT-ROBBY(y)) ,
+F = ∃xy(AT1
+G(x) ∧AT(x, y) ∧
+¬∃x(GRIPPER(x) ∧FREE(x))) .
+where α holds when the goal is not achieved, P (resp. B)
+holds when Robby is (resp. is not) in the same room as the
+ball x and Robby should pick up x (resp. move to pick it up),
+D (resp. G) holds when Robby is (resp. is not) in the room
+y, and F holds when no gripper is free and Robby is not
+carrying the ball x. It is important to note that when Robby
+picks up a ball, the ball is no longer in any room.
+
+
+Transport.
+The task is to deliver packages using trucks of
+bounded capacity. We consider a version where the goal is an
+atom AT(x, y) for package x and destination y. The optimal
+value function V ∗decomposes as the sum for 1 ≤k ≤N of
+(k + 1)
+ [[α∧Tk]] + [[α∧Dk]] + [[α∧D′
+ℓ]]
+
++ [[α∧Tk∧Fk]]
+for features
+α = ∃xy(ATG(x, y) ∧¬AT(x, y)) ,
+β(x, y) = AT(x, y) ∧AT1
+G(x) ,
+γ(x, y) = IN(x, y) ∧AT1
+G(x) ,
+L(y) = ∃x(VEHICLE(x) ∧AT(x, y)) ,
+C(y) = ∃x(VEHICLE(x) ∧AT(x, y) ∧
+∃y(CAPACITY(x, y) ∧
+∃x CAPACITY-PREDECESSOR(x, y))) ,
+Tk = ∃xy(β(x, y) ∧SPk[L, ROAD−1](y)) ,
+Fk = ∃xy(β(x, y) ∧¬SPk[C, ROAD−1](y)) ,
+Dk = ∃xy(β(x, y) ∧SPk[AT2
+G, ROAD](y)) ,
+D′
+k = ∃xy(γ(x, y) ∧
+∃x(AT(y, x) ∧SPk[AT2
+G, ROAD](x)))
+where α holds iff the goal is not achieved, Tk determines
+the distance to the closest truck, Tk ∧Fk determines if all
+closest trucks are full and need to drop a package, and Dk
+(resp. D′
+ℓ) determines the distance from the package (resp.
+truck the package is in) to the destination.
+Rovers.
+Multiple rovers equipped with different capabili-
+ties (soil analysis, etc) must perform experiments and send
+results back to lander. A simple version where just the soil
+at some speciﬁc location must be sampled is considered.
+A feature for identifying the closest available and capable
+rover to sample soil is needed. Since each rover has its own
+map, shortest-path on different graphs must be considered:
+P0(r, x) = AT-SOIL-SAMPLE(x) ,
+Pk(r, x) = ∃y(CAN-TRAVERSE(r, x, y) ∧Pk−1(r, y)) ,
+SPk(r, x) = AT(r, x) ∧Pk(r, x) ∧¬Pk−1(r, x) .
+In addition to ﬁnd the distance to the closest capable rover to
+sample the soil Rk, features are need to decide if such rover
+is full Fk, if the soil has not been sampled S, and if the goal
+has not been achieved α. Also needed are Boolean features
+Lk to express the distance from the soil or rover with the
+sample to some location where data can be sent to lander.
+The optimal value function decomposes as:
+V ∗= [[α]] + [[S]] + PN
+k=1(k[[Rk]] + [[Fk]] + k[[Lk]]) .
+The formulas SPk(r, x) enter into the deﬁnition of the fea-
+tures Rk. Since these formulas involve 3 variables, the fea-
+tures used to decompose V ∗do not belong to C2 or GC2.
+Visitall.
+The task is to ﬁnd a path that starts at an initial
+vertex and visits all vertices in a given graph. The simpli-
+ﬁed version involves a single target vertex to be visited. For
+graphs with up to N vertices, the optimal value function is
+V ∗= PN
+k=1 k[[α ∧Dk]]
+for features
+α = ∃x(VISITEDG(x) ∧¬VISITED(x)) ,
+Dk = ∃x(AT-ROBOT(x) ∧SPk[VISITEDG, CONNECTED](x)).
+Other Domains.
+Logistics, Miconic, Parking-behind and
+Parking-curb, and Satellite are also considered in the ex-
+periments. We do not have space to discuss them in detail;
+however, the goals of all these problems are single atoms
+and optimal plan lengths are bounded by (small) constants
+(also in Gripper). On the other hand, for the two versions
+of Blocksworld, Transport, Rovers and Visitall the length of
+optimal plans is not bounded.
+Learning The Value Functions
+We turn to the problem of learning these value functions us-
+ing GNNs directly from the domain predicates. For this, we
+review GNNs, their logic, and the GNN architecture used.
+Graph Neural Networks
+GNNs represent trainable, parametric functions over graphs
+(Scarselli et al. 2008; Hamilton 2020). We focus on
+aggregate-combine GNNs (AC-GNNs) (Barcel´o et al. 2020;
+Grohe 2020) with L layers that are speciﬁed with aggregate
+functions aggi, combination functions combi, and a classi-
+ﬁcation function CLS. On input graph G, a GNN maintains
+a state (vector) xv ∈Rk for each vertex v ∈V (G), and
+computation consists of updating these states throughout L
+stages, with x(i)
+v denoting the states after stage i. The param-
+eter k is the dimension of the node state or embedding. The
+computation model for AC-GNNs corresponds to updates
+x(i)
+v
+:= combi
+ x(i−1)
+v
+, aggi
+ {{x(i−1)
+w
+| w ∈NG(v)}}
+
+where NG(v) is the set of neighbors for vertex v in G, and
+{{. . .}} denotes a multiset (i.e., unordered set whose elements
+are associated with multiplicities). That is, at stage i, each
+vertex v receives the state of its neighbors which are then
+aggregated, and the result combined with the current state
+x(i−1)
+v
+to produce the next state x(i)
+v . The fact that aggi
+maps multisets of states into real vectors means that it does
+not depend on the source of the received messages. GNNs
+are used for node or graph classiﬁcation. In the ﬁrst case,
+after the ﬁnal stage, the node v is classiﬁed into the class
+CLS(x(L)
+v
+) determined by a function CLS : Rk →{0, 1}.
+In the second case, the CLS function maps the multiset
+{{x(L)
+v
+| v ∈V (G)}} into a single, scalar output; an opera-
+tion referred to as a readout.
+In our case, GNNs map planning states s into real val-
+ues V (s). However, the atoms in a planning state do not in-
+duce a graph (or hypergraph), but the more subtle relational
+structure. Therefore, we adapt below the GNN architecture
+to deal with relational structures. In any case, the functions
+involved in the mapping from inputs to outputs can be lin-
+ear or non-linear, and they are all trainable; in the supervised
+case, by minimizing a loss function deﬁned over a training
+set given by pairs ⟨s, V ∗(s)⟩, where all the states s (sets of
+atoms) come from instances of different size but over a com-
+mon planning domain and common set of goal predicates.
+
+
+The Logic of GNNs
+The expressive power of AC-GNNs has been recently stud-
+ied in relation to decidable fragments of ﬁrst-order logic
+(Barcel´o et al. 2020; Grohe 2020). For this, it is convenient
+to consider the more general vertex-colored graphs G and
+to assume that the AC-GNNs for such graphs initialize the
+embeddings of the vertices x(0)
+v
+to a one-hot encoding of
+the vertex colors. One of the ﬁrst crisp results for node clas-
+siﬁcation is that if the Weisfeiler-Lehman (WL) procedure,
+a well-known coloring algorithm that provides a sound but
+incomplete test for graph isomorphism (Lehman and Weis-
+feiler 1968), assigns the same color to two nodes in a graph,
+then every AC-GNN classiﬁer will map the two nodes into
+the same class (Xu et al. 2018; Morris et al. 2019).
+This result has been extended in two ways: one, where the
+WL procedure is replaced by the logic C2, making use of a
+seminal result relating the two (Cai, F¨urer, and Immerman
+1992), and the second, where the characterization of the ex-
+pressive power of AC-GNNs is made tight, describing not
+just what they can compute, but also what they cannot (Bar-
+cel´o et al. 2020). For this, the logical formulas considered
+are those that involve equality and two types of predicates: a
+binary edge E(x, y) predicate representing the edges in the
+graph, and unary predicates ci(x) representing the color of
+vertices. A (Boolean) node classiﬁer can be expressed then
+as a logical formula ϕ(x) over these predicates with a single
+free variable x. The question is what is the relation between
+the node classiﬁers that can be captured in an AC-GNNs and
+those that can be described logically.
+The logical classiﬁers that can be captured by AC-GNNs
+are fully characterized in terms of graded modal logic GC2,
+which is equivalent in expressive power to the standard de-
+scription logic ALCQ (Barcel´o et al. 2020). GC2 is the class
+of all formulas in C2 in which each quantiﬁed variable is
+guarded by the edge relation; e.g., ψ(x) = ∃y [E(x, y) ∧
+blue(y)] that holds when x has a blue neighbor. The main
+result is:
+Theorem 1 (Barcel´o et al., 2020). A logical classiﬁer is
+captured by AC-GNNs if and only if it can be expressed in
+graded modal logic (GC2), or equivalently, in the descrip-
+tion logic ALCQ.
+Moreover, each GC2 classiﬁer can be captured by a simple
+and homogeneous AC-GNN; i.e., with linear combinators,
+and combinators and aggregators that are identical across all
+layers. There is a similar result for C2 classiﬁers, but this
+requires an slightly modiﬁed version of AC-GNNs, called
+ACR-GNNs, where the combination function for each ver-
+tex v is extended to take an extra argument given by an ag-
+gregation of the states for all vertices in the graph:
+Theorem 2 (Barcel´o et al., 2020). Logical node classiﬁers
+in C2 are captured by simple and homogeneous ACR-GNNs.
+GNNs for Relational Structures
+In as much as truth valuations give meaning to proposi-
+tional formulas, relational structures give meaning to ﬁrst-
+order formulas. In the case of planning states, the induced
+relational structures only have relations, and do not involve
+constants nor functions. Thus, a relational structure R =
+(D, RD
+1 , . . . , RD
+m) consists of a domain of interpretation D
+and relations RD
+i of arity ki that stand for sets of ki-tuples
+from D. In the relational structure deﬁned by a graph, D is
+given by the vertices and there is a single relation RD given
+by the edges. In the structure deﬁned by a planning state s,
+D is given by the set of objects in the instance, and RD
+i is
+the set of object tuples that satisfy the predicate Ri in s.
+Our modiﬁcation of GNNs to handle relational structures
+is inspired by the one introduced by Toenshoff et al. (2021)
+for solving Max-CSP problems where all relations are as-
+sumed to be binary and thus any such Max-CSP instance
+maps straightforwardly to a directed graph. A major differ-
+ence though is that our architecture does not make use of
+LSTMs (Hochreiter and Schmidhuber 1997).
+For dealing with relations of any arity, the computation
+maintains states s(i)
+o
+for each object o ∈D and proceeds in
+stages i = 1, . . . , L, where each atom p = R(o1, . . . , on)
+computes messages mp,oi that are sent to each object oi.
+Each object o then aggregates the incoming messages mp,o
+from the atoms p that mention o, and combines this aggre-
+gation with the current state s(i−1)
+o
+to produce the next state
+s(i)
+o . The ﬁnal state (object) vectors are passed through a
+neural net, aggregated, and the result passed again to a ﬁnal
+network to produce a single output vector v of dimension q.
+For relational structures that capture a state s, the output v is
+aimed to approximate the scalar function V ∗(s), and hence
+the output dimension is q = 1.
+The architecture shown in Algorithm 1 uses one feed-
+forward neural net MLPR for each relational symbol R
+(domain and goal predicate), one such net MLPU as a com-
+bination function, and two nets MLP1 and MLP2 for con-
+structing the ﬁnal output v.1 All MLPs consists of a dense
+layer with a ReLU activation function, followed by a dense
+layer with a linear activation function. For the aggregation
+function agg, we use either sum or smooth maximum (im-
+plemented as LogSumExp). The trainable parameters are
+thus the trainable parameters in the MLPs, while the hy-
+perparameters are the embedding dimension k, the output
+dimension q, and the number of stages L. The initial embed-
+dings s(0)
+o
+are obtained by concatenating the zero vector 0
+and a random vector N(0, 1), each of dimension k/2 (Ab-
+boud et al. 2021; Sato, Yamada, and Kashima 2021).
+The parameters of the network are learned by stochastic
+gradient descent by minimizing the loss L(R, ℓ) = ∥v−ℓ∥1
+from training data {(Ri, ℓi)}i. In our setting, the relational
+structures Ri encode (the atoms that are true in) the states s,
+and the target value ℓi for s is V ∗(s).
+Experiments
+We now evaluate if models (neural nets) can be trained and
+used as policies in the domains and tasks considered above.
+1Another major difference is that the messages mp,o sent to
+objects, line 4 in Alg. 1, are computed with MLPs whereas in the
+architecture of Toenshoff et al. (2021) the messages are computed
+with linear transforms.
+
+
+Algorithm 1: General architecture (trainable, para-
+metric function) that maps relational structures R =
+(D, RD
+1 , . . . , RD
+m) into vector v. In our setting, R en-
+codes the states s, and v approximates V ∗(s). Atoms
+p(o1, . . . , on) true in the input send messages to the
+objects oi in p, and objects o aggregate all messages
+received and update their state s(i)
+o .
+Input: Relational struct. R = (D, R1, . . . , Rm) [states s)]
+Output: v ∈Rq of dimension q [value V (s)]
+// Partial random initialization
+1 s(0)
+o
+∼0k/2N(0, 1)k/2 for each object o ∈D;
+2 for i ∈{1, . . . , L} do
+3
+for atom p := R(o1, . . . , on) with ¯o ∈R do
+// Generate messages p →oj
+4
+(mp,oj)j := MLPR(s(i−1)
+o1
+, . . . , s(i−1)
+on
+);
+5
+for o ∈O do
+// Aggregate messages and update
+6
+s(i)
+o
+:= MLPU
+ s(i−1)
+o
+, agg({{mp,o | o ∈p}})
+
+;
+// Final Readout
+7 v := MLP2
+ P
+o∈D MLP1(sL
+o )
+
+Domain
+Train
+Validation
+Test
+Blocks-clear
+[2, 9]
+[10, 11]
+[12, 17]
+Blocks-on
+[2, 9]
+[10, 11]
+[12, 17]
+Gripper
+[10, 18]
+[20, 22]
+[24, 48]
+Logistics
+[17, 24]
+[31, 31]
+[31, 39]
+Miconic
+[5, 26]
+[29, 35]
+[38, 92]
+Parking-behind
+[21, 27]
+[30, 30]
+[30, 36]
+Parking-curb
+[21, 27]
+[30, 30]
+[30, 36]
+Rovers
+[15, 52]
+[53, 62]
+[67, 116]
+Satellite
+[14, 41]
+[47, 59]
+[50, 103]
+Transport
+[14, 39]
+[38, 43]
+[41, 77]
+Visitall
+[27, 102]
+[102, 146]
+[171, 326]
+Table 1: Number of objects in the problems in the training,
+validation and test datasets; e.g., each problem for Miconic
+in the validation set has a number of objects in [29, 35].
+We ﬁrst describe how states are sampled and labeled, then
+the experimental setup, and ﬁnally, the results.2
+Data.
+For a set of instances, we sample and label states
+for each as follows. First, we perform a single random walk
+s1, . . . , sn from the initial state. Then, for each 1≤i ≤n, we
+construct a planning problem with initial state si, and ﬁnd an
+optimal plan s′
+1, . . . , s′
+m with A∗using the admissible hmax
+heuristic (Bonet and Geffner 2001). For each 1 ≤j ≤m, we
+add the pair ⟨s′
+j, m −j⟩to the dataset, up to 40, 000 such
+pairs, balancing the number of states per label (distance).
+The value of n is set to produce that many pairs if possible.
+Setup.
+The hyperparameters k and L are set to 32 and 30,
+respectively; k affects the number of features per object, but
+also training speed and memory usage. The domain with the
+2Code and data: https://doi.org/10.5281/zenodo.6353140
+GNN-SUM
+GNN-MAX
+Domain (#)
+L
+Opt.
+Sub.
+Opt.
+Sub.
+Blocks-clear (11)
+82
+11
+0
+11
+0
+Blocks-on (11)
+150
+11
+0
+11
+0
+Gripper (39)
+117
+31
+8
+39
+0
+Logistics (8)
+48
+5
+3
+8
+0
+Miconic (95)
+378
+95
+0
+95
+0
+Parking-behind (32)
+77
+32
+0
+32
+0
+Parking-curb (32)
+101
+7
+12
+32
+0
+Rovers (26)
+111
+0
+4
+20
+6
+Satellite (20)
+97
+20
+0
+20
+0
+Transport (20)
+208
+18
+1
+20
+0
+Visitall (12)
+93
+12
+0
+12
+0
+Total (306)
+1,462
+242
+28
+300
+6
+(79%)
+(9%)
+(98%)
+(2%)
+Table 2: Number of problems in test set solved optimally,
+suboptimally, or not solved at all with policy πV for learned
+V , when aggregation is done by SUM or MAX. Total number
+of problems (#) shown in parenthesis. Tasks and domains
+from Section 4. L is the sum of all optimal plan lengths.
+most predicates is Rovers with 32 predicates, so the value
+for k ensure that at least one feature (scalar) per predicate is
+possible. Our architecture can ﬁnd shortest paths of length
+up to 2L. In the experiments, we evaluate nets with sum-
+and (smooth) max-aggregation denoted by GNN-SUM and
+GNN-MAX, respectively. The architecture is implemented in
+PyTorch (Paszke and et. al. 2019) and each net is trained
+with NVIDIA A100 GPUs for up to 12 hours. GNN-SUM is
+trained with L1 regularization set to 0.0001, and no regu-
+larization for GNN-MAX (resulted in the lowest loss on the
+validation set). Training is done with Adam (Kingma and Ba
+2015) with a learning rate of 0.0002.
+Table 1 shows the number of objects for the problems in
+the training, validation and test datasets. We trained 5 net-
+works for each domain, and for each training session, the net
+with the best validation loss at the end of each epoch is se-
+lected. Among the 5 trained nets, the ﬁnal net is the one with
+the best validation loss. For the learned V function, we run
+the policy πV , selecting from each non-goal state s, the suc-
+cessor s′ with least V -value, breaking ties by selecting the
+ﬁrst such successor. This is repeated for at most 100 steps, or
+until a goal state is reached. In the latter case, the problem is
+solved, and if the number of steps is minimal (veriﬁed with
+A* and hmax), the problem is counted as solved optimally.
+Results.
+As it is shown in Table 2, the value functions
+learned with GNN-MAX yield policies that solve all of the
+306 test instances, 98% of them optimally. The 6 instances
+not solved optimally are all in Rovers, that as shown above,
+requires C3 features. This is a pretty impressive result that
+shows that deep nets can produce very crisp results. In our
+case, it means that the GNN-MAX nets deliver policies that
+do not make a single mistake in the plans of 300 test prob-
+lems, and this means, practically no errors in the 1,462 in-
+termediate decisions made in the construction of these plans.
+
+
+Domain
+#
+Train L′
+Test L′
+Blocks-clear
+2
+0.12
+0.16
+Blocks-on
+6
+0.88
+0.96
+Blocks-on-Σ
+5
+0.17
+0.23
+Gripper
+5
+0.04
+0.11
+Transport
+4
+0.71
+1.13
+Transport-Σ
+3
+0.30
+0.48
+Visitall
+1
+0.06
+1.91
+Table 3: Total loss L′ of hand-crafted features over the train
+and test set, and the number of such features. Features are
+taken from the analysis of each domain (Section 4). Do-
+mains with Σ replaces two numerical features by their sum.
+Notice that this is different than simply measuring “cov-
+erage” (number of problems solved) where policies are al-
+lowed to make mistakes, if they are not fatal, and typically
+“noise” is introduced to prevent being trapped in cycles.
+In terms of the aggregation functions, the performance of
+GNN-SUM is not as good as GNN-MAX. The theory does not
+help us to understand this difference, but it has been noted
+that max-aggregation is better suited for discrete decisions
+and tasks that involve shortest paths (Veliˇckovi´c et al. 2020).
+Understanding the Learned Features
+We also tested if the learned features in the trained models
+can be understood in terms of the hand-crafted features used
+in our analysis of the domains. For this, let y be the vector
+of n features based on our formal analysis, where distance
+features SP are treated as numerical features. The readout
+function consists of a sequence of layers: (1) ReLU; (2) lin-
+ear; (3) summation; (4) ReLU; and (5) linear. Let x be the
+concatenation of all intermediate feature vectors after aggre-
+gation in the readout function, i.e., the results of layer (3), (4)
+and (5). Finally, let y′ = xA + b be a linear function of x
+optimized such that the linear coefﬁcients A and b minimize
+the loss L′(y′, y) = Pn
+i=1 |y′
+i −yi|. If this is loss is zero or
+very small, it means that the learned features encode a linear
+transformation of the hand-crafted features.
+Table 3 shows the loss on the test set, after A and b are
+optimized on the training set. In Visitall, this loss is largest
+among the domains considered (those for which V ∗was
+given in compact form), 1.91, and yet the optimal coverage
+is 100%, meaning that the distances are ordered well but not
+linearly. The loss for Blocks-on and Transport over the train-
+ing set is roughly 0.8 and this suggests that the networks do
+not learn one or more of the hand-crafted features well, al-
+though it turns out that they learn a suitable aggregation of
+them. The features for Blocks-on-Σ in the Table 3, replace
+the two numerical features induced by X and Y in Blocks-
+on by their sum, and the same is done for Transport-Σ for
+D and D′. The training and test losses then drop to roughly
+20% of the previous loss in Blocks-on, and to 40% in Trans-
+port, implying that these features are learned instead.
+Understanding the Limitations
+The neural network does not approximate well the optimal
+value function in Rovers, which is the only domain where
+the optimal policy does not generalize 100% with max ag-
+gregation. The problem is that optimal policies for Rovers
+require C3 features that cannot be computed with standard
+GNNs. Interestingly, the analysis reveals that this limitation
+is not due to the presence of multiple rovers, but to mul-
+tiple rovers with their own maps. For illustrating this, we
+designed a simpliﬁed Rovers domain called Vacuum: an as-
+sortment of robot vacuums that have to clean a speciﬁc spot.
+The predicates of this domain are AT/2, DIRTY/1, and ADJA-
+CENT/3, and each robot r can clean a location x and move
+to an adjacent location y if ADJACENT(r, x, y). We consider
+three different versions: Vacuum-R with at most 5 robots,
+Vacuum-M where all robots share the same traversal map,
+and Vacuum with no restrictions. We generated 20 prob-
+lems of each version of Vacuum and ensured that optimal
+plan lengths vary from approximately 3-8 for the training
+set, 6-9 for the validation set, and 6-12 for the test set. The
+number of problems solved optimally by GNN-MAX is 1 for
+Vaccum, 4 for Vaccum-R, and 20 for Vaccum-M. The only
+version with 100% generalization (or close) is Vacuum-M,
+which is precisely the version of the domain where there are
+C2 features for deciding the length of shortest paths. The r
+argument in ADJACENT(r, x, y) is indeed redundant, and if
+ADJACENT′ denotes the resulting binary predicate, the opti-
+mal value function for Vacuum-M decomposes as
+V ∗= PN
+k=1(k + 1)[[Dk]]
+for Dk = ∃x(DIRTYG(x) ∧SPk[AT2, ADJACENT′−1](x)),
+which is a C2 feature.
+Related Work
+Neuro Symbolic AI.
+Many proposals have been advanced
+for integrating symbolic and DL approaches due to limita-
+tions and opacity of pure data-based approaches (Lake et al.
+2017; Manhaeve et al. 2021; Lamb et al. 2020). Our in-
+tegration combines domain predicates, that can potentially
+be learned (Asai 2019; Bonet and Geffner 2020; Rodriguez
+et al. 2021), builds on the correspondences between ﬁnite
+variable logics and GNNs (Barcel´o et al. 2020; Grohe 2020),
+and modiﬁes the architecture for Max-CSPs. Interestingly,
+recent GNN methods can compute more general functions
+that are not limited to those deﬁned on the C2 features asso-
+ciated with DLs logics only (Abboud et al. 2021).
+General Policies.
+The problem of learning general poli-
+cies has been addressed using combinatorial approaches
+where the symbolic domains are given (Khardon 1999;
+Mart´ın and Geffner 2004; Bonet, Franc`es, and Geffner 2019;
+Franc`es, Bonet, and Geffner 2021), DL approaches where
+the domains are given too (Toyer et al. 2020; Garg, Bajpai,
+and Mausam 2020), and DRL approaches that do not make
+use of prior knowledge about the structure of either domains
+or states (Groshev et al. 2018; Chevalier-Boisvert et al. 2019;
+Campero et al. 2021). This work is a step to bring the ﬁrst
+two approaches together along with their potential beneﬁts.
+
+
+General Value Policies.
+It is known since the 1950s that
+a value function V deﬁnes a policy πV which is optimal if
+V is optimal (Bellman 1957; Bertsekas 1995; Sutton and
+Barto 1998). Linear value functions have been particularly
+important in RL until the advent of deep RL methods that
+dispense with the need for hand-crafted features (Mnih et al.
+2015; Franc¸ois-Lavet et al. 2018). In classical planning, lin-
+ear value functions have been used under the name of “po-
+tential heuristics” (Pommerening et al. 2015), where the fea-
+tures are conjunctions of atoms, and “generalized potential
+heuristics” (Franc`es et al. 2019), where the (C2) features are
+the Boolean and numerical features based on DLs (Bonet,
+Franc`es, and Geffner 2019). A “descending and dead-end
+avoiding potential function” V represents indeed a value
+function V that deﬁnes a greedy policy πV that solves a
+problem. The proposed learning method provides crisp ex-
+perimental evidence that generalized value functions with
+C2 features can be computed without having to explicate
+the pool of features and without having to assume a lin-
+ear combination. Our focus on optimal value functions is
+methodological: it allows for supervised learning with V ∗
+targets, and a crisp evaluation (no single mistake allowed in
+the execution of plans). The same learning approach can be
+used in stochastic MDPs where the targets V ∗represent op-
+timal expected costs to the goal. Also, due to the correspon-
+dence between C2 features and GNNs, the same architecture
+can be used for learning value functions without supervision
+(Franc`es et al. 2019), possibly using RL methods.
+Summary
+Previous works have shown that general policies and value
+functions for many classical planning domains can be ex-
+pressed in terms of a pool of features that is obtained from
+the domain predicates using a DL grammar, and learned
+without supervision using combinatorial solvers. In this
+work, we have exploited the relations between DLs and the
+decidable fragment C2 of FOL, and between GNNs and
+C2, to approach a similar problem (optimal policies and
+value functions) but avoiding the grammar, the complex-
+ity bounds, and the combinatorial solvers that have been re-
+placed by more robust and scalable deep learning engines.
+Other authors have addressed the problem of learning
+general policies using GNNs and GNN-like architectures
+given the domain descriptions. What distinguishes our ap-
+proach is that our deep learning architecture is simple and
+general; a modiﬁcation of a GNN architecture introduced for
+solving a completely different task: Max-CSPs over binary
+constraints (Toenshoff et al. 2021). We also have a logical
+characterization of what are we trying to learn and we have
+used it to understand the scope of the computational model
+(power and limits), and what is actually learned. Recent
+extensions of GNN learning, however, suggest that (value)
+functions of features that are more complex than those asso-
+ciated with DLs could be learned effectively as well.
+Acknowledgments
+This research was partially supported by the European Re-
+search Council (ERC), Grant No. 885107, and by project
+TAILOR, Grant No. 952215, both funded by the EU Hori-
+zon research and innovation programme. This work was par-
+tially supported by the Wallenberg AI, Autonomous Systems
+and Software Program (WASP) funded by the Knut and Al-
+ice Wallenberg Foundation. The computations were enabled
+by the supercomputing resource Berzelius provided by Na-
+tional Supercomputer Centre at Link¨oping University and
+the Knut and Alice Wallenberg foundation.
+References
+Abboud, R.; Ceylan, I. I.; Grohe, M.; and Lukasiewicz, T.
+2021. The Surprising Power of Graph Neural Networks with
+Random Node Initialization. In Proceedings of the 30th In-
+ternational Joint Conference on Artiﬁcial Intelligence.
+Asai, M. 2019. Unsupervised Grounding of Plannable First-
+Order Logic Representation from Images. In Proc. ICAPS.
+Baader, F.; Horrocks, I.; and Sattler, U. 2008. Handbook
+of Knowledge Representation, chapter Description Logics.
+Elsevier.
+Barcel´o, P.; Kostylev, E. V.; Monet, M.; P´erez, J.; Reutter,
+J.; and Silva, J. P. 2020. The logical expressiveness of graph
+neural networks. In ICLR.
+Belle, V.; and Levesque, H. J. 2016. Foundations for Gener-
+alized Planning in Unbounded Stochastic Domains. In Proc.
+KR, 380–389.
+Bellemare, M.; Dabney, W.; Dadashi, R.; Ali Taiga, A.; Cas-
+tro, P. S.; Le Roux, N.; Schuurmans, D.; Lattimore, T.; and
+Lyle, C. 2019. A geometric perspective on optimal repre-
+sentations for reinforcement learning. Advances in neural
+information processing systems, 32: 4358–4369.
+Bellman, R. 1957. Dynamic Programming. Princeton Uni-
+versity Press.
+Bertsekas, D. 1995. Dynamic Programming and Optimal
+Control, Vols 1 and 2. Athena Scientiﬁc.
+Bonet, B.; Franc`es, G.; and Geffner, H. 2019. Learning fea-
+tures and abstract actions for computing generalized plans.
+In Proc. AAAI, 2703–2710.
+Bonet, B.; and Geffner, H. 2001.
+Planning as Heuristic
+Search. Artiﬁcial Intelligence, 129(1–2): 5–33.
+Bonet, B.; and Geffner, H. 2018. Features, Projections, and
+Representation Change for Generalized Planning. In Proc.
+IJCAI, 4667–4673.
+Bonet, B.; and Geffner, H. 2020. Learning ﬁrst-order sym-
+bolic representations for planning from the structure of the
+state space. In Proc. ECAI.
+Bonet, B.; Palacios, H.; and Geffner, H. 2009. Automatic
+Derivation of Memoryless Policies and Finite-State Con-
+trollers Using Classical Planners. In Proc. ICAPS-09, 34–
+41.
+Cai, J.-Y.; F¨urer, M.; and Immerman, N. 1992. An optimal
+lower bound on the number of variables for graph identiﬁca-
+tion. Combinatorica, 12(4): 389–410.
+Campero, A.; Raileanu, R.; Kuttler, H.; Tenenbaum, J. B.;
+Rockt¨aschel, T.; and Grefenstette, E. 2021. Learning with
+AMIGo: Adversarially Motivated Intrinsic Goals. In ICLR.
+
+
+Chevalier-Boisvert, M.; Bahdanau, D.; Lahlou, S.; Willems,
+L.; Saharia, C.; Nguyen, T. H.; and Bengio, Y. 2019.
+BabyAI: A Platform to Study the Sample Efﬁciency of
+Grounded Language Learning. In ICLR.
+Fern, A.; Yoon, S.; and Givan, R. 2006. Approximate pol-
+icy iteration with a policy language bias: Solving relational
+Markov decision processes. JAIR, 25: 75–118.
+Franc`es, G.; Bonet, B.; and Geffner, H. 2021. Learning Gen-
+eral Planning Policies from Small Examples Without Super-
+vision. In Proc. AAAI, 11801–11808.
+Franc`es, G.; Corrˆea, A. B.; Geissmann, C.; and Pommeren-
+ing, F. 2019. Generalized potential heuristics for classical
+planning. In Proc. IJCAI.
+Franc¸ois-Lavet, V.; Henderson, P.; Islam, R.; Bellemare,
+M. G.; and Pineau, J. 2018. An Introduction to Deep Re-
+inforcement Learning. Foundations and Trends in Machine
+Learning, 11(3-4): 219–354.
+Garg, S.; Bajpai, A.; and Mausam. 2020. Symbolic network:
+generalized neural policies for relational MDPs. In Interna-
+tional Conference on Machine Learning, 3397–3407.
+Geffner, H.; and Bonet, B. 2013. A Concise Introduction to
+Models and Methods for Automated Planning. Morgan &
+Claypool Publishers.
+Geramifard, A.; Walsh, T. J.; Tellex, S.; Chowdhary, G.;
+Roy, N.; and How, J. P. 2013. A tutorial on linear function
+approximators for dynamic programming and reinforcement
+learning. Now Publishers.
+Ghallab, M.; Nau, D.; and Traverso, P. 2016. Automated
+planning and acting. Cambridge U.P.
+Goyal, A.; and Bengio, Y. 2020.
+Inductive biases for
+deep learning of higher-level cognition.
+arXiv preprint
+arXiv:2011.15091.
+Grohe, M. 2020. The Logic of Graph Neural Networks. In
+Proc. of the 35th ACM-IEEE Symp. on Logic in Computer
+Science.
+Groshev, E.; Goldstein, M.; Tamar, A.; Srivastava, S.; and
+Abbeel, P. 2018.
+Learning Generalized Reactive Policies
+Using Deep Neural Networks. In Proc. ICAPS.
+Gupta, N.; and Nau, D. S. 1992.
+On the Complexity of
+Blocks-World Planning. Artiﬁcial Intelligence, 56: 223254.
+Hamilton, W. L. 2020. Graph representation learning. Mor-
+gan & Claypool Publishers.
+Haslum, P.; Lipovetzky, N.; Magazzeni, D.; and Muise, C.
+2019. An Introduction to the Planning Domain Deﬁnition
+Language. Morgan & Claypool.
+Hochreiter, S.; and Schmidhuber, J. 1997. Long Short-Term
+Memory. Neural Computation, 9(8): 1735–1780.
+Hu, Y.; and De Giacomo, G. 2011. Generalized planning:
+Synthesizing plans that work for multiple environments. In
+Proc. IJCAI, 918–923.
+Khardon, R. 1999. Learning action strategies for planning
+domains. Artiﬁcial Intelligence, 113: 125–148.
+Kingma, D. P.; and Ba, J. 2015.
+Adam: A Method for
+Stochastic Optimization. In Bengio, Y.; and LeCun, Y., eds.,
+Proceedings of the 3rd International Conference on Learn-
+ing Representations.
+Lake, B.; Ullman, T.; Tenenbaum, J.; and Gershman, S.
+2017. Building machines that learn and think like people.
+Behavioral and Brain Sciences, 40.
+Lamb, L. C.; Garcez, A.; Gori, M.; Prates, M.; Avelar, P.;
+and Vardi, M. 2020. Graph neural networks meet neural-
+symbolic computing: A survey and perspective.
+arXiv
+preprint arXiv:2003.00330.
+LeCun, Y.; Bengio, Y.; and Hinton, G. 2015. Deep learning.
+Nature, 521(7553): 436.
+Lehman, A.; and Weisfeiler, B. Y. 1968.
+Reduction of a
+graph to a canonical form and an algebra which appears in
+the process. NTI Ser, 2(9): 12–16.
+Lipovetzky, N.; and Geffner, H. 2012. Width and serializa-
+tion of classical planning problems. In Proc. ECAI, 540–
+545.
+Manhaeve, R.; Dumanˇci´c, S.; Kimmig, A.; Demeester, T.;
+and De Raedt, L. 2021. Neural probabilistic logic program-
+ming in DeepProbLog. Artiﬁcial Intelligence, 298: 103504.
+Mart´ın, M.; and Geffner, H. 2004.
+Learning generalized
+policies from planning examples using concept languages.
+Applied Intelligence, 20(1): 9–19.
+Mnih, V.; Kavukcuoglu, K.; Silver, D.; Rusu, A. A.; Ve-
+ness, J.; Bellemare, M. G.; Graves, A.; Riedmiller, M.; Fidje-
+land, A. K.; Ostrovski, G.; et al. 2015. Human-level control
+through deep reinforcement learning.
+Nature, 518(7540):
+529.
+Morris, C.; Ritzert, M.; Fey, M.; Hamilton, W. L.; Lenssen,
+J. E.; Rattan, G.; and Grohe, M. 2019. Weisfeiler and leman
+go neural: Higher-order graph neural networks. In AAAI,
+4602–4609.
+Paszke, A.; and et. al. 2019. PyTorch: An Imperative Style,
+High-Performance Deep Learning Library. In Advances in
+Neural Information Processing Systems 32, 8024–8035.
+Pommerening, F.; Helmert, M.; R¨oger, G.; and Seipp, J.
+2015. From non-negative to general operator cost partition-
+ing. In Proc. AAAI.
+Rodriguez, I. D.; Bonet, B.; Romero, J.; and Geffner, H.
+2021.
+Learning First-Order Representations for Planning
+from Black-Box States: New Results. In KR. ArXiv preprint
+arXiv:2105.10830.
+Sato, R.; Yamada, M.; and Kashima, H. 2021. Random Fea-
+tures Strengthen Graph Neural Networks. In Proceedings of
+the 2021 SIAM International Conference on Data Mining.
+Scarselli, F.; Gori, M.; Tsoi, A. C.; Hagenbuchner, M.; and
+Monfardini, G. 2008.
+The graph neural network model.
+IEEE transactions on neural networks, 20(1): 61–80.
+Silver, D.; Hubert, T.; Schrittwieser, J.; Antonoglou, I.; Lai,
+M.; Guez, A.; Lanctot, M.; Sifre, L.; Kumaran, D.; Graepel,
+T.; et al. 2017a. Mastering Chess and Shogi by Self-Play
+with a General Reinforcement Learning Algorithm. arXiv
+preprint arXiv:1712.01815.
+Silver, D.; Schrittwieser, J.; Simonyan, K.; Antonoglou, I.;
+Huang, A.; Guez, A.; Hubert, T.; Baker, L.; Lai, M.; Bolton,
+A.; et al. 2017b. Mastering the game of go without human
+knowledge. Nature, 550(7676): 354.
+
+
+Song, Z.; Parr, R. E.; Liao, X.; and Carin, L. 2016. Linear
+feature encoding for reinforcement learning. In Advances in
+Neural Information Processing Systems, 4224–4232.
+Srivastava, S.; Immerman, N.; and Zilberstein, S. 2008.
+Learning generalized plans using abstract counting. In Proc.
+AAAI, 991–997.
+Sutton, R.; and Barto, A. 1998. Introduction to Reinforce-
+ment Learning. MIT Press.
+Toenshoff, J.; Ritzert, M.; Wolf, H.; and Grohe, M. 2021.
+Graph neural networks for maximum constraint satisfaction.
+Frontiers in artiﬁcial intelligence, 3: 98.
+Toyer, S.; Thi´ebaux, S.; Trevizan, F.; and Xie, L. 2020. AS-
+Nets: Deep Learning for Generalised Planning. Journal of
+Artiﬁcial Intelligence Research, 68: 1–68.
+Veliˇckovi´c, P.; Ying, R.; Padovano, M.; Hadsell, R.; and
+Blundell, C. 2020.
+Neural Execution of Graph Algo-
+rithms. In Proceedings of the 8th International Conference
+on Learning Representations.
+Wu, J.-H.; and Givan, R. 2010.
+Automatic induction of
+Bellman-error features for probabilistic planning. Journal
+of Artiﬁcial Intelligence Research, 38: 687–755.
+Xu, K.; Hu, W.; Leskovec, J.; and Jegelka, S. 2018. How
+Powerful are Graph Neural Networks? In ICLR.

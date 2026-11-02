@@ -1,0 +1,1275 @@
+TANGO: Training-free Embodied AI Agents for Open-world Tasks
+Filippo Ziliotto1,2
+Tommaso Campari2
+Luciano Serafini2
+Lamberto Ballan1
+1 University of Padova
+2 Fondazione Bruno Kessler (FBK)
+Abstract
+Large Language Models (LLMs) have demonstrated excel-
+lent capabilities in composing various modules together to
+create programs that can perform complex reasoning tasks
+on images. In this paper, we propose TANGO, an approach
+that extends the program composition via LLMs already ob-
+served for images, aiming to integrate those capabilities
+into embodied agents capable of observing and acting in
+the world. Specifically, by employing a simple PointGoal
+Navigation model combined with a memory-based explo-
+ration policy as a foundational primitive for guiding an
+agent through the world, we show how a single model can
+address diverse tasks without additional training. We task
+an LLM with composing the provided primitives to solve
+a specific task, using only a few in-context examples in
+the prompt. We evaluate our approach on three key Em-
+bodied AI tasks: Open-Set ObjectGoal Navigation, Multi-
+Modal Lifelong Navigation, and Open Embodied Question
+Answering, achieving state-of-the-art results without any
+specific fine-tuning in challenging zero-shot scenarios.
+1. Introduction
+Large Language Models (LLMs) have gained significant at-
+tention in the field of AI due to their remarkable capability
+to generalize across unseen tasks [5, 23, 45, 46]. Systems
+like VisProg and ViperGPT [18, 44] demonstrated strong
+performance on a broad range of vision-and-language tasks
+by just relying on a few numbers of in-context examples to
+generate complex compositional programs without requir-
+ing any specific training. Nevertheless, the evaluation of
+these concepts to Embodied AI, particularly for navigation
+tasks, remains largely unexplored. This approach may be
+crucial in building agents capable to navigate and operate
+efficiently in unfamiliar environments.
+Previously, methods such as Neural Module Networks
+(NMN) [2, 19] have demonstrated promising compositional
+properties for high-level tasks like visual question answer-
+ing, via end-to-end training of networks and specialized,
+detect
+explore
+match
+answer
+turn_left
+eval
+stop
+1
+2
+3
+8
+7
+tell me if i turned off the
+lights in the bedroom
+LLM
+detect
+explore
+answer
+navigate
+stop
+PRIMITIVES
+6
+select
+PSEUDO CODE
+you left them on
+3D SCENE
+1
+2 3
+6
+6 7
+7
+USER
+Figure 1. We introduce TANGO, a modular neuro-symbolic sys-
+tem for compositional embodied visual navigation. Given a few
+examples of natural language instructions and the corresponding
+programs composed of action primitives, TANGO can generate
+executable programs, enabling the agent to perform multiple tasks
+within a 3D environment.
+differentiable neural modules. However, they required the
+combination of semantic parsers and predefined templates
+to learn to solve the compositional tasks. Alternative ap-
+proaches leverage LLMs through predefined task modules
+or APIs for action execution [21, 22, 31, 49, 55]. While ef-
+fective, these methods often lack a compositional structure
+to address multiple tasks or primarily focus on manipulation
+and robotic planning, with limited emphasis on navigation.
+In this work, we present TANGO (see Figure 1) a
+novel neuro-symbolic compositional approach which uti-
+lizes primitives and employs a LLM as a planner to se-
+quence these primitives within photorealistic 3D environ-
+1
+arXiv:2412.10402v1  [cs.AI]  5 Dec 2024
+
+
+ments, where agents must perceive and act. This frame-
+work integrates high-level planning with low-level action
+execution, without the need for training. TANGO makes
+use of diverse modules designed for visual navigation and
+question-answering tasks, resulting in a system that seam-
+lessly addresses both challenges while achieving SoA per-
+formance without requiring any prior adjustments. By pro-
+viding a few in-context examples that show how to tackle
+multiple tasks, TANGO is capable of generalizing to the
+specific task at hand.
+This is facilitated by the LLM,
+which effectively combines the individual modules avail-
+able within the TANGO system. Moreover, it extends [52]
+exploration policy by incorporating a memory mechanism
+in the form of a stored feature map that retains informa-
+tion about previously explored areas, supporting for effi-
+cient life-long navigation tasks.
+To demonstrate the flexibility of the proposed frame-
+work, TANGO has been tested on three popular bench-
+marks: namely, i) Open-Vocabulary ObjectGoal Naviga-
+tion [53], ii) Multi-Modal Lifelong Navigation [25], and iii)
+Embodied Question Answering [15, 33]. Results match or
+surpass previous approaches, without requiring specialized
+training. Summing up, the contributions of this paper are as
+follows:
+• Introduction of a neuro-symbolic compositional LLM-
+based framework for EAI leveraging specialized primitive
+modules.
+• Demonstration
+of
+robust
+generalization
+capabilities
+across multiple tasks without the need for any specific
+training or fine-tuning.
+• Extension of the exploration policy presented in [52] to
+multi-goal scenarios through the incorporation of a mem-
+ory mechanism stored as a feature vector map.
+• Achievement of state-of-the-art results, underscoring the
+effectiveness of the proposed framework.
+2. Related Works
+Our work takes inspiration from modular approaches for vi-
+sual tasks, like the seminal Neural Module Networks [2,
+19], as well as the recent VisProg [18] and ViperGPT [44]
+frameworks. The main contribution of this paper is to ex-
+tend these ideas to embodied visual navigation, that usu-
+ally require heavy end-to-end learning, although modular
+approaches have recently shown promising results [7, 17].
+Therefore, we discuss prior work in the area of embodied
+AI, the use of language models in robotics, and program
+generation approaches for image recognition tasks.
+Embodied AI and Visual Navigation.
+The field of Em-
+bodied AI has recently undergone a paradigm shift, fuelled
+by the emergence of highly efficient simulators [26, 35, 41–
+43]. These simulators enable processing numerous paral-
+lel simulations in photorealistic indoor environments, fa-
+cilitating large-scale testing that was otherwise challeng-
+ing in classical robotics.
+Alongside these simulators, a
+large variety of tasks (and benchmarks) has been proposed:
+PointGoal Navigation [47], where an agent navigates from
+point A to point B in an unknown environment; Object-
+Goal Navigation [3], requiring the agent to locate and navi-
+gate to an object in the scene; Instance-Image Goal Naviga-
+tion [27], akin to ObjectGoal Navigation, but in which the
+agent should find a specific object depicted in a given im-
+age; Multi-Modal Lifelong Navigation [25] involving nav-
+igating to a sequence of target objects that can be specified
+through labels, images, or textual descriptions; Embodied
+Question Answering [15, 33], in which an agent navigates
+an environment to gather information needed to answer a
+question, and Vision and Language Navigation (VLN) [1].
+Various approaches have been proposed to tackle these
+tasks, primarily falling into three categories:
+end-to-
+end [6, 50, 51], modular [11–13, 28, 38, 39] and LLM-
+based [16, 29, 54–56].
+However, the main limitation of
+these paradigms is their dependence on task-specific archi-
+tectures. In the case of end-to-end approaches, a model
+is trained for a specific problem, often requiring days of
+training, such as in [47], where a policy for PointGoal
+Navigation was trained for 2.5 billion steps. To adapt the
+learned model to a new problem, adjustments and retrain-
+ing are necessary, and this comes with a high cost. Mod-
+ular approaches share a similar challenge, usually relying
+on policies designed for specific tasks, although common
+elements, such as exploration and navigation modules, are
+often shared [11, 12, 28, 38, 39]. Adapting these solutions
+to different tasks requires a manual adjustment of the ap-
+proach to fit the new domain, often involving the addition
+or modification of modules.
+Language models for Robotics
+In robotics, foundation
+models (LLMs) trained on vast internet-scale datasets [5,
+23, 45, 46] have the potential to equip robots with real-
+world priors and advanced reasoning abilities without the
+need for extensive task-specific training. Early approaches
+equipped agents with learned language embeddings, requir-
+ing large amounts of training data [4, 31]. Recent studies,
+on the other hand, have explored zero-shot and few-shot so-
+lutions mainly focusing on robotic planning and manipu-
+lation tasks [21, 22, 31]. In the context of visual naviga-
+tion, LLM-based approaches leverage the powerful LLMs
+priors and reasoning capabilities to guide navigation within
+the environment [16, 29, 54–56]; however, despite their re-
+markable contributions, they often lack a modular design
+that allows for flexible integration and extensibility, as they
+are typically optimized for single tasks rather than a com-
+prehensive, adaptable framework.
+In contrast, our work deviates from these paradigms
+by relying on a series of diverse pre-trained modules that,
+2
+
+
+thanks to a LLM, can be combined to potentially solve
+various tasks, compositionally. None of our modules are
+fine-tuned explicitly for the target problems, placing us in a
+zero-shot setting. Moreover, TANGO does not only rely on
+an exploration policy based entirely on LLM output, as in
+[16, 55, 56]. Instead, it combines a frontier exploration pol-
+icy with LLM priors and memory guidance to enhance nav-
+igation performance. To achieve this, we use a pre-trained
+PointGoal policy as the base waypoint navigation module
+of TANGO and extend the exploration policy introduced
+in [52] by equipping the agent with a memory mechanism
+stored as a feature vector for each pixel of the map.
+Modular vision and program composition for visual
+tasks.
+Neural Module Networks (NMN) [2, 19] intro-
+duced modular and compositional methodologies for visual
+question answering (VQA). NMNs integrate neural mod-
+ules into an end-to-end differentiable network; the approach
+originally relied on pre-existing parsers [2], whereas more
+recent methods [19, 20, 24] have evolved to learn the lay-
+out generation model concurrently with the neural mod-
+ules, employing reinforcement learning [48] and weak su-
+pervision. Stack-NMN [20] extends N2NMN by transition-
+ing from discrete to soft layout generation, incorporating a
+weighted average of predictions from all modules at each
+step, determined by a layout generation network.
+Recently, [18] introduced VisProg, a framework that of-
+fers two key advantages over NMNs. Firstly, it constructs
+high-level programs that invoke state-of-the-art neural mod-
+els and Python functions at intermediate steps, diverging
+from the conventional approach of generating end-to-end
+neural networks. This design facilitates the integration of
+symbolic, non-differentiable modules. Secondly, it capi-
+talizes on the in-context learning ability of large language
+models (LLMs) [5] to generate programs. This is achieved
+by prompting the LLM with a natural language instruction
+(or a visual question or a statement to be verified), along
+with a few examples of similar instructions and their cor-
+responding programs. This approach eliminates the need
+to train specialized program generators for each task. Al-
+most concurrently, ViperGPT [44] presented a similar ap-
+proach to VisProg, but in this case the model directly gen-
+erates Python code, instead of composing pre-defined mod-
+ules and routines. In contrast, in our framework, the LLM
+is provided only with high-level knowledge of the functions
+of each primitive, which is encoded directly in the primi-
+tive’s name. Therefore, it is built similarly to VisProg, as
+directly creating code to solve EAI tasks is a much harder
+problem than composing pre-defined primitives. It is note-
+worthy that both VisProg and ViperGPT were tested on im-
+ages, while our model is specifically designed for embodied
+agents operating in an interactive environment, relying on
+sensor-based perception.
+3. Method
+Neuro-symbolic approaches offer the possibility to address
+a broad range of diverse complex tasks efficiently. Systems
+like VisProg [18] operate on images and have demonstrated
+excellent results in zero-shot settings. Understanding how
+a similar approach works in an action-oriented scenario is
+key to enable robots to navigate autonomously in novel en-
+vironments. Therefore, we develop this paradigm further
+into EAI, where the integration with action execution adds
+several challenges. Inspired by [18], given an input prompt,
+we rely on a LLM to generate synthetic pseudo-programs
+that can be executed by the embodied agent in the envi-
+ronment. Our TANGO framework is therefore able to gen-
+eralize to new tasks, without any direct training on task-
+specific datasets, thus effectively mitigating the heavy com-
+putational training costs inherent to embodied navigation
+tasks. The procedure that enables generating these new pro-
+grams is based on “in-context examples” that are fed to the
+LLM, alongside a natural language instruction. An outline
+of TANGO is shown in Figure 2.
+TANGO Interpreter.
+The first key component of the pro-
+posed framework is referred to as “Program Interpreter”. It
+comprises visual recognition modules that can be used by
+the agent to extract the semantics of the scene, as well as to
+provide an understanding of the visual context.
+As shown in Figure 1, users can ask questions or give
+specific tasks to the agent; the natural language prompt is
+then processed by the LLM (in our implementation GPT-
+4o [5]), which serves as a planner and outputs a step-by-
+step executable program. To ensure the LLM delivers a
+reasonable output, it is fed with 15 “in-context examples”
+across diverse tasks. This enables the LLM to make use of
+its reasoning capabilities effectively, identifying the most
+suitable planning for the required task. Moreover, the ex-
+amples remain the same regardless of the task identified
+in the prompt; it is the LLM’s responsibility to output the
+specific program target for the given question. Programs
+use a higher level of abstraction than previous modular at-
+tempts such as Neural Module Networks (NMN) [2, 19].
+Each program is constructed as a sequence of primitives
+(e.g., detect, answer, match, etc.) that invoke corresponding
+TANGO modules. These modules are either powered by
+pre-trained state-of-the-art vision models or implemented
+as simple Python subroutines (e.g., count, is found, eval,
+etc.), with additional navigation-specific modules designed
+to “steer” the agent’s movements (e.g. navigate to, return,
+turn, etc.). Figure 3 provides a comprehensive list of all the
+currently implemented modules.
+Figure 2 shows an Embodied Question Answering
+(EQA) example for the user’s question: “on the left of
+the toilet there’s a shower, is the shower curtain open or
+closed?”. The LLM, which acts as a planner, transforms the
+3
+
+
+In-Context Examples
+User Prompt
+Instruction: on the left of the toilet there's a shower,
+is the shower curtain open or closed?
+Instruction: How many lights are above the bathroom mirror?
+Program:
+# search for the bathroom
+explore_scene() 
+bathroom = detect(target = "bathroom") 
+if is_found(bathroom): 
+# search for the mirror in the bathroom
+explore_scene(loc = bathroom) 
+mirror = detect(target = "mirror") 
+if is_found(object = mirror): 
+# navigate to it and count how many lights
+navigate_to(waypoint = mirror) 
+# look up above the mirror and count
+look_up()
+lights = detect(target = "light") 
+n_lights = count(object = lights)
+                # convert to string
+number = eval(" ‘{n_lights}’ if {n_lights} > 0 else ‘0’ ") 
+return number
+LLM as Planner
+Program Interpreter
+Program:
+# assuming the shower is usually in the bathroom
+explore_scene() 
+room = detect(target = "bathroom") 
+if is_found(object = room): 
+# search for the toilet
+explore_scene(loc = room) 
+target = detect(target = "toilet") 
+if is_found(object = target): 
+navigate_to(waypoint = target)
+# look on the left for the shower
+turn_left(degrees = 40)
+# answer the question
+ans  = answer(question = “is the shower curtain open?”)
+return ans
+Execution in the 3D environment
+Figure 2. Overview of the program generation in TANGO. Given few “in-context examples”, the LLM provide a detailed sequence of
+steps to be executed by the agent in the given environment. The LLM is instructed to comment its output to allow for explainability.
+user’s initial prompt into navigation subtasks by leveraging
+its reasoning abilities and powerful priors. This decomposi-
+tion enables the model to break down complex queries into
+more manageable steps, guiding the agent’s navigation pro-
+cess effectively. Each line of the generated program cor-
+responds to a module serving a specific task. The agent
+must then execute the generated program. The LLM is also
+guided to comment on its steps directly within the generated
+pseudocode.
+All the given primitives are equipped with methods to:
+i) parse lines in order to extract input argument names and
+values, as well as the output variable name; ii) execute the
+module in the environment, and update the program state
+with the output variable name and value. The outputs for
+each step and the comments in the generated pseudocode
+can also be used to better understand what is happening un-
+der the hood and why the LLM generated a specific line,
+thus enabling a good interpretability of the system behav-
+ior.
+TANGO modules utilize open-source software and mod-
+els, readily downloadable from the web. They can also be
+effortlessly updated with newer, more efficient models as
+they become available.
+Navigation Module.
+In order to navigate the environ-
+ment, we define a module employing a PointGoal navi-
+gation agent as our foundational module [39, 52].
+This
+model achieved nearly perfect PointGoal performance, both
+in terms of success (∼99%) and efficiency (a forward pass
+that takes a fraction of a second) on standard datasets [9,
+37]. The agent starts the exploration of the environment un-
+til it locates its target goal. Once the target is identified, the
+focus of exploration transitions to reaching the designated
+goal. This PointNav policy exclusively uses the egocentric
+depth image and the robot’s relative distance and heading
+towards the desired goal point as input.
+Exploration Policy.
+Exploration is performed using the
+policy outlined in [52].
+This method builds occupancy
+maps based on depth observations to identify exploration
+frontiers. It further leverages RGB observations and a pre-
+trained vision-language model (BLIP2 [30]) to generate a
+language-grounded “value map”. This value map is then
+used to guide the exploration, facilitating an efficient search
+for instances of a given target. Notably, as in [52], the agent
+performs a 360◦turn at the start of navigation to initialize
+frontiers.
+We extend this policy for sequential goals by incorporat-
+4
+
+
+look_around /
+up / down
+explore_scene
+navigate_to
+detect
+match
+answer
+select
+turn_left /
+ right
+map
+classify
+count
+is_found
+eval
+navigation
+modules
+vision &
+language
+modules
+program
+subroutines
+return
+segment
+Figure 3. Overview of TANGO modules. Modules span a va-
+riety of inputs and outputs. Orange modules use Python subrou-
+tines, while blue modules use pre-trained computer vision models
+(similarly to [18]). The navigate to and explore scene modules, in
+green, both implement our foundational PointNav module; how-
+ever, only explore scene integrates the memory mechanism.
+ing a memory mechanism, represented as a “feature map”
+in which each pixel of the value map is encoded as a vector
+and updated at each step. This feature map then updates the
+language-grounded original value map when a new target is
+specified, by calculating the cosine similarity between each
+pixel’s vector and the new target embeddings (either from
+text or image). We sample the highest value in the updated
+value map; if this value exceeds a predefined threshold, in-
+dicating the agent has previously encountered and “remem-
+bers” the target’s location, the agent navigates to it, support-
+ing lifelong navigation. The process is also computationally
+efficient, as the feature map similarity calculations are per-
+formed only if the target changes, rather than at each step
+during navigation.
+3.1. Navigation Tasks with TANGO
+TANGO leverages pre-trained multimodal vision-language
+and vision-only models as foundational components to ex-
+tract semantic information from the scene, making it well-
+suited for several Embodied AI tasks.
+(Open-set) ObjectGoal Navigation [3, 53], in particular,
+emerges as a suitable testbed to evaluate the efficacy of our
+method. A key module to tackle this problem involves uti-
+lizing an object detector (Owlv2 in our implementation [34]
+or DETR [8] for target objects that fall within the COCO
+classes [32]) to identify objects within the image. Subse-
+quently, navigation towards the detected objects is facili-
+tated by waypoints, leveraging depth distance calculation to
+guide the agent effectively. For simplicity, we use the cen-
+ter of the bounding box to determine the target waypoint.
+Hence, our approach effectively addresses this task without
+requiring prior knowledge of target labels for previously en-
+countered objects, making it suitable for real-world applica-
+tions.
+TANGO also integrates a specialized module for match-
+ing target objectives with ongoing visual observations in
+image-based scenarios, resulting in accurate navigation to-
+wards an instance image. To evaluate our agent’s perfor-
+mance in this context, we use SuperGlue network [40], op-
+timized for indoor environments (i.e. using hyperparame-
+ters recommended in the respective paper). We rely on Su-
+perGlue because of its real-time matching capabilities and
+effortless integration into Embodied systems.
+TANGO being task-agnostic, can process any type of
+navigation target, regardless of the order in which it is pre-
+sented. In this context, the GOAT benchmark [25] is well-
+suited for evaluating our system, as it operates in scenarios
+where targets are specified through images, text, or descrip-
+tive phrases, provided in random sequence. It also heavily
+relies on memory to find previously seen targets when se-
+quential goals are given.
+An agent should also be able to answer user queries like
+“can you check if the kitchen table is clean?”. Hence, EQA
+serves as an excellent benchmark to assess TANGO’s capa-
+bilities and robustness. EQA consists of three phases: un-
+derstanding the semantic structure of the prompt, locating
+the target object(s), and analyzing the visual semantics to
+generate an accurate response. To this end, TANGO inte-
+grates a specific answer module, relying on BLIP2 [30] as
+its core foundation.
+4. Experiments
+TANGO provides a flexible framework that can be applied
+to various embodied navigation problems. We evaluate our
+approach on three popular tasks that require a wide range
+of capabilities, including efficient environment exploration,
+path planning, scene and context understanding, and image
+similarity comparison.
+4.1. Experimental Setup
+Agent Configuration.
+Prior research on visual navigation
+commonly uses different agent configurations depending on
+the considered task [15, 25, 53]. The configuration typically
+employed for (OPEN-SET) OBJNAV closely resembles that
+of a LoCoBot, with an agent height of 0.88m, a radius of
+0.18m, and a single 640×480 RGB sensor with a 79◦hfov,
+positioned 0.88m above the ground.
+In the context of GOAT Benchmark, some of the default
+settings differ, featuring a camera situated 1.31m above the
+ground.
+The agent has a height of 1.41m and is given
+360 × 640 RGB images. Both the above tasks’ configu-
+rations use a step size of 0.25m and a left and right turning
+angle of 30◦. Lastly, the settings for EQA mirror those of
+PointGoal Navigation as specified in the Habitat-Lab con-
+figuration files. All other settings remain consistent with
+those of [15].
+Datasets
+and
+Evaluation
+Protocol.
+We
+assess
+the
+TANGO performance across task-specific datasets using the
+Habitat simulator [42]. As the system is not trained in any
+way (except for the PointGoal Navigation model, which has
+been pre-trained on the training set of HM3D, never used in
+5
+
+
+our tests), each scene within episodes is novel to the agent.
+Therefore, the entire validation set can be categorized as
+“unseen”. We now describe in detail the tasks and datasets
+used:
+• OPEN
+VOCABULARY
+OBJECT
+NAVIGATION
+(OVON) [53]:
+a large-scale benchmark featuring
+over 15,000 annotated household objects across 379
+categories, derived from real-world 3D scans [37]. The
+agent is initialized at a random location within a scene
+and tasked with navigating to a target object category
+within a time limit of 500 steps. To ensure comparability
+with other state-of-the-art (SoA) methods, we evaluate
+our approach across all episodes included in the “val
+unseen” set.
+• MULTI-MODAL
+LIFELONG
+NAVIGATION
+(GOAT-
+BENCH) [25]:
+an agent is tasked with sequentially
+navigating to five to ten target objects identified by
+category names, descriptions, or images.
+Each target
+represents a subtask executed within an open-vocabulary
+framework that spans over 312 categories. The agent is
+required to reach a goal within a specified time constraint
+and is assigned new targets upon the completion of each
+subtask. We evaluate our approach across all episodes
+included in the “val unseen” set.
+• EMBODIED
+QUESTION
+ANSWERING
+(OPENEQA) [33]:
+containing over 1,600 question-
+answer pairs sourced from more than 180 real-world
+environments and scans [14, 37]. It is divided into two
+task categories:
+Episodic Memory-EQA (EM-EQA)
+and Active-EQA (A-EQA). Our focus is on the latter,
+in which the agent must autonomously navigate and
+answer questions within a time constraint of 500 steps.
+Questions span over seven categories, including world
+knowledge,
+attribute recognition,
+spatial reasoning,
+and object localization.
+Examples of questions from
+the episodes include: “Is the microwave door propped
+open?” and “What is left of the kitchen pass-through?”.
+We evaluate our approach across all episodes belonging
+to the A-EQA task category.
+Evaluation Metrics.
+In all tasks, we use the standard
+metrics as in prior works [3, 15, 33, 53]. Namely:
+• Success Rate (SR): measures the ratio of episodes where
+the agent succesfully reached its target (Open ObjNav,
+GOAT-Bench).
+• Success weighted by Path Length (SPL): measures the op-
+timality of the path taken by the agent w.r.t. the optimal
+path (Open ObjNav, GOAT-Bench).
+• Distance to Goal (DTG): measures the average distance
+to goal of the agent at the end of the episode (Open Obj-
+Nav, GOAT-Bench).
+• Score (LLM-Match): an LLM compares the ground-truth
+GTi answers with model output Ai given a question Qi
+and assigns a score σi on a scale of 1 to 5. On this scale,
+1 indicates an incorrect response, 5 represents a correct
+response, and intermediate values reflect varying levels
+of similarity. For example, the answer to the question
+“What color is the bed” could be correctly answered ei-
+ther as “white” or “the bed is white”. The final results
+aggregation is as follows:
+S = 1
+N
+N
+X
+i
+σi −1
+4
+× 100%
+(1)
+• Answer Accuracy: the average accuracy of the answers
+provided by the agent for the EQA task. This metric,
+used in [15], is presented with the related results in the
+supplementary material.
+Implemented Modules.
+TANGO contains descriptive
+and easily understandable names for the modules, argu-
+ments, and variables to facilitate the LLM comprehension
+of the input and output. Figure 3 showcases a list of all
+available modules. Each module exclusively outputs pre-
+defined object variables to the next one, enabling the possi-
+bility to monitor the progression of the agent at each step.
+Therefore, dramatically enhancing the explainability of fail-
+ure cases, as it allows for a deep examination of the agent’s
+decision-making process through its interactions with the
+environment. Figure 6 provides a general overview of the
+failure analysis in EQA task. As presented in Section 3,
+“navigate to” and “explore scene” modules are specifically
+engineered to navigate the environment, leveraging inputs
+from depth and RGB sensors as well as the PointGoal GPS
++ compass sensors. If this sensor is not available for a spe-
+cific task, it can be derived from the current agent pose and
+the exploration goal location. The agent is provided with the
+actions: Forward, Move Left, Move Right, Look Up, Look
+Down and Stop.
+For the “detect” module, we employ Owlv2 [34] ob-
+ject detector for general classes and use DETR [8] for cat-
+egories within the COCO classes [32]. Notably, in syn-
+thetic 3D scenes, we noticed numerous false positives. To
+address the problem, bounding boxes produced by the de-
+tector are forwarded to a “classify” module. Within this
+module, each detection undergoes classification to differen-
+tiate between categories of similar instances. For example,
+the class “chair” encompasses diverse subcategories such
+as “armchair”, “couch”, and “other”. Subclasses are out-
+putted under the hood directly by the LLM requiring no hu-
+man annotation. We utilize a CLIP-based classifier in its
+default configuration [36].
+Embodied Question Answering (EQA) task uses an “an-
+swer” module based on BLIP2 [30], capable of perform-
+ing various multi-modal tasks, including Visual Question
+Answering, Image-Text retrieval, and Image Captioning.
+6
+
+
+Step 50
+Step 1
+2D Map
+RGB 
+Step 200
+is_found(bathroom)
+detect(target="door")
+explore_scene()
+explore_scene()
+answer(question) 
+look_around()
+Question: Does the bathroom door open "into" or "out" the bathroom?
+GT Answer: "out"
+Answer: it opens out
+Success: The answer has a LLM-Match of 5
+out of 5
+Step 208
+Step 1
+Step 10
+Step 100
+Step 130
+is_found(bedroom)
+detect("picture")
+answer(question)
+Question: What animal is shown in the picture in the bedroom?
+GT Answer: bird
+Answer: it's a Dog
+Fail: The GT target picture is in the
+other bedroom acroos the hall
+2D Map
+RGB
+explore_scene()
+explore_scene(bedroom)
+Figure 4. Examples from OpenEQA [33]. The top section illus-
+trates a successful episode where TANGO is able to understands
+the input query, correctly specifying the sequential targets. The
+lower section illustrates a failure caused by overly general direc-
+tions from the LLM, which TANGO struggled to resolve.
+Notably, the module is also used when goals are specified
+through images, to capture the class of the input image be-
+fore starting the navigation. Furthermore, for image-based
+tasks we exploit a “match” module to evaluate the similar-
+ity between the agent’s observation and the instance image
+target.
+This module performs feature matching between
+the two, as described in Section 3.1, to aid in navigation.
+Hence, it assists the agent in determining whether what it
+perceives as the current target is indeed the correct goal.
+4.2. Experimental Results
+Open-set ObjectGoal Navigation
+We evaluated our
+method in the standard Open-Set OBJNAV setting, with tar-
+gets sampled directly from objects in the scene. As shown
+in Table 1, our approach achieves performance on par with
+state-of-the-art methods (rows 4-5) on the validation-unseen
+split both in SR (35.5%) and SPL (19.5%). Instead of fo-
+cusing solely on numerical results, these findings highlight
+TANGO ’s flexibility in solving navigation tasks in unfa-
+miliar environments, underscoring the potential of our ap-
+proach within the OBJNAV framework.
+Embodied Question Answering.
+In EQA, the agent is
+queried with a natural language question and must au-
+tonomously explore the environment and gather informa-
+tion in order to answer accordingly. In recent literature,
+this task shifted from being regarded as a purely classifica-
+tion problem aimed at determining the most suitable answer
+VAL UNSEEN
+Method
+SR (↑)
+SPL (↑)
+RL [53]
+18.6 ±0.3
+7.5 ±0.2
+BCRL [53]
+8.0 ±0.2
+2.8 ±0.1
+DAgRL [53]
+18.3 ±0.3
+7.9 ±0.1
+∗VLFM [52, 53]
+35.2
+19.6
+DAgRL+OD [53] 37.1 ±0.2
+19.9 ±0.3
+TANGO (ours)
+35.5 ±0.3
+19.5 ±0.3
+Table 1.
+HM3D-OVON. Performance comparison of different
+methods on VAL UNSEEN split. ∗deterministic method.
+Method
+Score (↑)
+Human Agent [33]
+85.1 ± 1.1
+Blind LLMs [33]
+35.5 ± 1.7
+Socratic LLMs w/ Frame Captions [33]
+38.1 ± 1.8
+Socratic LLMs w/ Scene-Graph Captions [33]
+34.4 ± 1.8
+TANGO (ours)
+37.2 ± 1.8
+Table 2. OpenEQA results. Comparison of TANGO with the
+SoA on the OpenEQA dataset. All methods involve zero-shot ap-
+proaches.
+from a set of pre-defined possibilities (i.e., class labels) to
+an open-vocabulary benchmark where the agent must an-
+swer with natural language [15, 33]. We compare TANGO
+results, using the score from Eq. 1, against other zero-shot
+approaches. Table 2 shows that our method ranks second
+and closely matches the performance of the leading SoA
+method, with a gap of less than 1%. Notably, these ap-
+proaches [33] utilize LLMs to interpret scene objects step-
+by-step (rows 3-4), but they do not leverage LLMs to effec-
+tively guide navigation towards specific targets. Hence, our
+approach demonstrates that SoA results can still be achieved
+by pre-planning a path that prioritizes relevant areas for a
+given question. Moreover, the results indicate that human
+agents achieve a significantly higher score of 85%, which
+remains well above the performance achieved by using large
+language models (LLMs), particularly in open-world set-
+tings. This gap underscores the challenges LLMs face in
+handling the complexity and variability of open-world sce-
+narios compared to human agents.
+GOAT.
+We assess our method within the GOAT-Bench
+setting, where the agent is spawned randomly and tasked
+with sequential targets. Each goal can be specified either
+by its category name, a description, or an image (e.g. the
+input could be “gas boiler”, “the gas boiler on the cor-
+ner of the room. The gas boiler is located on the left of
+7
+
+
+VAL UNSEEN
+Method
+SR (↑) SPL (↑)
+SenseAct-NN Skill Chain [25] 29.5
+11.3
+SenseAct-NN Monolitic [25]
+12.3
+6.8
+Modular GOAT [25]
+24.9
+17.2
+Modular Clip on Wheels [25]
+12.3
+10.4
+TANGO (ours)
+32.1
+16.5
+Table 3.
+GOAT-Bench.
+Performance comparison of different
+methods on the VAL UNSEEN split.
+No memory of target
+object, explore using
+frontiers
+GOAL: Freezer
+No Memory for the first 
+subtask goal
+GOAL: Refrigerator
+RGB
+Memory Map
+GOAL: carpet in the room. it is
+located near the rack, freezer,
+and refrigerator, towards the
+bottom right corner of the
+frame.
+GOAL: Image
+DTG: 0.13 SR: 1.00 SPL: 0.60 DTG: 0.11 SR: 1.00 SPL: 0.16
+DTG: 0.09 SR: 1.00 SPL: 0.53
+Memory Target
+Frontier
+Best
+Value Map
+Frontier
+Best
+Frontier
+Best
+Frontier
+Best
+Memory Target
+Step 48
+Step 78
+Step 115
+Step 239
+1
+2
+3
+4
+DTG: 0.06 SR: 1.00 SPL: 0.20
+Figure 5. Multi-Modal Lifelong Navigation Success Example.
+(top) RGB observation of the target during STOP action (step
+ti+steps). (middle) Value map for the specific target recomputed
+from the memory map (step ti+steps). (bottom) Memory map af-
+ter target changes (step ti).
+the washing machine and freezer” or an image of the “gas
+boiler”). Table 3 compares our approach to the methods
+in [10]. TANGO significantly outperforms other state-of-
+the-art techniques (rows 1-4), achieving a +2.6% gain in
+the success metric. Additionally, it ranks second in naviga-
+tion efficiency, with only a slight −0.7% difference from the
+top-performing method. We primarily attribute these results
+to the LLM’s ability to accurately transform target descrip-
+tions into a sequence of selected goals, rather than relying
+solely on potentially “noisy” text embeddings. Moreover,
+the use of a memory mechanism is essential for the task
+(Fig. 5); however, if the memorized target object is incor-
+rect, the path efficiency can significantly decrease.
+4.3. TANGO Failure analysis
+Due to the high explainability of our system, we con-
+ducted an analysis of the failures encountered during EQA
+episodes (Fig. 6). We extracted a significant subsample
+for the task and manually classified the instances where the
+model failed. We considered scores below 3 as failures,
+i.e. incorrect answers. We observed that the main cause
+of failure can be attributed to the “detect” module (stopped
+at wrong object or Ignored goal object in the image). Fur-
+thermore, the exploration policy appears to perform well
+Failures
+100%
+Incorrect 
+answer
+88.8%
+LLM Generation 
+error
+18.1%
+Called STOP
+53.9%
+Timeout
+28%
+Stopped at wrong 
+object
+31.3%
+Saw goal
+22.6%
+Stopped too far
+ from object
+7.3%
+Moved away 
+from target object
+15.3%
+Didn't see target goal
+10.4%
+Ignored goal object
+17.6%
+Wrong 
+targets 
+generation
+6.9%
+Incorrect 
+primitive 
+use
+11.2%
+Figure 6. Causes of system failure in EQA tasks. The anal-
+ysis was manually conducted on a significant sample of failed
+episodes, facilitated by the explanaibility of TANGO . Answers
+were deemed as “incorrect” if they received a score below three.
+given the targets produced by the LLM, as it fails in only
+∼10% of the cases (labeled as: didn’t see target goal in the
+image). The LLM generates incorrect pseudo-code around
+18% of the time, with 6.9% failures leading to ambiguous
+or incorrect targets, and 11.2% due to incorrect primitive
+ordering or usage which instead leads directly to episode
+failure. Notably, only 11.2% of errors are actually due to
+the LLM generating incorrect code, while the remaining is
+attributable to prompt-related issues.
+5. Conclusion
+We conducted a systematic analysis of our compositional
+approach, offering valuable insights into the future of mod-
+ular, neuro-symbolic systems.
+Moreover, TANGO high-
+lights the versatility of simple PointGoal Navigation agents
+equipped with specific task-oriented modules, yielding
+promising results in zero-shot scenarios across all consid-
+ered tasks. TANGO effectively handles diverse multi-modal
+prompts, following instructions to complete tasks, under-
+scoring the potential of LLMs in robotic navigation. Its in-
+tegrated memory supports lifelong navigation, suggesting
+improved capabilities with increased exploration. However,
+it may struggle with overly complex or ambiguous prompts,
+which can limit the LLM’s ability to identify the correct
+primitives or targets. Future work could extend this sys-
+tem to tasks such as Visual Language Navigation (VLN)
+and explore the use of open-source LLMs. Additionally,
+refining the memory mechanism—particularly through im-
+proved sampling strategies for identifying high-value pixels
+linked to objects’ memory—could further enhance the sys-
+tem’s effectiveness.
+8
+
+
+References
+[1] Peter Anderson, Qi Wu, Damien Teney, Jake Bruce, Mark
+Johnson, Niko S¨underhauf, Ian Reid, Stephen Gould, and
+Anton van den Hengel. Vision-and-language navigation: In-
+terpreting visually-grounded navigation instructions in real
+environments.
+In Proc. of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition (CVPR), 2018. 2
+[2] Jacob Andreas, Marcus Rohrbach, Trevor Darrell, and Dan
+Klein. Neural module networks. In Proc. of the IEEE/CVF
+Conference on Computer Vision and Pattern Recognition
+(CVPR), 2016. 1, 2, 3
+[3] Dhruv Batra, Aaron Gokaslan, Aniruddha Kembhavi, Olek-
+sandr Maksymets,
+Roozbeh Mottaghi,
+Manolis Savva,
+Alexander Toshev, and Erik Wijmans.
+ObjectNav revis-
+ited: On evaluation of embodied agents navigating to objects.
+arXiv preprint arXiv:2006.13171, 2020. 2, 5, 6
+[4] Zhenshan Bing, Alexander Koch, Xiangtong Yao, Kai
+Huang, and Alois Knoll. Meta-reinforcement learning via
+language instructions. In 2023 IEEE International Confer-
+ence on Robotics and Automation (ICRA), pages 5985–5991.
+IEEE, 2023. 2
+[5] Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Sub-
+biah, Jared Kaplan, Prafulla Dhariwal, Arvind Neelakan-
+tan, Pranav Shyam, Girish Sastry, Amanda Askell, Sand-
+hini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom
+Henighan, Rewon Child, Aditya Ramesh, Daniel M. Ziegler,
+Jeffrey Wu, Clemens Winter, Christopher Hesse, Mark Chen,
+Eric Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess,
+Jack Clark, Christopher Berner, Sam McCandlish, Alec Rad-
+ford, Ilya Sutskever, and Dario Amodei. Language models
+are few-shot learners. In Proc. of Advances in Neural Infor-
+mation Processing Systems (NeurIPS), 2020. 1, 2, 3
+[6] Tommaso Campari, Paolo Eccher, Luciano Serafini, and
+Lamberto Ballan. Exploiting scene-specific features for ob-
+ject goal navigation. In Proc. of the European Conference on
+Computer Vision Workshops (ECCVW), 2020. 2
+[7] Tommaso Campari, Leonardo Lamanna, Paolo Traverso, Lu-
+ciano Serafini, and Lamberto Ballan.
+Online learning of
+reusable abstract models for object goal navigation. In Proc.
+of the IEEE/CVF Conference on Computer Vision and Pat-
+tern Recognition (CVPR), 2022. 2
+[8] Nicolas Carion, Francisco Massa, Gabriel Synnaeve, Nicolas
+Usunier, Alexander Kirillov, and Sergey Zagoruyko. End-to-
+end object detection with transformers. In European confer-
+ence on computer vision, pages 213–229. Springer, 2020. 5,
+6
+[9] Angel X. Chang, Angela Dai, Thomas Funkhouser, Maciej
+Halber, Matthias Niessner, Manolis Savva, Shuran Song,
+Andy Zeng, and Yinda Zhang. Matterport3D: Learning from
+RGB-D data in indoor environments. In Proc. of the Inter-
+national Conference on 3D Vision (3DV), 2017. 4
+[10] Matthew Chang, Theophile Gervet, Mukul Khanna, Sriram
+Yenamandra, Dhruv Shah, So Yeon Min, Kavit Shah, Chris
+Paxton, Saurabh Gupta, Dhruv Batra, et al. Goat: Go to any
+thing. arXiv preprint arXiv:2311.06430, 2023. 8
+[11] Devendra Singh Chaplot, Dhiraj Gandhi, Saurabh Gupta,
+Abhinav Gupta, and Ruslan Salakhutdinov. Learning to ex-
+plore using active neural SLAM. In Proc. of the International
+Conference on Learning Representations (ICLR), 2019. 2
+[12] Devendra Singh Chaplot, Dhiraj Prakashchand Gandhi, Ab-
+hinav Gupta, and Ruslan Salakhutdinov. Object goal nav-
+igation using goal-oriented semantic exploration. In Proc.
+of Advances in Neural Information Processing Systems
+(NeurIPS), 2020. 2
+[13] Devendra Singh Chaplot, Ruslan Salakhutdinov, Abhinav
+Gupta, and Saurabh Gupta. Neural topological slam for vi-
+sual navigation. In Proc. of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition (CVPR), 2020. 2
+[14] Angela Dai, Angel X. Chang, Manolis Savva, Maciej Hal-
+ber, Thomas Funkhouser, and Matthias Niessner. Scannet:
+Richly-annotated 3d reconstructions of indoor scenes.
+In
+Proceedings of the IEEE Conference on Computer Vision
+and Pattern Recognition (CVPR), 2017. 6
+[15] Abhishek Das, Samyak Datta, Georgia Gkioxari, Stefan Lee,
+Devi Parikh, and Dhruv Batra. Embodied question answer-
+ing. In Proc. of the IEEE/CVF Conference on Computer Vi-
+sion and Pattern Recognition (CVPR), 2018. 2, 5, 6, 7
+[16] Vishnu Sashank Dorbala, James F Mullen Jr, and Di-
+nesh Manocha.
+Can an embodied agent find your “cat-
+shaped mug”? llm-based zero-shot object navigation. IEEE
+Robotics and Automation Letters, 2023. 2, 3
+[17] Theophile Gervet, Soumith Chintala, Dhruv Batra, Jitendra
+Malik, and Devendra Singh Chaplot. Navigating to objects
+in the real world. Science Robotics, 8(79), 2023. 2
+[18] Tanmay Gupta and Aniruddha Kembhavi. Visual program-
+ming: Compositional visual reasoning without training. In
+Proc. of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition (CVPR), 2023. 1, 2, 3, 5
+[19] Ronghang Hu, Jacob Andreas, Marcus Rohrbach, Trevor
+Darrell, and Kate Saenko. Learning to reason: End-to-end
+module networks for visual question answering. In Proc. of
+the IEEE/CVF International Conference on Computer Vision
+(ICCV), 2017. 1, 2, 3
+[20] Ronghang Hu, Jacob Andreas, Trevor Darrell, and Kate
+Saenko.
+Explainable neural computation via stack neural
+module networks. In Proc. of the European Conference on
+Computer Vision (ECCV), 2018. 3
+[21] Wenlong Huang, Pieter Abbeel, Deepak Pathak, and Igor
+Mordatch. Language models as zero-shot planners: Extract-
+ing actionable knowledge for embodied agents. In Interna-
+tional conference on machine learning, pages 9118–9147.
+PMLR, 2022. 1, 2
+[22] Wenlong Huang, Fei Xia, Ted Xiao, Harris Chan, Jacky
+Liang, Pete Florence, Andy Zeng, Jonathan Tompson, Igor
+Mordatch, Yevgen Chebotar, et al. Inner monologue: Em-
+bodied reasoning through planning with language models.
+arXiv preprint arXiv:2207.05608, 2022. 1, 2
+[23] Albert Q Jiang, Alexandre Sablayrolles, Arthur Mensch,
+Chris Bamford, Devendra Singh Chaplot, Diego de las
+Casas, Florian Bressand, Gianna Lengyel, Guillaume Lam-
+ple, Lucile Saulnier, et al.
+Mistral 7B.
+arXiv preprint
+arXiv:2310.06825, 2023. 1, 2
+[24] Justin Johnson, Bharath Hariharan, Laurens van der Maaten,
+Judy Hoffman, Li Fei-Fei, C. Lawrence Zitnick, and Ross B.
+9
+
+
+Girshick. Inferring and executing programs for visual rea-
+soning. In Proc. of the IEEE/CVF International Conference
+on Computer Vision (ICCV), 2017. 3
+[25] Mukul Khanna, Ram Ramrakhya, Gunjan Chhablani, Sriram
+Yenamandra, Theophile Gervet, Matthew Chang, Zsolt Kira,
+Devendra Singh Chaplot, Dhruv Batra, and Roozbeh Mot-
+taghi. Goat-bench: A benchmark for multi-modal lifelong
+navigation.
+In Proceedings of the IEEE/CVF Conference
+on Computer Vision and Pattern Recognition, pages 16373–
+16383, 2024. 2, 5, 6, 8
+[26] Eric Kolve, Roozbeh Mottaghi, Winson Han, Eli VanderBilt,
+Luca Weihs, Alvaro Herrasti, Daniel Gordon, Yuke Zhu, Ab-
+hinav Gupta, and Ali Farhadi. Ai2-thor: An interactive 3d
+environment for visual ai. arXiv preprint arXiv:1712.05474,
+2017. 2
+[27] Jacob Krantz, Stefan Lee, Jitendra Malik, Dhruv Batra, and
+Devendra Singh Chaplot. Instance-specific image goal nav-
+igation: Training embodied agents to find object instances.
+arXiv preprint arXiv:2211.15876, 2022. 2
+[28] Jacob Krantz, Theophile Gervet, Karmesh Yadav, Austin
+Wang, Chris Paxton, Roozbeh Mottaghi, Dhruv Batra, Jiten-
+dra Malik, Stefan Lee, and Devendra Singh Chaplot. Nav-
+igating to objects specified by images.
+In Proc. of the
+IEEE/CVF International Conference on Computer Vision
+(ICCV), 2023. 2
+[29] Dingbang Li, Wenzhou Chen, and Xin Lin. Tina: Think,
+interaction, and action framework for zero-shot vision lan-
+guage navigation. arXiv preprint arXiv:2403.08833, 2024.
+2
+[30] Junnan Li, Dongxu Li, Silvio Savarese, and Steven Hoi.
+Blip-2:
+Bootstrapping language-image pre-training with
+frozen image encoders and large language models. In In-
+ternational conference on machine learning, pages 19730–
+19742. PMLR, 2023. 4, 5, 6
+[31] Jacky Liang, Wenlong Huang, Fei Xia, Peng Xu, Karol
+Hausman, Brian Ichter, Pete Florence, and Andy Zeng. Code
+as policies: Language model programs for embodied control.
+In 2023 IEEE International Conference on Robotics and Au-
+tomation (ICRA), pages 9493–9500. IEEE, 2023. 1, 2
+[32] Tsung-Yi Lin, Michael Maire, Serge Belongie, James Hays,
+Pietro Perona, Deva Ramanan, Piotr Doll´ar, and C Lawrence
+Zitnick. Microsoft coco: Common objects in context. In
+Computer Vision–ECCV 2014: 13th European Conference,
+Zurich, Switzerland, September 6-12, 2014, Proceedings,
+Part V 13, pages 740–755. Springer, 2014. 5, 6
+[33] Arjun Majumdar, Anurag Ajay, Xiaohan Zhang, Pranav
+Putta, Sriram Yenamandra, Mikael Henaff, Sneha Silwal,
+Paul Mcvay, Oleksandr Maksymets, Sergio Arnaud, et al.
+Openeqa: Embodied question answering in the era of foun-
+dation models. In Proceedings of the IEEE/CVF Conference
+on Computer Vision and Pattern Recognition, pages 16488–
+16498, 2024. 2, 6, 7
+[34] Matthias Minderer, Alexey Gritsenko, and Neil Houlsby.
+Scaling open-vocabulary object detection. Advances in Neu-
+ral Information Processing Systems, 36, 2024. 5, 6
+[35] Xavier Puig, Eric Undersander, Andrew Szot, Mikael Dal-
+laire Cote, Tsung-Yen Yang, Ruslan Partsey, Ruta Desai,
+Alexander William Clegg, Michal Hlavac, So Yeon Min,
+Vladim´ır Vondruˇs, Theophile Gervet, Vincent-Pierre Berges,
+John M. Turner, Oleksandr Maksymets, Zsolt Kira, Mrinal
+Kalakrishnan, Jitendra Malik, Devendra Singh Chaplot, Un-
+nat Jain, Dhruv Batra, Akshara Rai, and Roozbeh Mottaghi.
+Habitat 3.0: A co-habitat for humans, avatars and robots,
+2023. 2
+[36] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya
+Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry,
+Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning
+transferable visual models from natural language supervi-
+sion. In International conference on machine learning, pages
+8748–8763. PMLR, 2021. 6
+[37] Santhosh K. Ramakrishnan, Aaron Gokaslan, Erik Wijmans,
+Oleksandr Maksymets, Alex Clegg, John Turner, Eric Un-
+dersander, Wojciech Galuba, Andrew Westbury, Angel X.
+Chang, et al.
+Habitat-matterport 3D dataset (HM3D):
+1000 large-scale 3D environments for embodied AI. arXiv
+preprint arXiv:2109.08238, 2021. 4, 6
+[38] Santhosh K. Ramakrishnan, Devendra Singh Chaplot, Ziad
+Al-Halah, Jitendra Malik, and Kristen Grauman. Poni: Po-
+tential functions for objectgoal navigation with interaction-
+free learning. In Proc. of the IEEE/CVF Conference on Com-
+puter Vision and Pattern Recognition (CVPR), 2022. 2
+[39] Sonia Raychaudhuri, Tommaso Campari, Unnat Jain, Mano-
+lis Savva, and Angel X Chang.
+Mopa: Modular object
+navigation with pointgoal agents.
+In Proceedings of the
+IEEE/CVF Winter Conference on Applications of Computer
+Vision, pages 5763–5773, 2024. 2, 4
+[40] Paul-Edouard Sarlin, Daniel DeTone, Tomasz Malisiewicz,
+and Andrew Rabinovich.
+Superglue:
+Learning feature
+matching with graph neural networks, 2020. 5
+[41] Manolis Savva, Angel X. Chang, Alexey Dosovitskiy,
+Thomas Funkhouser, and Vladlen Koltun.
+Minos: Multi-
+modal indoor simulator for navigation in complex environ-
+ments. arXiv preprint arXiv:1712.03931, 2017. 2
+[42] Manolis Savva, Abhishek Kadian, Oleksandr Maksymets,
+Yili Zhao, Erik Wijmans, Bhavana Jain, Julian Straub, Jia
+Liu, Vladlen Koltun, Jitendra Malik, et al. Habitat: A plat-
+form for embodied AI research. In Proc. of the IEEE/CVF
+International Conference on Computer Vision (ICCV), 2019.
+5
+[43] Bokui Shen, Fei Xia, Chengshu Li, Roberto Mart´ın-Mart´ın,
+Linxi Fan, Guanzhi Wang, Claudia P´erez-D’Arpino, Shya-
+mal Buch, Sanjana Srivastava, Lyne Tchapmi, et al. iGibson
+1.0: a simulation environment for interactive tasks in large
+realistic scenes. In Proc. of the IEEE/RSJ International Con-
+ference on Intelligent Robots and Systems (IROS), 2021. 2
+[44] D´ıdac Sur´ıs, Sachit Menon, and Carl Vondrick. ViperGPT:
+Visual Inference via Python Execution for Reasoning.
+In
+Proc. of the IEEE/CVF International Conference on Com-
+puter Vision (ICCV), 2023. 1, 2, 3
+[45] Gemini Team, Rohan Anil, Sebastian Borgeaud, Yonghui
+Wu, Jean-Baptiste Alayrac, Jiahui Yu, Radu Soricut, Johan
+Schalkwyk, Andrew M Dai, Anja Hauth, et al. Gemini: a
+family of highly capable multimodal models. arXiv preprint
+arXiv:2312.11805, 2023. 1, 2
+10
+
+
+[46] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert,
+Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov,
+Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, et al.
+Llama 2: Open foundation and fine-tuned chat models. arXiv
+preprint arXiv:2307.09288, 2023. 1, 2
+[47] Erik Wijmans, Abhishek Kadian, Ari Morcos, Stefan Lee,
+Irfan Essa, Devi Parikh, Manolis Savva, and Dhruv Batra.
+DD-PPO: Learning near-perfect pointgoal navigators from
+2.5 billion frames. In Proc. of the International Conference
+on Learning Representations (ICLR), 2019. 2
+[48] Ronald J Williams. Simple statistical gradient-following al-
+gorithms for connectionist reinforcement learning. Machine
+learning, 8(3):229–256, 1992. 3
+[49] Zhenyu Wu, Ziwei Wang, Xiuwei Xu, Jiwen Lu, and Haibin
+Yan. Embodied task planning with large language models.
+arXiv preprint arXiv:2307.01848, 2023. 1
+[50] Joel Ye, Dhruv Batra, Erik Wijmans, and Abhishek Das.
+Auxiliary Tasks Speed Up Learning PointGoal Navigation.
+In Proc. of the International Conference on Robot Learning
+(CoRL), 2020. 2
+[51] Joel Ye, Dhruv Batra, Abhishek Das, and Erik Wijmans.
+Auxiliary Tasks and Exploration Enable ObjectNav. In Proc.
+of the IEEE/CVF International Conference on Computer Vi-
+sion (ICCV), 2021. 2
+[52] Naoki Yokoyama, Sehoon Ha, Dhruv Batra, Jiuguang Wang,
+and Bernadette Bucher.
+Vlfm: Vision-language frontier
+maps for zero-shot semantic navigation. In 2024 IEEE In-
+ternational Conference on Robotics and Automation (ICRA),
+pages 42–48. IEEE, 2024. 2, 3, 4, 7
+[53] Naoki Yokoyama, Ram Ramrakhya, Abhishek Das, Dhruv
+Batra, and Sehoon Ha. Hm3d-ovon: A dataset and bench-
+mark for open-vocabulary object goal navigation.
+arXiv
+preprint arXiv:2409.14296, 2024. 2, 5, 6, 7
+[54] Bangguo Yu, Hamidreza Kasaei, and Ming Cao. L3mvn:
+Leveraging large language models for visual target naviga-
+tion. in 2023 ieee. In RSJ International Conference on Intel-
+ligent Robots and Systems (IROS), pages 3554–3560. 2
+[55] Gengze Zhou, Yicong Hong, and Qi Wu. Navgpt: Explicit
+reasoning in vision-and-language navigation with large lan-
+guage models. In Proceedings of the AAAI Conference on
+Artificial Intelligence, pages 7641–7649, 2024. 1, 3
+[56] Gengze Zhou, Yicong Hong, Zun Wang, Xin Eric Wang, and
+Qi Wu. Navgpt-2: Unleashing navigational reasoning capa-
+bility for large vision-language models. In European Con-
+ference on Computer Vision, pages 260–278. Springer, 2025.
+2, 3
+11

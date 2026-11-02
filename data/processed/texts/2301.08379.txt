@@ -1,0 +1,1082 @@
+Asynchronously Trained Distributed Topographic Maps
+Abbas Siddiqui 1 Dionysios Georgiadis 2
+Abstract
+Topographic feature maps are low dimensional
+representations of data, that preserve spatial de-
+pendencies. Current methods of training such
+maps (e.g. self organizing maps - SOM, gener-
+ative topographic maps) require centralized con-
+trol and synchronous execution, which restricts
+scalability. We present an algorithm that uses
+N autonomous units to generate a feature map
+by distributed asynchronous training. Unit auton-
+omy is achieved by sparse interaction in time &
+space through the combination of a distributed
+heuristic search, and a cascade-driven weight up-
+dating scheme governed by two rules: a unit i)
+adapts when it receives either a sample, or the
+weight vector of a neighbor, and ii) broadcasts
+its weight vector to its neighbors after adapting
+for a predeﬁned number of times. Thus, a vec-
+tor update can trigger an avalanche of adaptation.
+We map avalanching to a statistical mechanics
+model, which allows us to parametrize the statis-
+tical properties of cascading. Using MNIST, we
+empirically investigate the effect of the heuristic
+search accuracy and the cascade parameters on
+map quality. We also provide empirical evidence
+that algorithm complexity scales at most linearly
+with system size N. The proposed approach is
+found to perform comparably with similar meth-
+ods in classiﬁcation tasks across multiple datasets.
+1. Introduction
+Topographic maps are low dimensional discrete represen-
+tations of high dimensional data. These maps consist of
+neurons (a.k.a. units) interconnected over a predeﬁned reg-
+ular lattice. Each neuron j contains a representation of the
+data wj. When training such a map, the goal is twofold: i)
+the representation wj of each neuron should approximate an
+1Bavaria,
+Germany
+2Aspect Capital,
+London,
+United
+Kingdom.
+Correspondence
+to:
+Abbas
+Siddiqui
+<ab-
+bas.siddiqui@gmail.com>,
+Dionysios
+Georgiadis
+<dionys-
+ios.georgiadis@aspectcapital.com>.
+area of the data distribution, and ii) adjacent neurons should
+contain similar representations (respecting the the map’s
+topology). Such maps have found broad application in data
+analytics, (mainly for clustering, function approximation,
+dimensionality reduction - see (Kohonen, 2013; Kohonen
+et al., 2001) for more examples), and are typically trained
+via the Self Organizing Map algorithm (SOM).
+Scalability is increasingly needed in machine learning algo-
+rithms (due to growing data accessibility (Qiu et al., 2016)).
+However, the SOM requires centralized training - which
+compromises its scalability. The need for centralized train-
+ing comes from the best matching unit (BMU) search (a
+centralized process in which a sample is compared with ev-
+ery unit’s representation wj), and the unit adaptation process
+(where a central entity has knowledge of all the units in the
+map). To tackle the scalability challenge many workarounds
+have been proposed, including parallel execution, dedicated
+hardware acceleration (with GPUs (Liu et al., 2018; Wang
+et al., 2017) or FPGAs (Girau & Torres-Huitzil, 2018)), and
+heuristic methods (Kohonen et al., 2000). Crucially however,
+distributed implementations (Sarazin et al., 2014; Liu et al.,
+2018) of SOM rely on iterative map-reduce frameworks
+(Spark, HADOOP). Such frameworks require synchronous
+execution, and are thus susceptible to network latency, or
+slow workers (i.e. stranglers). Asynchronous training meth-
+ods have attracted attention, because they do not suffer from
+such limitations (Mnih et al., 2016; Li et al., 2019; Fernando
+et al., 2017).
+In order to tackle the problem of scalability, in this work
+we present an algorithm for the training topographic maps
+through asynchronous execution. This is made possible by
+converting map units to autonomous agents. Each agent
+has limited knowledge of the feature map (a few neighbors),
+and interacts sparsely with its peers. The search and adjust-
+ment processes are asynchronous and require only the local
+knowledge of each unit’s predeﬁned neighbors.
+Training involves two processes for each sample si. First
+the a good-matching unit (GMU) is found through a heuris-
+tic search, and then the GMU adapts wj to the sample -
+potentially instigating an adaptation cascade (as explained
+below). For effective exploration, the search relies on non-
+local connections between units which are dubbed far links.
+Also, the search uses a set of local connections between
+arXiv:2301.08379v1  [cs.LG]  20 Jan 2023
+
+
+Asynchronously Trained Distributed Topographic Maps
+units - dubbed near links - for greedy exploitation. The po-
+tential for adaptation cascades allows the map to preserve its
+topology during training. Cascading is enabled by a simple
+rule: every time a unit adapts it may use its near links to
+potentially trigger other units to adapt as well. Thus one
+adaptation may trigger another, which in turn may trigger
+another - in a domino-like fashion.
+We suggest that the scheme described in the previous para-
+graph can be used as a general method to train topographi-
+cally preserving feature maps, in an asynchronous fashion.
+We present a simple implementation of this scheme, and
+provide empirical evidence in support of this argument. Our
+key contribution lies in demonstrating a highly scalable
+asynchronous training algorithm for topographic maps.
+As a ﬁrst investigation of this scheme, and to demonstrate
+the feasibility of this claim, we present a basic implementa-
+tion of the heuristic search, the rules governing cascading,
+and the rules for creating near and far links. In section 2 we
+use MNIST to explore the behavior of the proposed algo-
+rithm, which results in a set of suggested hyper-parameters.
+To demonstrate the applicability and robustness of the pro-
+posed algorithm hyper-parameters conﬁguration, we use the
+algorithm for classiﬁcation on 4 different datasets (includ-
+ing MNIST) in section 3. We are also able to derive the
+computational complexity of presented algorithm, under the
+proposed hyper-parameter conﬁguration. We compare the
+resulting classiﬁcation performance to values reported in the
+literature for a SOM, and ﬁnd that the two methods perform
+comparably.
+2. Algorithm
+Each of the N units is given a position in two spaces: the
+unit space and the sample space. In the unit space, units are
+arranged in a regular lattice,
+n
+0, ..
+√
+N
+o2
+. Unit’s j position
+in the sample space is given by the weight vector wj. As part
+of the cascading mechanics, each unit is given a counter cj
+(initialized with 0), and all units share a common cascading
+threshold θ. Through training, we seek to obtain weights
+wj such that: i) the topologies of the units in the two spaces
+(sample and unit space) are similar, and ii) the weights
+accurately approximate the distribution of the samples in
+sample space.
+Links are drawn based on the Manhattan distance of units
+j, k in the unit space Djk.
+• Near links are used for the heuristic search and adap-
+tation. These links are drawn if Djk ≤1, forming a
+square lattice. The units linked to unit j through near
+links are the near neighbors of j, denoted by Nj.
+• Far links are only used for the heuristic search. They
+are drawn probabilistically, by connecting each unit j
+to a ﬁxed number φ of its peers, with a probability1
+∼D−1
+jk . Units connected to unit j through far links
+are the far neighbors, denoted by Fj. Details on the
+choice of φ are found in the respective section.
+Training the map involves two processes: the distributed
+heuristic search for the GMU, and the cascade-driven adap-
+tation. Adaptation relies solely on the near links, while the
+heuristic search utilises both near and far links.
+2.1. The distributed heuristic search
+The search aims to determine the GMU j∗, in a fashion akin
+to a relay-race: the sample is passed between units, in an
+effort to ﬁnd a j∗that minimizes:
+qij∗= |wj∗−si|.
+(1)
+The search involves two phases. Starting from a random
+unit j (who we also set as j∗), we take the following steps:
+1. Random exploration, the index of the unit holding
+the sample j is updated by picking a far neighbor or j
+uniformly at random. The sample is sent there, and if
+qij < qij∗we update the GMU: j∗←j.
+2. We repeat step 1, for a total of e iterations (where e is a
+user deﬁned parameter). We then polish the best know
+solution j∗through a greedy search.
+3. Greedy exploitation The sample is compared to the
+near and far neighbors of j∗, and determine k∗:
+k∗←argmin
+k∈Nj
+qki
+(2)
+4. If we get qik∗< qij∗the GMU index is updated j∗←
+k∗and step 3 is repeated. Otherwise, we the search is
+terminated and j∗is the GMU.
+The number of exploration iterations e (see step 2) can be
+used to adjust the accuracy of the search.
+To quantify the performance of this search, we may check if
+the unit identiﬁed as the GMU is in fact the best matching
+unit (BMU) - that is, the global optimum of the problem
+argminj qj(i). If a search results in a GMU that does not
+coincide with the BMU we say that the search has failed.
+In the following subsection, the performance of the search
+is quantiﬁed by calculating the fraction number of failed
+searches towards the end of training. We refer to this quan-
+tity as search error, denoted by F.
+1Such connection probability parameterizations (distance based
+power-laws) are known to perform optimally in certain heuristic
+search problems involving spatial graphs (Kleinberg, 2000) - but
+different schemes may be consider in future works.
+
+
+Asynchronously Trained Distributed Topographic Maps
+Figure 1. Visualizing the proposed heuristic search. Units are
+linked to near and far neighbors (black and blue lines). Each
+sample hops over the links, in an effort to ﬁnd a its best-matching
+unit. The search has two phases: random exploration over the far
+links (pink highlight), and a greedy search over near links (red
+highlight). Far links allow for effective exploration (details in
+section 2.1). We depict a small fraction of the far links.
+The pathology arising from an inaccurate search, along
+with an empirical investigation on how e impacts search
+accuracy for different map sizes N can be found in the
+next section (see subsection 3.1). Additionally, the search
+algorithm is presented in pseudo-code form in Algorithm 1
+and visualized in Figure 1.
+Note that the distant connections in Fj allow for long jumps
+in the unit space prior to (and during) the greedy search
+- helping the algorithm escape from local minima. Sufﬁ-
+ciently increasing the number of far connections per unit
+φ allows for the random search process to quickly diffuse
+over the map, in O(log(N)) iterations (Martel & Nguyen,
+2004) - ensuring the scalability of the search with respect to
+map size. This effect is well known in graph theory as the
+small-world effect (Milgram, 1967), and it can be achieved
+with a relatively small number of φ (Barri`ere et al., 2001).
+This search algorithm sufﬁces for demonstration purposes,
+but more sophisticated schemes may be considered in the
+future.
+2.2. Cascade-driven adaptation
+Adaptation occurs once the GMU j∗is determined. Let ls
+by a user deﬁned constant learning rate, the weight vector is
+updated by:
+wj∗←wj∗+ ls(si −wj∗)
+(3)
+Additionally, the cascading counter of the GMU is increased
+(by applying cj∗←cj∗+1) with a probability pi. The exact
+parametrization of pi (dubbed the cascading probability)
+will be discussed later in this section. Afterwards, cascading
+adaptation may take place through the following rules:
+1. Firing: If a cascading counter update yields cj > θ,
+the unit is said to ﬁre: it resets cj ←0, and broadcasts
+wj to all its near neighbors.
+2. Cascading adaptation: Upon receiving a weight vec-
+tor wk, unit j adapts its weight own vector:
+wj ←wj + lc(i)(wj −wk)
+(4)
+where i is the index of the last sample, and lc(i) is a
+learning rate which depends on the training index i.
+3. Drive: Following every adaptation of wj we apply
+cj ←cj + 1 with a probability of pi.
+The cascading adaptation process is also described in
+pseudo-code from in Algorithm 1. The magnitude of the
+cascading event associated with sample i is measured by
+the cascade size ai - which is calculated by counting the
+number of ﬁring incidents after all ﬁring has ceased. In
+the following analysis, we commonly refer to the fractional
+cascade size, which is deﬁned as Ai = ai/N.
+Each ﬁring incident results in a unit attracting its near neigh-
+bors in the sample space. This increases the topological
+order of the map - but may also reduce the similarity of
+the weight vectors to the samples. The attraction between
+weights can be controlled via the learning rate lc(i), and pi.
+In an effort to globally order the map, we allow for large
+scale cascading (of scale O(N)) and high lc, during early
+training. Then, we gradually reduce both lc, pi over the
+course of training, allowing the weights to better approxi-
+mate samples.
+The cascading learning rate follows:
+lc(i) =
+
+1 + tanh
+co −i/imax
+cs
+ 
+2
+(5)
+Where imax is the total number of training iterations, and
+co, cs are user deﬁned constants. Equation (5) results in lc(i)
+following a smoothly decreasing slope as training progresses
+- while ensuring lc(i) ∈(0, 1), ∀i. The offset parameter co
+controls how late into training lc reaches the value 0.5 -
+e.g. setting co = 0 or co = 1 results in lc(0) = 0.5 and
+lc(imax) = 0.5 respectively. Parameter cs control the slope
+of decrease - with cs = 0 resulting in the instantaneous
+decrease from 1 to 0, and cs →inf resulting in constant lc.
+Manipulating cascade sizes To control the macroscopic
+cascading behavior we parametrize pi by relying on meth-
+ods from statistical physics. The dependence between the
+statistical behavior of ai and pi (that is, the probability distri-
+bution P(ai = C; pi)) can be analytically understood under
+four assumptions:
+• samples are spread homogeneously across the unit
+space throughout training,
+
+
+Asynchronously Trained Distributed Topographic Maps
+Algorithm 1 Pseudocode for the proposed approach to train-
+ing topographic feature maps asynchronously.
+e : Number of Explorations
+l s : Learning Rate for Samples
+θ : Cascading Threshold
+i max : Total Number of Training Samples
+Function TrainMap ():
+ConnectNearNeighbors()
+ConnectFarNeighbors()
+for i: 1 to i max do
+sample = getRandomSample()
+bmu = HeuristicSearch(sample)
+AdjustWeight( bmu, sample, l s)
+IncrementGrain(bmu,i)
+if getGrains(bmu) >= θ then
+Cascading(bmu, i)
+end
+end
+async Function HeuristicSearch (sample):
+bmu = getRandomUnit()
+rnd neighbor = bmu
+for 1 to e do
+rnd neighbor
+=
+getRandomFarNeighbor(
+rnd neighbor )
+temp = getDistance(rnd neighbor, sample)
+if temp< min dist then
+bmu = rnd neighbor
+min dist = temp
+end
+end
+temp = getMinDistNeighbor(bmu, sample)
+while temp < min dist do
+bmu = neighbor
+min dist = temp
+neighbor = getMinDistNeighbor(bmu, sample)
+temp= getDistance(neighbor , sample)
+end
+return bmu
+async Function Cascading (unit, i):
+EmptyGrains(unit)
+for each near neighbor of unit do
+AdjustWeight( neighbor, getWeight(unit), getCas-
+cadingLearningRate(i))
+if rnd < getCascadingProbability(i) then
+addGrain(unit)
+end
+if getGrains(neighbor) >= θ then
+Cascading(neighbor, i)
+end
+end
+return
+• the value of pi changes slowly during training (known
+as the adiabatic approximation),
+• the time that passes between presenting the map with
+samples is enough for cascading to cease,
+• the number of near links equals the threshold θ = |Nj|.
+Based on these assumptions - and for pi = 1 - cascading
+can be exactly mapped to the BTW sandpile model (Bak
+et al., 1988). For pi < 0 cascading can be mapped to a non-
+conservative variant of the well established sandpile model
+where dissipation occurs with probability 1−pi (Vespignani
+et al., 1998; Malcai et al., 2006). In this (dissipative) variant,
+cascade sizes are known to follow a power law distribution -
+truncated exponentially at a characteristic fractional size ¯χ.
+In dissipative sandpile models, it generally holds ¯χ ∼d−s
+where d is the rate of dissipation, and s a critical exponent
+which depends on the speciﬁc rules governing cascading
+(Vespignani et al., 1998; Malcai et al., 2006). In our case,
+s = 1 (Vespignani et al., 1998), and dissipation is given
+by d ∼1 −pi. Thus, we can manipulate the characteristic
+cascade size ¯ai by adjusting pi.
+In order to study the behavior of the algorithm under varying
+map sizes N, it is instructive to parametrize pi in a way that
+results in scale invariant dynamics: that is, the relative size
+of cascades ai/N is independent of N. For N sufﬁciently
+large, we can achieve scale invariance by the following
+parametrization:
+pi =
+
+1 −
+1
+√cmN
+ 
+1 −
+i
+imax
+ cd
+N
+(6)
+This relation results in a high starting value of ¯ai which
+reduces over time. The constant 1/N << cm < 1 controls
+the characteristic size ¯ai in early training, while cd ∈(0, ∞)
+controls the rate at which ¯ai shrinks over time. The above
+behavior is independent of the system size N.
+3. Experimental Analysis
+In this section we explore the impact of the model’s hyper-
+parameter on the quality of the resulting map. Our analysis
+is focused on the hyper-parameters that govern the two
+novel components of the presented algorithm: the cascading
+adaptation mechanism and the distributed heuristic search.
+Default conﬁguration
+Unless otherwise stated, for all ex-
+periments of this section, we will be considering the MNIST
+dataset and a map of 900 units, with the following con-
+ﬁguration: The number of far connections φ is set to 20
+(which ensures that the network is densely connected). The
+learning rate parameters are set to ls = 0.05 , co = 0.5 and
+cs = 0.5. Cascading parameters are set to cm = 0.1 and
+
+
+Asynchronously Trained Distributed Topographic Maps
+cd = 100. Exploration iterations are set to e = 3N. The
+number of training iterations are proportional to the number
+of the units (as is common practice for the closely related
+algorithm SOM (Kohonen et al., 2000)). The number of
+epochs are adjust so that the number of training samples is
+imax ≈600N.
+Measuring map quality
+Map quality can be assessed in
+two ways, using two different, well-established metrics.
+Quantization error quantiﬁes how well the weight vectors
+describe the distribution of the samples in the sample space,
+while Topological error quantiﬁes the topological order the
+map (on a local scale) (Li et al., 1993). The quantisation
+and topological error of a map are denoted by Q and T
+respectively.
+3.1. Heuristic search accuracy
+To explore the impact of the exploitative search itera-
+tions parameter e on the resulting map, we train maps
+using an increasing number of search iterations: e ∈
+{0.01N, 0.05N, 0.1N, 0.2N, 0.3N . . . 5N} and compare
+the resulting search accuracies. To quantify search accuracy,
+we focus on the last 1000 training iterations, and calculate
+as the fraction of times that the GMU did not coincide with
+the BMU. This fraction is denoted by F.
+102
+103
+Search iterations (e)
+0.00
+0.05
+0.10
+0.15
+0.20
+Search error (F)
+0.30
+0.31
+0.32
+0.33
+0.34
+0.35
+0.36
+0.37
+Topological error (T)
+Figure 2. Increasing the exploitative search iterations e asymptot-
+ically reduces search error (blue line) and topological error (red
+line). Increasing search accuracy has a diminishing effect on map
+quality. Conﬁdence intervals are placed at one std, and calculated
+over 5 runs. For the experiment’s conﬁguration see section 3 -
+second paragraph.
+The results of this experiment can be seen in ﬁgure 2, which
+reveals that the accuracy of the heuristic search increases
+exponentially over the range of considered e. The ﬁgure also
+depicts the topological error of the map as a function of e,
+revealing that further increasing the search accuracy offers
+diminishing improvements to topological quality. Based
+on these results, we will be setting the hyper-parameter
+e = 3N for all remaining experiments (as 3N is the smallest
+value of e the results in search accuracy > 99%). For
+e = 3N, the scalability of the search with respect to N
+is established in a subsequent experiment (see subsection
+3.3) which demonstrates that the map quality improves as
+N increases. More thorough analyze can be found in the
+Appendix.
+3.2. Cascading adaptation
+The cascading adaptation mechanism relies on two hyper-
+parameters, one associated with the average cascade size
+during early training, and one with the rate at which cascade
+sizes decrease over the training duration (cm, cd respec-
+tively).
+To assess the impact of these two parameters, we train
+maps conﬁgured over a sparse grid of (cm, cd), with cm ∈
+{0.01, 0.050.1 . . . 1} and cd
+∈{10, 102, 103, 104}.The
+topological and quantization errors of the resulting maps are
+shown in ﬁgure 4 - for two map sizes. Figure 4 reveals that
+quantization and topological error are not sensitive to cm.
+We can therefore select a small cm, which result in smaller
+cascades and reducing computation. However, cm must be
+>> 1/N (see equation (6)) - and thus we select cm = 0.1
+for the remaining experiments as a compromise.
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Training progress i/imax
+10
+1
+100
+Fractional cascade size
+Map size N:
+400
+625
+900
+1600
+2500
+3600
+6400
+Figure 3. Increasing map size N does not signiﬁcantly affect frac-
+tional cascade sizes Ai. We track the upper 1000th quantile of
+Ai during training (over a rolling window of width imax/100) -
+for increasing map sizes N. Tracked trajectories collapse to a sin-
+gle time-line, indicating the N does not affect fractional cascade
+sizes. For the experiment’s conﬁguration see section 3 - second
+paragraph.
+To more closely examine the impact of the other cascading
+hyper-parameter cd on the algorithm’s performance, we train
+maps with increasing cd, and measure their quantization
+nd topological errors. We demonstrate results in ﬁgure 5,
+which reveals that cd has a mixed impact on the map quality:
+increasing cd may reduce quantization error at the expense
+of increasing topological error. Thus, the selection of an
+appropriate value for cd may depend on the intended use of
+the resultant map. We select cd = 100 and cd = 1000 in
+order to emphasis low topological, and quantization error -
+respectively.
+
+
+Asynchronously Trained Distributed Topographic Maps
+Cascading is controlled via the cascading probability pi,
+which - as stated in subsection 2.2 - is parametrized in
+such a way that the cascading behavior is naturally ad-
+justed to the system size.
+Speciﬁcally, the fractional
+size of cascades Ai is controlled by cm, cd and decou-
+pled from the map’s absolute size N. This statement is
+veriﬁed empirically, by training maps of increases sizes
+N
+∈
+{100, 225, 400, 625, 900, 1600, 2500, 3600, 6400}
+and comparing the resulting cascading activity. To com-
+pare the cascading activity between maps of different sizes
+we i) take a rolling window of width imax/100, and ii) take
+the mean of fractional cascade sizes Ai that lie in the top
+1000th quantile.
+1150
+1200
+1250
+1300
+1350
+Quantisation error (Q)
+N = 400
+N = 900
+cm
+0.01
+0.05
+0.1
+0.2
+0.4
+0.6
+0.8
+1.0
+101
+103
+Cascading probability decay (cd)
+0.2
+0.4
+0.6
+Topological error (T)
+101
+103
+Cascading probability decay (cd)
+Figure 4. A sparse grid search of the cascading parameters cd, cm
+reveals that cm has minimal effect over the map’s quantization
+and topological errors (Q and T). The grid search is repeated
+for two map sizes N: 400, 900 (left column and right column
+respectively). For the experiment’s conﬁguration see section 3 -
+second paragraph.
+The results of this analysis are depicted in ﬁgure 3, which
+shows that the lines plotted for all map sizes coincide -
+demonstrating that by using the presented parametrization of
+pi, the fractional cascade size Ai does not strongly depend
+on the system size - for N > 400.
+3.3. Scalability
+To
+investigate
+the
+scalability
+of
+the
+algo-
+rithm,
+we
+train
+maps
+of
+increasing
+sizes
+N
+∈
+{100, 225, 400, 625, 900, 1600, 2500, 3600, 6400}
+-
+for cd = 100, cm = 0.1, e = 3N. We measure the quality
+of each trained map (that is quantization error, topological
+102
+103
+104
+Cascading probability decay (cd)
+1125
+1150
+1175
+1200
+1225
+1250
+1275
+1300
+Quantisation error (Q)
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+Topological error (T)
+Figure 5. Inreasing the cascading decay parameter cd has a mixed
+effect on map quality: quantisation error Q decreases at the ex-
+pense of increasing topological error T. For the experiment’s
+conﬁguration see section 3 - second paragraph.
+error, search accuracy (deﬁned in the section 2.1). The
+results are presented in the ﬁgure 6, and indicate the
+algorithm’s scalability in terms of performance:
+both
+quantization and topological error reduce exponentially
+over the considered range of N. This observation reveals
+that hyper-parameter values are not sensitive to system size
+- which is highly instructive for tuning (i.e. a conﬁguration
+that works on a small map can also be used for a larger map).
+We attribute this convenient property to the scale-invariant
+cascading parametrization, and the scalability of the
+heuristic search.
+102
+103
+Map size (N)
+1175
+1200
+1225
+1250
+1275
+1300
+1325
+1350
+Quantisation error (Q)
+0.25
+0.30
+0.35
+0.40
+0.45
+Topological error (T)
+Figure 6. Increasing map size N results in lower topological and
+quantization errors (Q and T) - demonstrating that the quality
+of maps increases with system size - assuming large N. For the
+experiment’s conﬁguration see section 3 - second paragraph.
+3.4. Applicability
+In this subsection we demonstrate that the presented algo-
+rithm can perform comparably to its closest literature variant
+(SOM) over a diverse set of datasets. Through this demon-
+stration, we also verify that the proposed hyper-parameters
+
+
+Asynchronously Trained Distributed Topographic Maps
+Dataset
+Classes
+Features
+Samples
+FMNIST
+10
+784
+59999
+10000
+Letters
+26
+16
+15000
+5000
+MNIST
+10
+784
+59999
+10000
+Sat. images
+6
+36
+4435
+2000
+Table 1. Description of the datasets used to evaluate the algorithm’s
+classiﬁcation performance and dataset-sensitivity. Sources of the
+datasets can be found in (Melka & Mariage, 2017)
+are robust to over a wide range of different datasets. That
+being said, we point out that the goal of this study is not
+to outperform the state of art, but to demonstrate a novel
+approach to training feature maps in an asynchronous fash-
+ion. Optimizing the algorithm’s performance (by further
+calibrating hyper-parameters, or increasing N) can be the
+subject of future studies.
+In order to more easily compare the results of the algorithm
+to the literature, we use a map of 34 × 34 units - resulting in
+N = 1156. We also set cd = 1000 which results on lower
+quantization error (see subsection 3.2).
+Classiﬁcation
+In this section we use the presented asyn-
+chronously trained feature map (AFM) in a classiﬁcation
+task. We purposefully use a simple classiﬁcation scheme -
+nearly identical to the one used in (Melka & Mariage, 2017).
+We do so for the sake of succinctness, and to allow for the
+meaningful comparison between our work and the results
+presented in (Melka & Mariage, 2017).
+1. Each map unit j is assigned with a class yj , which
+represents the sample class the that unit is most similar
+too. These classes are assigned to units after training
+has ﬁnished.
+2. Let Yi denote the label of sample i. We ﬁrst ﬁnd the
+most similar sample to wj:
+i∗(j) = argmin
+i
+|wj −si|
+(7)
+Then, unit j is given the class of sample i∗: yj ←Yi∗.
+3. Finally, to predict the label of a sample, we ﬁnd the
+sample’s BMU and the return the class of the BMU.
+Table 2 summaries the classiﬁcation performance of the
+algorithm, by presenting the mean and standard deviation
+over 5 runs. Additionally, the table presents the perfor-
+mance metrics of an SOM of 1200 units - as they were
+presented in (Melka & Mariage, 2017). Since the distance
+in performance in relatively small, we may consider that
+the presented algorithm performs comparably to an SOM of
+comparable size.
+The ﬁgure 7 demonstrates that classiﬁcation precision in-
+creases with increasing system size.
+Finally, table 3 allows us to assess the dependence of the
+heuristic search algorithm and the cascading mechanism on
+the structure of the data. Speciﬁcally, table 3 presents the
+number of weight update operations that took place after
+each sample - averaged throughout the entire sample pe-
+riod. The maximum relative pairwise distance between the
+reported number is approximately 1.5%, which implies that
+the intensity of cascading was comparable across all simula-
+tions. Table 3 also presents the search accuracy towards the
+end of training of each map - averaged for each dataset (for
+the deﬁnition of search accuracy see subsection 2.1). The
+search error varies between datasets, but generally remains
+low - with its maximum at 2.74% for MNIST. The variabil-
+ity of search accuracy across datasets may be attributed to
+the differences in the dimensionality of the datasets (since
+higher dimensional sample spaces may be harder to search).
+102
+103
+Map size (N)
+0.84
+0.86
+0.88
+0.90
+0.92
+Classiﬁcation precision
+in sample
+out of sample
+Figure 7. When used in classiﬁcation, the precision of the proposed
+map increases with map size N (both in and out of sample). The
+classiﬁcation scheme used is presented in subsection 3.4. For the
+experiment’s conﬁguration see section 3 - second paragraph.
+3.5. Computational complexity
+The previous experiments demonstrate that the presented
+algorithm can perform comparably to SOM for a hyper-
+parameter conﬁguration that obeys: e ∼N, pi ≤1, imax ∼
+N). This insight allows us to derive an upper bound of the
+algorithm’s complexity, as follows.
+For each of the imax ∼O(N) training sample, we do
+one exploitative search of e ∼O(N) iterations, followed
+by a greedy search of gi iterations. Since no unit can be
+visited twice during the greedy search it is gi ≤N and thus
+gi ∼O(N). Finally, after the search is over we proceed
+with cascading. Cascading sizes are maximized for pi = 1
+
+
+Asynchronously Trained Distributed Topographic Maps
+AFM
+Sparse-SOM
+Datasets
+Precision
+Recall
+Precision
+Recall
+FMNIST
+test
+78.0 ± 0.6
+76.8 ± 0.6
+training
+78.0 ± 0.3
+76.8 ± 0.4
+Letter
+test
+83.3 ± 0.2
+82.8 ± 0.3
+81.5 ± 0.5
+81.1 ± 0.5
+training
+86.0 ± 0.2
+85.7 ± 0.3
+83.7 ± 0.3
+83.7 ± 0.3
+MNIST
+test
+93.3 ± 0.1
+93.2 ± 0.2
+93.4 ± 0.2
+93.4 ± 0.2
+training
+93.1 ± 0.2
+93.1 ± 0.2
+93.5 ± 0.2
+93.5 ± 0.2
+SatImage
+test
+87.8 ± 0.4
+87.6 ± 0.6
+87.6 ± 0.3
+85.3 ± 0.4
+training
+91.7 ± 0.2
+91.5 ± 0.2
+92.3 ± 0.4
+92.4 ± 0.3
+Table 2. Comparing the classiﬁcation performance of the proposed feature map (AFM) to that of the self organising map (SOM) - using
+values from literature (Melka & Mariage, 2017). The average and the standard deviations of Recall and precision are calculates for ﬁve
+runs of AFM, for multiple values. The results are comparable with the performance of SOM. We use a 34 × 34 AFM with cd = 1000 -
+for the remaining hyper-parameter values see section 3 - second paragraph.
+(Vespignani et al., 1998) - for which the presented model
+can be exactly mapped to the sandpile model from statistical
+mechanics (Bak et al., 1988). It is well known that cascade
+sizes for the sandpile model scale like N (Bak et al., 1988).
+Since in the presented algorithm pi ≤1, the linear scaling
+of sandpile is a upper bound for our model, ¯ai ∼N (the
+overbar¯· denotes an upper bound).
+Dataset Max fractional
+cascade
+Number of weight
+updates / Sample
+Search error
+FMNIST
+0.75 ± 0.11
+3.16 ± 0.01
+2.46% ± 0.26%
+Letter
+0.76 ± 0.15
+3.18 ± 0.01
+1.62% ± 0.28%
+MNIST
+0.87 ± 0.11
+3.18 ± 0.01
+2.74% ± 0.74%
+SatImage
+0.78 ± 0.17
+3.21 ± 0.02
+1.62% ± 0.56%
+Table 3. Largest fractional cascade max Ai, the average cascade
+size avg(ai) and the average search error F for different dataset.
+Values are comparable across datasets, implying that algorithm
+behavior is not sensitive to the speciﬁcities of datasets.
+Based on the previous paragraph we can derive the com-
+putational complexity of the presented hyper-parameter
+parametrization (e ∼N, pi ≤1, imax ∼N):
+O(imax (e + ¯gi + ¯ai)) = O
+ N(N + N + N)
+
+= O(N 2)
+(8)
+Therefore the presented parametrization has a computational
+complexity of N 2 - which is in the same class as that of its
+closest literature variant (the SOM (Kohonen et al., 2000)).
+4. Discussion
+Currently, all state of art training algorithms for topographic
+maps (and their variants) rely on densely connected neurons.
+This is in spite of the scalability advantages that sparse
+topologies have to offer (Mocanu et al., 2018). To boost the
+computational performance of topographic maps, the state
+of art relies on distributed map-reduce platform (Sarazin
+et al., 2014; Liu et al., 2018). However such solutions
+require synchronization and central entity - and are thus
+vulnerable to the limitations of the communication channel
+(i.e. delays, bandwidth, reliability) and slow workers (Mnih
+et al., 2016; Li et al., 2019; Fernando et al., 2017).
+These limitations can be overcome by enabling the asyn-
+chronous execution of the training process. Broadly speak-
+ing, the challenge in enabling the asynchronous execution
+of an algorithm lies in ensuring a sufﬁciently low level of de-
+pendencies between the algorithm’s segments - a.k.a. loose
+coupling. To achieve that, we propose a topographic map
+training algorithm distributes all computation to a swarm
+of autonomous units. Each unit is only aware of a few
+pre-deﬁned neighbors, with which it interacts infrequently -
+resulting in loose coupling.
+We investigate the behavior of this scheme empirically on
+MNIST, and prescribe a concrete hyper-parameter conﬁg-
+uration in the process. We then showcase the potential of
+the presented approach in a classiﬁcation task, in which the
+algorithm is found to perform comparably to a SOM. Addi-
+tionally, we demonstrate that the prescribed hyper-parameter
+conﬁguration is not strongly dependent on map size, or on
+the structure of the data - see subsections 3.3 and 3.4. Fi-
+nally, we are able to analytically derive an upper bound
+for the computational complexity 3.5 under the prescribed
+hyper-parameterization, which is found to equal that of syn-
+chronously trained approaches in the domain (SOM).
+Future works may focus on enhancing the components of
+the proposed algorithm, e.g. on a more effective distributed
+search method. Another option would be to consider alter-
+native cascading mechanisms, that can be subjected to faster
+external drive - which would result in higher data through-
+put (that is, more samples may be processed simultaneously
+on different units). Other works may focus on industrial
+applications which may beneﬁt by increasing the maximum
+tractable map size.
+
+
+Asynchronously Trained Distributed Topographic Maps
+References
+Bak, P., Tang, C., and Wiesenfeld, K. Self-organized criti-
+cality. Physical review A, 38(1):364, 1988.
+Barri`ere, L., Fraigniaud, P., Kranakis, E., and Krizanc, D.
+Efﬁcient routing in networks with long range contacts. In
+International Symposium on Distributed Computing, pp.
+270–284. Springer, 2001.
+Fernando, C., Banarse, D., Blundell, C., Zwols, Y., Ha, D.,
+Rusu, A. A., Pritzel, A., and Wierstra, D. Pathnet: Evolu-
+tion channels gradient descent in super neural networks.
+arXiv preprint arXiv:1701.08734, 2017.
+Girau, B. and Torres-Huitzil, C. Fault tolerance of self-
+organizing maps.
+Neural Computing and Applica-
+tions, Oct 2018.
+ISSN 1433-3058.
+doi: 10.1007/
+s00521-018-3769-6. URL https://doi.org/10.
+1007/s00521-018-3769-6.
+Kleinberg, J. M. Navigation in a small world. Nature, 406
+(6798):845–845, 2000.
+Kohonen, T. Essentials of the self-organizing map. Neural
+networks, 37:52–65, 2013.
+Kohonen, T., Kaski, S., Lagus, K., Salojarvi, J., Honkela, J.,
+Paatero, V., and Saarela, A. Self organization of a mas-
+sive document collection. IEEE Transactions on Neural
+Networks, 11(3):574–585, May 2000. ISSN 1045-9227.
+doi: 10.1109/72.846729.
+Kohonen, T., Kaski, S., Lagus, K., Salojarvi, J., Honkela, J.,
+Paatero, V., and Saarela, A. Self organization of a mas-
+sive document collection. IEEE Transactions on Neural
+Networks, 11(3):574–585, May 2000. ISSN 1045-9227.
+doi: 10.1109/72.846729.
+Kohonen, T., Schroeder, M. R., and Huang, T. S. (eds.). Self-
+Organizing Maps. Springer-Verlag, Berlin, Heidelberg,
+3rd edition, 2001. ISBN 3540679219.
+Li, A., Spyra, O., Perel, S., Dalibard, V., Jaderberg, M., Gu,
+C., Budden, D., Harley, T., and Gupta, P. A generalized
+framework for population based training. In Proceedings
+of the 25th ACM SIGKDD International Conference on
+Knowledge Discovery & Data Mining, pp. 1791–1799,
+2019.
+Li, X., Gasteiger, J., and Zupan, J. On the topology distor-
+tion in self-organizing feature maps. Biological Cyber-
+netics, 70(2):189–198, 1993.
+Liu, Y., Sun, J., Yao, Q., Wang, S., Zheng, K., and Liu,
+Y.
+A scalable heterogeneous parallel som based on
+mpi/cuda. In Zhu, J. and Takeuchi, I. (eds.), Proceed-
+ings of The 10th Asian Conference on Machine Learning,
+volume 95 of Proceedings of Machine Learning Research,
+pp. 264–279. PMLR, 14–16 Nov 2018. URL http://
+proceedings.mlr.press/v95/liu18b.html.
+Malcai, O., Shilo, Y., and Biham, O. Dissipative sandpile
+models with universal exponents. Physical Review E, 73
+(5):056125, 2006.
+Martel, C. and Nguyen, V. Analyzing kleinberg’s (and
+other) small-world models. In Proceedings of the twenty-
+third annual ACM symposium on Principles of distributed
+computing, pp. 179–188, 2004.
+Melka, J. and Mariage, J.-J. Efﬁcient implementation of
+self-organizing map for sparse input data. In IJCCI, pp.
+54–63, 2017.
+Milgram, S. The small world problem. Psychology today, 2
+(1):60–67, 1967.
+Mnih, V., Badia, A. P., Mirza, M., Graves, A., Lillicrap,
+T., Harley, T., Silver, D., and Kavukcuoglu, K. Asyn-
+chronous methods for deep reinforcement learning. In
+International conference on machine learning, pp. 1928–
+1937, 2016.
+Mocanu, D. C., Mocanu, E., Stone, P., Nguyen, P. H.,
+Gibescu, M., and Liotta, A. Scalable training of arti-
+ﬁcial neural networks with adaptive sparse connectivity
+inspired by network science. Nature communications, 9
+(1):1–12, 2018.
+Qiu, J., Wu, Q., Ding, G., Xu, Y., and Feng, S. A survey
+of machine learning for big data processing. EURASIP
+Journal on Advances in Signal Processing, 2016(1):67,
+2016.
+Sarazin, T., Azzag, H., and Lebbah, M. Som clustering using
+spark-mapreduce. In 2014 IEEE International Parallel
+Distributed Processing Symposium Workshops, pp. 1727–
+1734, May 2014. doi: 10.1109/IPDPSW.2014.192.
+Vespignani, A., Dickman, R., Mu˜noz, M. A., and Zapperi, S.
+Driving, conservation, and absorbing states in sandpiles.
+Physical review letters, 81(25):5676, 1998.
+Wang, H., Zhang, N., and Cr´eput, J.-C. A massively parallel
+neural network approach to large-scale euclidean travel-
+ing salesman problems. Neurocomputing, 240:137–151,
+2017.
+
+
+Asynchronously Trained Distributed Topographic Maps
+A. Appendix
+We assess the scalability of the heuristic search (see
+Subsection 2.1) - under the proposed hyperparameterisa-
+tion scheme (see Section 3, paragraph ‘Default conﬁgura-
+tion’) - experimentally. Speciﬁcally, we use the MNIST
+dataset and calculate the search error (deﬁned in Sub-
+section 2.1), and topological & quantisation errors (de-
+ﬁned in Section 3) for maps of inreasing sizes (N ∈
+{100, 225, 400, 625, 900, 1600, 2500, 3600}). For each N
+value we simulate 10 maps.
+The results of the experiment are depicted in ﬁgure 8, which
+depicts the average search, topological, and quantisation
+errors - along with the respective error bands. The leftmost
+subplot demonstrates that search error remains on the same
+level for increasing N, which implies that the proposed
+search is scalable with respect to system size (for the given
+hyperparametrisation and dataset). Additionally, the centre
+and right subplots depict both quantisation and topological
+error decreasing along with N. These observations lead us
+to the conclusion that the proposed search scheme is scalable
+with respect to size - in the sense that the map’s topological
+and approximation quality to improve as N increases.
+
+
+Asynchronously Trained Distributed Topographic Maps
+103
+104
+Search iterations (e)
+0.006
+0.008
+0.010
+0.012
+0.014
+0.016
+Search error (F)
+103
+104
+Search iterations (e)
+0.25
+0.30
+0.35
+0.40
+0.45
+0.50
+Topological error (T)
+103
+104
+Search iterations (e)
+1200
+1225
+1250
+1275
+1300
+1325
+Quantisation error (Q)
+Figure 8. The efﬁcacy of the presented heuristic search scheme in not sensitive to map size N - which allows for the map quality to
+improve as N increases. The left subplot reveals that the search error remains around the same level, while the centre and right subplots
+reveal that topological and quantisation errors decrease along with N. Error bands are placed at one standard deviation, and are not
+visually discernable for the rightmost (green) subplot. 10 maps were trained for each N value, while the number of search iterations is set
+to e = 3N. The remaining details of the experiment setup can be found in Section 3, paragraph ”Default conﬁguration”.

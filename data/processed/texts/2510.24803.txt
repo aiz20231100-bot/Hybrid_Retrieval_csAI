@@ -1,0 +1,3304 @@
+MASPRM: Multi-Agent System Process Reward Model
+Milad Yazdani1, Mahdi Mostajabdaveh2*, Zirui Zhou2, Ying Xiong2
+1Department of Electrical and Computer Engineering, University of British Columbia, Vancouver, BC V6T1Z4, Canada
+2Huawei Technologies Canada, Burnaby, BC V5C6S7, Canada
+Correspondence: mahdi.mostajabdaveh1@huawei.com
+Abstract
+Inference-time search over multi-agent systems
+(MAS) wastes compute when it cannot identify
+which agent’s intermediate message advanced
+progress. We present the Multi-Agent System
+Process Reward Model (MASPRM), which
+scores routed transcripts (ordered sequences of
+messages between agents) and acts as an in-
+ference controller for step-level beam search
+(SBS) and Monte Carlo Tree Search (MCTS).
+MASPRM is trained from multi-agent MCTS
+rollouts labeled only with terminal outcome re-
+wards, without human step-level annotations.
+We evaluate on GSM8K, MATH, MMLU,
+and LOGIQA. Under matched scorer size and
+comparable MCTS budget, MASPRM ex-
+ceeds a size-matched ORM by +2.0 to +3.0
+points at 1.5B and +4.1 to +14.5 at 7B across
+all four benchmarks, with additional scorer-
+scaling gains over policy likelihood at 7B (avg
++13.4 under MCTS). MASPRM also improves
+ranking quality, reducing Hit@1 to Hit@5
+gaps by up to 10.3 points, with the largest
+gains under stepwise search that uses interme-
+diate decisions. Code: https://github.com/
+milad1378yz/MASPRM
+1
+Introduction
+Single-pass LLM reasoning is unreliable when a
+problem requires exploring alternatives, justify-
+ing choices, and coordinating subtasks (Wei et al.,
+2022; Zhou et al., 2023; Wang et al., 2023a; Zhang
+et al., 2025; Zhou et al., 2026). Multi-agent systems
+(MAS) address this limitation by running multiple
+agents that interact over a communication graph
+specifying who can message whom, often with
+distinct roles and capabilities. We call an MAS
+execution’s ordered sequence of routed messages
+a routed transcript: at each step, an acting agent
+proposes an action and routes it to recipients. This
+structure naturally supports inference-time proce-
+dures that allocate compute to exploration, verifica-
+*Corresponding Author
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Inference tokens (×103)
+50
+60
+70
+80
+Hit@1 on GSM8K (%)
+Policy likelihood
+ORM-1.5B
+ORM-7B
+MASPRM-1.5B
+MASPRM-7B
+SC@5
+SBS(5,1)
+SBS(5,3)
+MCTS(10,3)
+82.9 (MASPRM-7B)
+69.8 (MASPRM-1.5B)
+68.4 (ORM-7B)
+66.8 (ORM-1.5B)
+Scorer
+Method
+Figure 1: GSM8K Hit@1 vs. inference tokens. Color
+denotes scorer and marker denotes inference method.
+Under matched scorer size at comparable inference to-
+kens, MCTS(10, 3)+MASPRM exceeds ORM by +3.0
+Hit@1 at 1.5B and +14.5 at 7B, reaching 82.9 with the
+7B scorer.
+tion, and ranking, rather than commit to one routed
+transcript. Indeed, the community has found that
+how compute is spent at inference can matter as
+much as, or more than, parameter count: expand-
+ing and scoring partial solutions yields substantial
+gains in correctness and confidence (Snell et al.,
+2025; Lightman et al., 2024). This is especially
+relevant for smaller LLMs, whose low call cost
+makes multi-agent search feasible and structured
+exploration effective (Guan et al., 2025; Wang et al.,
+2023b; Yao et al., 2023). Yet realizing these gains
+in MAS depends on reliable guidance over long
+routed transcripts.
+Despite this promise, inference search in MAS
+remains unreliable for two reasons. First, answer-
+level methods such as majority voting and veri-
+fier reranking help choose among completed solu-
+tions (Wang et al., 2023b; Lightman et al., 2024),
+but they do not by themselves identify which
+agent’s intermediate message advanced progress.
+Second, errors can accumulate across steps. With-
+out scoring routed transcript prefixes, search may
+keep extending prefixes that are likely under the
+policy but misaligned with eventual correctness,
+wasting compute on unproductive directions. Prior
+1
+arXiv:2510.24803v3  [cs.MA]  15 Jul 2026
+
+
+...
+...
+Input 
+Agent 
+Agent 
+Agent 
+Agent 
+Policy of acting agent 
+Communication graph G
+...
+...
+...
+...
+Backpropagation
+Tree Edge
+...
+Preference
+Pairs
+Terminal rewards only backprop
+No human step labels
+MASPRM value head 
+trained with Bradley-Terry ranking loss
+A: Generic multi-agent execution
+B: Training MASPRM from search rollouts
+C: Inference-time guidance
+…
+Promising (continue)
+Poor (prune)
+Expand with policy 
+MCTS(
+)
+Expand 
+↻Repeat ×
+...
+...
+Back up
+SBS(
+)
+Sample 
+Top-
+...
+...
+...
+...
+...
+Figure 2: MASPRM pipeline. A: scheduled agents act over graph G from local views. B: MAS-MCTS backs up
+terminal rewards to edges, forms sibling preferences, and trains Vϕ with Bradley-Terry loss. C: MCTS and SBS
+expand policy-sampled successors and rank them with Vϕ to continue promising branches and prune poor ones.
+work in single-agent settings shows that feedback
+on intermediate reasoning can guide inference-time
+search toward trajectories where improvement is
+more likely (Setlur et al., 2025; Lightman et al.,
+2024; Chen et al., 2024; Guan et al., 2025; Zeng
+et al., 2025). However, extending these ideas to
+MAS is not straightforward.
+We introduce MASPRM, a process reward
+model for MAS. Unlike prior PRMs that score
+single-agent reasoning chains, MASPRM scores
+routed transcript prefixes and agents’ proposed ac-
+tions, enabling agent-aware credit assignment in
+collaborative settings. These scores act as a con-
+troller during inference, guiding expansion and
+compute allocation over candidate agent rollouts.
+Our main experiments study predefined MAS con-
+figurations on verifiable terminal-answer tasks.
+Developing PRMs for MAS raises four chal-
+lenges beyond single-agent reasoning. (1) Score
+granularity: a “step” is an agent action (planning,
+routing, tool use) rather than a small reasoning act,
+so the PRM should score routed transcript prefixes
+rather than tokens. (2) Schedule and graph: the
+value of a transcript depends on the order agents act
+and what messages route where. (3) Heterogene-
+ity: agents differ in role, tool access, and prompts,
+so intermediate prefixes come from different dis-
+tributions. (4) Partial observability: each agent
+observes only its local view of the global routed
+transcript.
+To address these challenges, we let each act-
+ing agent propose candidate actions from its local
+view, while the MASPRM scorer conditions on
+the full routed transcript prefix. This preserves
+partial observability for generation but provides a
+consistent global routed-transcript representation
+for guiding inference-time search. The scorer also
+conditions on the acting agent’s identity and the
+transcript ordering, so heterogeneity and the sched-
+ule are encoded in the input rather than handled
+by a separate mechanism. These design choices
+draw on lessons from structured exploration (Wang
+et al., 2023b; Yao et al., 2023; Snell et al., 2025)
+and search guided by verifiers (Lightman et al.,
+2024). They also remain compatible with implicit
+process signals learned from outcome supervision
+alone (Cui et al., 2026).
+Contributions.
+• We formulate MASPRM, a process reward
+model that scores agent actions and routed tran-
+script prefixes.
+• We propose MAS-MCTS supervision: backing
+up terminal rewards to agent-action values trains
+MASPRM without human step-level annota-
+tions.
+• We introduce MASPRM-guided SBS and MCTS
+over agent rollouts in predefined MAS, improv-
+ing decision quality and pruning unproductive
+branches.
+Figure 1 shows the main GSM8K tradeoff: un-
+der matched scorer size, MCTS(10, 3)+MASPRM
+beats ORM by 3.0 Hit@1 at 1.5B and 14.5 at 7B,
+reaching 82.9 with the 7B scorer.
+2
+Related Work
+Recent work on LLM-based MAS studies how
+agent roles, prompts, communication graphs, and
+tool-routing choices affect coordination and effi-
+ciency (Zhang et al., 2025; Zhou et al., 2026).
+DYLAN studies dynamic agent networks with di-
+2
+
+
+verse agents, agent communication, and adaptive
+scheduling (Liu et al., 2024). This line is comple-
+mentary to our work: rather than proposing a new
+communication topology or role set, our main ex-
+periments hold the MAS configuration fixed and
+study how to allocate inference-time computation
+over candidate routed transcripts.
+Self-consistency,
+Tree-of-Thought,
+verifier-
+guided decoding, and test-time compute scaling
+show exploration and selection improve LLM rea-
+soning (Wang et al., 2023b; Yao et al., 2023; Light-
+man et al., 2024; Snell et al., 2025). Search has
+also been studied in multi-agent settings. For exam-
+ple, MASTER coordinates agent recruitment and
+communication using an LLM-specialized MCTS
+procedure (Gan et al., 2025), and PLANGEN in-
+tegrates inference-time algorithms such as Best-
+of-N, Tree-of-Thought, and REBASE with spe-
+cialized agents for planning and reasoning (Par-
+mar et al., 2025). These works show that search
+and adaptive inference are useful for MAS, but
+both MASTER and PLANGEN target orchestra-
+tion over varying agent populations; MASPRM
+instead holds the MAS fixed and learns a process
+value model over routed transcript prefixes to guide
+stepwise expansion and pruning, so the methods
+are not directly compatible as baselines.
+PRMs provide dense feedback over intermediate
+reasoning and have been used to guide search and
+prune unpromising branches, primarily in single-
+agent reasoning chains (Setlur et al., 2025; Light-
+man et al., 2024). To reduce labeling cost, sev-
+eral works derive process supervision from search
+traces. ALPHAMATH ALMOST ZERO uses MCTS
+rollouts to construct step-level targets (Chen et al.,
+2024), RSTAR-MATH pairs PRMs with MCTS for
+math reasoning (Guan et al., 2025), and MATH-
+SHEPHERD constructs step-level supervision for
+math without human annotations (Wang et al.,
+2024). More general PRMs such as VERSAPRM
+study cross-domain usefulness (Zeng et al., 2025),
+while PROCESSBENCH evaluates whether process
+feedback can localize reasoning errors (Zheng et al.,
+2025). These methods are largely developed for
+single-agent chains where a single linear prefix de-
+fines the intermediate state. In MAS, messages are
+routed and agents act from different local views,
+so evaluating a partial state must condition on both
+the routed transcript and the acting agent.
+Step-level process refinement provides interme-
+diate feedback for LLM-agent trajectories (Xiong
+et al., 2024). ARMAP learns reward models from
+environment interaction and combines them with
+planning to guide autonomous agents (Chen et al.,
+2025). LLM-judge approaches assign credit to
+agents using natural-language critics or decom-
+posed team rewards (Lin et al., 2025; Nagpal
+et al., 2025). Xi et al. (2026) proposes AGENT-
+PRM for process-reward learning in single-agent
+environment-interaction settings. MASPRM in-
+stead targets multi-agent inference-time search: it
+scores routed transcripts of communications be-
+tween heterogeneous agents and is used as a search
+controller during SBS and MCTS, not as a training
+signal for the policy.
+3
+Preliminaries
+Each instance consists of a question x and a ground
+truth answer y⋆. We model an MAS execution as
+a finite routed transcript, i.e., an ordered list of
+routed messages along the communication graph,
+ending when a message is routed to the terminal
+node. Correctness is assessed only at termination.
+We model the system as a directed graph G =
+ V ∪{q, sink}, E
+
+,
+V = {0, . . . , M−1}, where
+each i ∈V is an agent, q is a non-acting question
+node that holds x, and sink is a non-acting terminal
+node with no outgoing edges. An edge (i→j) ∈
+E means i routes a message to j. For u ∈V ∪
+{q, sink} define Nin(u) = { v : (v →u) ∈E }
+and Nout(u) = { w : (u→w) ∈E }.
+We use a fixed schedule σ : {1, . . . , D} →V.
+At turn t ∈{1, . . . , D}, if the rollout has not yet
+terminated, the acting agent is it = σ(t). Roll-
+outs run for at most D turns and terminate once a
+message is routed to sink. If the rollout has not ter-
+minated earlier, the final scheduled action at t = D
+routes to sink. We use pre-turn indexing and let
+T ≤D+1 denote the terminal index such that
+sT is terminal. In our experimental MAS configu-
+rations, termination occurs immediately after the
+final scheduled turn (T = D+1), though earlier
+stopping is allowed. This formalization matches
+the main experiments, while App. C.6 considers a
+separate conditional scheduler variant.
+Let
+Ht−1
+be
+the
+routed
+transcript
+af-
+ter
+t−1
+turns,
+an
+ordered
+list
+of
+triples
+(speaker, message, recipient)
+consistent
+with
+G, with H0 = ∅. We define the state space S
+and represent a state as st =
+ x, Ht−1, it
+
+∈S.
+The initial search state is s1(x) = (x, ∅, σ(1)).
+Because routing limits information flow, agents
+do not observe the full routed transcript Ht−1.
+For each agent i ∈V, let H(i)
+t−1 denote its local
+3
+
+
+view: the ordered subsequence of Ht−1 containing
+only tuples where i is the speaker or recipient.
+In what follows, the acting agent conditions
+action proposals on (x, H(it)
+t−1, it), while the default
+MASPRM scorer conditions on (x, Ht−1, it).
+Thus, MASPRM has access to the full routed
+transcript prefix, while agent policies operate
+under partial observability through their local
+views H(i)
+t−1. In the local-observability ablation, the
+scorer input is H(it)
+t−1 plus the acting agent’s new
+output, rather than Ht−1. At st, agent it chooses
+an action at ∈Ait(st), a (message, recipient)
+pair where the recipient must be in Nout(it).
+Here Ai(s) is the set of valid actions for agent
+i at state s, yielding the deterministic successor
+st+1 = next(st, at). Routing affects which agents
+observe messages, but turn-taking is fixed by σ.
+If the recipient is not sink, then it+1 = σ(t+1).
+Otherwise, it+1 = sink, st+1 is terminal, and the
+rollout ends at T = t+1.
+For a terminal state sT , let ˆy(sT ) be the extracted
+final answer. We define R(sT ) = +1 iff ˆy(sT ) =
+y⋆, and R(sT ) = −1 otherwise. For any non-
+terminal state s, set R(s) = 0. For any state s and
+valid action a, V (s) = E[R(sT ) | s] , Q(s, a) =
+E[R(sT ) | s, a] , where the expectation is over fu-
+ture actions under the rollout distribution induced
+by the search procedure. During training, these
+actions are sampled via the search policy (UCT
+selection at expanded nodes and policy sampling
+at frontiers). At inference, the learned process
+value head guides the improved search behavior.
+Here V (s) and Q(s, a) denote the true popula-
+tion values under this rollout distribution.
+Un-
+der deterministic transitions and terminal rewards,
+Q(s, a) = V
+ next(s, a)
+
+.
+Each agent i is paired with a policy π(i)(· |
+x, H(i)
+t−1) over actions, conditioned only on its local
+view. During search, we form a finite candidate set
+Ct ⊂Ait(st) by sampling from π(it)(· | x, H(it)
+t−1).
+As a baseline scorer, we use policy likelihood guid-
+ance based on a length-normalized log-likelihood
+of each candidate action under the acting agent
+(App. B.9). A process value head Vϕ : S →R
+is the learned MASPRM value estimate for any
+state, whether intermediate or terminal. Because
+Vϕ is defined over states st = (x, Ht−1, it), each
+score is tied to the acting agent at that step. At
+inference, MASPRM scores the action a by the
+learned estimate Vϕ
+ next(s, a)
+
+.
+For each visited edge (s, a) we maintain a visit
+count N(s, a) ∈N and a running value sum
+W(s, a)∈R. The MCTS tree estimate backed up
+from simulations is bQ(s, a) = W(s, a)/N(s, a).
+All successors generated during search must re-
+spect E (equivalently, Nout) and the schedule σ.
+For search hyperparameters, we use Nsim simula-
+tions per instance and Cmax as the per-node can-
+didate cap. Rollouts have maximum depth D, a
+single pass through the MAS schedule.
+4
+MASPRM
+MASPRM is a process reward model that assigns
+values to intermediate MAS states via a shared
+head Vϕ. Fig. 2 summarizes the pipeline: agents
+generate candidate actions under the communica-
+tion graph, MAS-MCTS converts terminal rewards
+into preference pairs for training, and the lower
+inference band shows the shared policy expansion
+and value scoring used by both MCTS and SBS.
+We train Vϕ from MAS-MCTS rollouts by back-
+ing up terminal rewards into action values bQ(s, a)
+and using them as targets for successor states with
+no manual annotations. At inference, MASPRM
+guides MCTS via upper confidence bounds applied
+to trees (UCT) selection (Eq. (1)) and guides SBS
+by value-based ranking of successors.
+4.1
+MASPRM training
+Selection uses UCT (Kocsis and Szepesvári, 2006)
+with constant cUCT > 0. Let Aexp
+it (st) = { a ∈
+Ait(st) : N(st, a) > 0 } denote the expanded ac-
+tions at st.
+a⋆= arg
+max
+a∈Aexp
+it
+(st)
+(
+bQ(st, a)
++ cUCT
+v
+u
+u
+tln
+ 1 + P
+b∈Aexp
+it
+(st) N(st, b)
+
+1 + N(st, a)
+)
+(1)
+Unexpanded actions are introduced during expan-
+sion via candidate sampling.
+We generate su-
+pervision by running MAS-MCTS under graph
+constraints G and fixed schedule σ. At a non-
+terminal state st, expansion samples a candidate set
+Ct ⊂Ait(st) from π(it)(· | x, H(it)
+t−1) and creates
+successors s′ = next(st, a) for a ∈Ct. Simu-
+lations are evaluated only at terminal leaves, us-
+ing vleaf(sT ) = R(sT ) ∈{−1, +1}, and then
+backed up to update (N, W, bQ). We omit virtual
+visit initialization during training to avoid biasing
+the Monte Carlo targets. A summary appears in
+Alg. 1 (App. E).
+After rollouts, for each visited parent state st and
+each expanded action a ∈Ct with N(st, a) > 0
+and child s′ = next(st, a), we define a process
+target yproc(s′)
+≜
+bQ(st, a)
+∈[−1, 1], a
+4
+
+
+Monte Carlo estimate of Q(st, a) backed up from
+terminal rewards. Collecting these labeled post
+action states yields the process dataset Dproc =
+{(s′, yproc(s′))}. We then construct a preference
+pair dataset by comparing sibling successors within
+each expanded parent state. Let Succ(st) = { s′ =
+next(st, a) : a ∈Ct and N(st, a) > 0 } denote
+the set of expanded children of st. We create pref-
+erence pairs
+Dpref =
+[
+st
+{ (s+, s−)| s+, s−∈Succ(st),
+yproc(s+) > yproc(s−) }
+(2)
+We train Vϕ using a Bradley-Terry ranking
+loss (Ouyang et al., 2022). We use ranking rather
+than pointwise regression because at inference the
+scorer is used to rank candidate successor states
+during search.
+pϕ
+ s+ ≻s−
+=
+exp(Vϕ(s+))
+exp(Vϕ(s+)) + exp(Vϕ(s−)),
+min
+ϕ
+1
+|Dpref|
+X
+(s+,s−)∈Dpref
+−log pϕ
+ s+ ≻s−
+.
+Because comparisons are formed among siblings,
+each preference pair comes from the same parent
+state st and differs only in the branching action.
+As a baseline that uses only terminal outcomes,
+we train an outcome reward model (ORM) Γ on the
+same rollouts (App. B.10) and use it as an outcome
+scorer in our experiments.
+4.2
+Inference guidance
+For inference search, we score successor states
+s′ = next(st, a) with Vϕ(s′) or a policy likeli-
+hood score ˜ψpol(a | st) (App. B.9). In MCTS,
+newly created edges may be initialized with a vir-
+tual visit by setting N(st, a) = 1 and W(st, a) =
+bQ(st, a)
+=
+fINIT(st, a), where fINIT(st, a)
+=
+Vϕ(s′) (MASPRM) or fINIT(st, a) = ˜ψpol(a | st).
+At inference, MCTS uses UCT selection (Eq. (1)).
+At a frontier non-terminal state st, we sample
+Ct from π(it)(· | x, H(it)
+t−1) and create successors
+s′ = next(st, a) for a ∈Ct (with virtual visit
+initialization as above). Simulation leaves are eval-
+uated by bootstrap vleaf(s) = Vϕ(s) (App. B.9
+gives the policy likelihood definition), and values
+are backed up to update (N, W, bQ). We decode by
+greedily following the child with maximal bQ from
+the initial state s1(x). Alg. 2 (App. E) summarizes
+the procedure.
+For SBS, at depth t, we expand each beam state
+s ∈Bt by sampling B2 actions and scoring each
+successor by the chosen scorer. Here Bt is the beam
+at depth t, B2 is the number of sampled actions per
+beam state, and B1 is the beam width. We pool
+all |Bt| B2 successors and keep the top-B1 to form
+Bt+1, repeating for t = 1, . . . , D, and return the
+highest scoring terminal state in the final beam.
+Alg. 3 (App. E) summarizes SBS.
+5
+Experiments & Results
+We design our experiments around three questions.
+RQ1: Does MASPRM improve Hit@1 over pol-
+icy likelihood under matched within-method agent-
+call and token budgets, especially for SBS and
+MCTS? RQ2: How does MASPRM guidance
+compare to a conventional ORM under matched
+search method and, where applicable, matched
+scorer size? RQ3: Does a MASPRM trained
+on one dataset/agent transfer zero-shot to other
+datasets/agents and improve Hit@1 under matched
+within-method budgets? We also analyze Hit@k
+sensitivity to illustrate the robustness of MASPRM
+(Table 5, App. C.2) and run a GSM8K DYLAN-
+inspired dynamic scheduler experiment (App. C.6).
+5.1
+Overall experimental setup
+We evaluate on GSM8K (Cobbe et al., 2021)
+and MATH (Hendrycks et al., 2021b) for free-
+form math reasoning, and on MMLU (Hendrycks
+et al., 2021a) and LOGIQA (Liu et al., 2020) (de-
+tails in App. B.1). These tasks are judged by ex-
+tracted final answers, with extraction and normal-
+ization described in App. B.2. We use fixed per-
+dataset MAS configurations from App. D (roles,
+depth D, graph). Unless stated otherwise, agents
+are Qwen2.5-1.5B-Instruct.
+Learned scorers
+(MASPRM and ORM) use Qwen2.5-1.5B/7B
+as the base model.
+We compare policy likeli-
+hood guidance (App. B.9) with learned scorers.
+MASPRM Vϕ scores intermediate MAS states,
+whereas the outcome reward model (ORM) Γ
+scores only terminal outputs. Since ORM is defined
+only on completed transcripts, we use it for termi-
+nal scoring or MCTS leaf evaluation. We exclude
+ORM from SBS because SBS must rank interme-
+diate successors at each depth. Completing each
+successor before ranking would change the com-
+pute budget. Both are trained from MAS-MCTS
+rollouts labeled with terminal reward. MASPRM
+uses Bradley-Terry preference ranking (Sec. 4.1),
+while ORM uses terminal outcome supervision
+(App. B.10). Additional training details appear in
+App. B. App. C defines the additional experiments
+and reports their main observations. Training time
+5
+
+
+details appear in App. B.8. All datasets and pre-
+trained model checkpoints used in this work are
+publicly released research artifacts, and we use
+them only for scientific training and evaluation un-
+der their respective licenses and terms of use.
+For each dataset, we keep prompts and graphs
+fixed (App. D) and vary only the inference algo-
+rithm and the scorer. Scorers are ˜ψpol, Γ, or Vϕ
+(Sec. 4.2). Single-Pass executes the MAS schedule
+once and returns the final extracted answer. Self-
+Consistency@K (SC@K) (Wang et al., 2023b)
+runs K=5 independent MAS rollouts and selects
+the final answer by unweighted or scorer-weighted
+aggregation (App. B). SBS(B2, B1) keeps a beam
+of width B1, expands each beam state with B2 sam-
+pled actions per step, and returns the highest scor-
+ing terminal candidate. MCTS(Nsim, Cmax) runs
+UCT search and decodes by following the child
+with maximal backed up value from the initial state
+s1(x) (Sec. 4.2, App. E).
+We report Hit@1 (exact-match after normaliza-
+tion), token cost (TOK (×103)), and agent calls
+(AC). Budget comparisons use matched within-
+method AC/TOK: variants inside a given SC@5,
+SBS, or MCTS block share the same agent model
+with comparable AC/TOK. We do not treat dif-
+ferent search methods (e.g., SC@5 vs. MCTS) as
+matched AC/TOK comparisons. Reward model
+calls (RC) are deterministically recoverable from
+AC and inference hyperparameters; App. B.6 gives
+details. For methods that output multiple ranked
+terminal candidates, we also report Hit@k for
+k ∈{1, 3, 5} (Sec. 5.4), i.e., the fraction of ex-
+amples whose correct answer appears among the
+top-k candidates. The ranked candidates are com-
+plete terminal paths (full routed transcripts). For
+step-level scorers such as MASPRM or policy like-
+lihood, the terminal candidate score is the mean of
+the step scores along the path. Terminal-only scor-
+ers score the completed transcript. Unless stated,
+results use seed 42 and we average stochastic meth-
+ods over three seeds (14, 24, 42). Hardware details
+are in App. B.7.
+5.2
+MASPRM improves MAS within budget
+We evaluate MASPRM across datasets and infer-
+ence procedures (Single-Pass, SC@5, SBS(5,1),
+SBS(5,3), MCTS(10,3)). We compare three scor-
+ing signals:
+policy likelihood, an ORM, and
+MASPRM (with 1.5B vs. 7B scorer sizes where
+applicable). Table 1 reports Hit@1, TOK, and
+AC. Within each search-method block, the agent is
+fixed across rows (Qwen2.5-1.5B-Instruct), and
+scorer variants use comparable AC/TOK. Cross-
+method rows are context only.
+Table 1 shows different patterns by search method
+and scorer size.
+Matched-size MCTS. The scorer-vs-scorer
+comparison
+at
+matched
+scorer
+size
+under
+MCTS(10, 3) is consistently positive on all four
+datasets: MASPRM exceeds ORM by +2.0 to
++3.0 points at 1.5B and +4.1 to +14.5 at 7B under
+comparable MCTS budget. SC@5. MASPRM-
+1.5B improves over policy likelihood on all four
+datasets, but ORM-1.5B is tied or ahead by 0.0 to
+1.2 points. SBS. MASPRM-7B improves over
+policy likelihood on all four datasets for both
+SBS(5,1) and SBS(5,3), while MASPRM-1.5B
+gives smaller gains, especially on MATH and
+LOGIQA; for SBS(5,1), these two gains are 1.5
+and 0.2 points, and for SBS(5,3), they are 0.8 and
+0.3 points. Scorer scaling. MASPRM-7B with
+fixed 1.5B agents improves over policy likelihood
+by an average of +13.4 under MCTS(10, 3),
+with comparable per-method averages of +13.4
+for SBS(5,1), +12.9 for SBS(5,3), and +8.5 for
+SC@5. Figure 1 visualizes the GSM8K Hit@1
+versus token-cost tradeoff for these scorer and
+search choices.
+Cost.
+Although MASPRM
+adds reward-model calls, one scorer call is much
+cheaper than one agent generation on GSM8K
+(0.16s vs. 18.94s; App. C.9).
+Small-agent MAS vs. larger single-agent base-
+lines. As a contextual, non-compute-matched scale
+check (App. C.1), MCTS(10,3)+MASPRM with
+1.5B agents improves over the direct single-agent
+Qwen2.5-1.5B-Instruct baseline on all four
+tasks (82.9/51.8/75.2/45.5 vs. 41.9/17.5/34.3/25.8
+for GSM8K/MATH/MMLU/LOGIQA), but on
+LOGIQA remains below GPT-4o-mini (50.1) and
+Mistral 24B-Instruct (56.4); see Table 4 in
+App. C.1.
+5.3
+Zero-shot OOD: Datasets & Agents
+We study two forms of zero-shot generalization.
+5.3.1
+Cross-dataset transfer
+For cross-dataset transfer, we train MASPRM-
+7B with a Bradley-Terry head on one dataset and
+evaluate it on a different related dataset, without
+reward-model retraining on the target dataset, un-
+der MCTS(10,3) with Qwen2.5-1.5B-Instruct
+as the agent. We focus on transfers within a do-
+main, specifically math (MATH and GSM8K) and
+knowledge/reading (MMLU and LOGIQA). Diag-
+6
+
+
+Table 1: Main results with Qwen2.5-1.5B-Instruct agents: Hit@1, TOK (×103), and AC (mean±std over 3
+seeds). AC/TOK are comparable within each block. In the Scorer column, PL denotes policy likelihood, O denotes
+ORM, and M denotes MASPRM; the SC@5 row with no scorer (–) uses unweighted majority vote.
+Search
+Scorer
+GSM8K
+MATH
+MMLU
+LOGIQA
+Hit@1
+TOK
+AC
+Hit@1
+TOK
+AC
+Hit@1
+TOK
+AC
+Hit@1
+TOK
+AC
+Single-Pass
+–
+47.2 (± 1.9)
+0.7 (± 0.0)
+4
+31.0 (± 1.5)
+1.1 (± 0.1)
+4
+48.4 (± 0.6)
+0.1 (± 0.0)
+3
+32.5 (± 1.2)
+0.5 (± 0.0)
+3
+SC@5
+–
+63.4 (± 1.7)
+3.6 (± 0.0)
+20
+42.4 (± 0.9)
+5.6 (± 0.1)
+20
+52.7 (± 0.6)
+0.3 (± 0.1)
+15
+35.4 (± 1.9)
+2.6 (± 0.1)
+15
+SC@5
+PL
+61.2 (± 1.3)
+3.6 (± 0.0)
+20
+41.5 (± 0.9)
+5.6 (± 0.1)
+20
+54.5 (± 1.9)
+0.3 (± 0.1)
+15
+35.9 (± 0.8)
+2.6 (± 0.1)
+15
+SC@5
+O-1.5B
+65.4 (± 1.1)
+3.6 (± 0.0)
+20
+45.4 (± 1.3)
+5.6 (± 0.1)
+20
+58.5 (± 0.7)
+0.3 (± 0.1)
+15
+36.1 (± 1.2)
+2.6 (± 0.1)
+15
+SC@5
+M-1.5B
+64.2 (± 0.9)
+3.6 (± 0.0)
+20
+44.8 (± 1.0)
+5.6 (± 0.1)
+20
+58.3 (± 0.2)
+0.3 (± 0.1)
+15
+36.1 (± 0.7)
+2.6 (± 0.1)
+15
+SC@5
+O-7B
+66.6 (± 0.9)
+3.6 (± 0.0)
+20
+47.8 (± 1.0)
+5.6 (± 0.1)
+20
+63.1 (± 1.4)
+0.3 (± 0.1)
+15
+41.6 (± 0.8)
+2.6 (± 0.1)
+15
+SC@5
+M-7B
+67.8 (± 0.6)
+3.6 (± 0.0)
+20
+49.2 (± 1.3)
+5.6 (± 0.1)
+20
+67.2 (± 3.9)
+0.3 (± 0.1)
+15
+43.0 (± 0.6)
+2.6 (± 0.1)
+15
+SBS(5,1)
+PL
+55.0 (± 1.4)
+3.6 (± 0.1)
+20
+41.0 (± 1.2)
+5.5 (± 0.1)
+20
+55.0 (± 2.4)
+0.3 (± 0.0)
+15
+35.9 (± 1.6)
+2.6 (± 0.1)
+15
+SBS(5,1)
+M-1.5B
+63.4 (± 0.9)
+3.4 (± 0.1)
+20
+42.5 (± 1.6)
+5.6 (± 0.1)
+20
+58.7 (± 1.6)
+0.3 (± 0.0)
+15
+36.1 (± 0.7)
+2.7 (± 0.1)
+15
+SBS(5,1)
+M-7B
+73.4 (± 0.7)
+3.2 (± 0.1)
+20
+50.4 (± 0.9)
+5.5 (± 0.1)
+20
+72.4 (± 1.7)
+0.2 (± 0.0)
+15
+44.1 (± 0.9)
+2.6 (± 0.1)
+15
+SBS(5,3)
+PL
+60.3 (± 1.2)
+8.4 (± 0.1)
+50
+40.4 (± 1.0)
+12.3 (± 0.2)
+50
+59.4 (± 1.8)
+0.6 (± 0.1)
+35
+37.0 (± 0.7)
+6.7 (± 0.0)
+35
+SBS(5,3)
+M-1.5B
+69.1 (± 0.3)
+8.4 (± 0.0)
+50
+41.2 (± 1.2)
+12.3 (± 0.2)
+50
+60.4 (± 0.6)
+0.8 (± 0.1)
+35
+37.3 (± 0.2)
+6.6 (± 0.0)
+35
+SBS(5,3)
+M-7B
+77.5 (± 0.4)
+7.9 (± 0.0)
+50
+51.3 (± 1.2)
+12.1 (± 0.2)
+50
+74.8 (± 3.6)
+0.7 (± 0.1)
+35
+45.0 (± 0.8)
+6.5 (± 0.0)
+35
+MCTS(10,3)
+PL
+62.5 (± 0.7)
+5.7 (± 0.1)
+38.2 (± 5.4)
+42.5 (± 1.1)
+9.8 (± 0.3)
+34.5 (± 3.2)
+60.5 (± 0.8)
+0.2 (± 0.0)
+12.4 (± 1.0)
+36.5 (± 1.1)
+2.4 (± 0.1)
+13.6 (± 2.1)
+MCTS(10,3)
+O-1.5B
+66.8 (± 0.6)
+5.8 (± 0.1)
+35.2 (± 3.2)
+45.3 (± 1.1)
+9.8 (± 0.3)
+33.6 (± 4.1)
+66.2 (± 0.7)
+0.2 (± 0.0)
+12.1 (± 1.3)
+40.2 (± 0.9)
+2.3 (± 0.1)
+13.1 (± 2.6)
+MCTS(10,3)
+M-1.5B
+69.8 (± 0.5)
+5.6 (± 0.1)
+34.7 (± 2.4)
+47.3 (± 0.9)
+9.5 (± 0.3)
+33.7 (± 3.5)
+68.8 (± 0.6)
+0.2 (± 0.0)
+12.4 (± 1.9)
+42.2 (± 0.8)
+2.3 (± 0.1)
+13.5 (± 1.7)
+MCTS(10,3)
+O-7B
+68.4 (± 0.8)
+5.7 (± 0.1)
+34.5 (± 2.8)
+46.2 (± 0.9)
+9.7 (± 0.3)
+33.2 (± 3.3)
+67.1 (± 0.6)
+0.2 (± 0.0)
+12.2 (± 1.1)
+41.4 (± 0.8)
+2.3 (± 0.1)
+13.3 (± 2.2)
+MCTS(10,3)
+M-7B
+82.9 (± 1.2)
+5.5 (± 0.1)
+34.4 (± 1.7)
+51.8 (± 0.8)
+9.4 (± 0.3)
+32.9 (± 2.7)
+75.2 (± 0.5)
+0.2 (± 0.0)
+12.4 (± 0.6)
+45.5 (± 0.7)
+2.4 (± 0.1)
+13.5 (± 2.4)
+onal entries correspond to in-domain reward-model
+training. Results are reported in Table 2.
+Training on one dataset and evaluating on an-
+other within the same domain yields cross-transfer
+performance that surpasses policy likelihood base-
+lines, yet remains below in-domain training. Math
+transfer (between GSM8K and MATH) shows
+−3.9 to −9.3 point degradation vs in-domain but
++5.4 to +11.1 point gain over policy likelihood
+(Table 2). Knowledge/reading transfer (between
+MMLU and LogiQA) shows −3.7 to −6.1 point
+degradation vs in-domain but +5.3 to +8.6 point
+gain over policy likelihood. Averaged across trans-
+fers, cross-dataset within-domain MASPRM de-
+grades by 5.8 points vs in-domain training but im-
+proves by +7.6 points vs policy likelihood.
+5.3.2
+Cross-agent transfer
+For cross-agent transfer, we train reward models on
+Qwen2.5-1.5B-Instruct rollouts and swap the
+generator agents to Llama3.2 3B-Instruct at in-
+ference. The reward models remain fixed, without
+retraining (Sec. 5.1). We repeat the search/scoring
+setups from Sec. 5.2 and report results in Table 6
+in App. C.3. MASPRM-7B trained on Qwen2.5-
+1.5B rollouts transfers to Llama3.2 3B-Instruct
+agents without retraining, despite differences in tok-
+enizer, pretraining corpus, and base architecture be-
+tween the two model families. Under MCTS(10,3),
+it improves over policy likelihood by +8.7 to +13.0
+points across datasets and over ORM-7B by +4.0
+to +8.0 points (Table 6 in App. C.3).
+Table 2: Cross-dataset transfer under MCTS(10, 3):
+MASPRM-7B Hit@1 (%) with train datasets as rows
+and test datasets as columns. Policy likelihood is the no
+learned reward model baseline.
+Train dataset
+Test dataset (Hit@1 %)
+GSM8K
+MATH
+MMLU
+LOGIQA
+Policy Likelihood
+62.5
+42.5
+60.5
+36.5
+GSM8K
+82.9
+47.9
+–
+–
+MATH
+73.6
+51.8
+–
+–
+MMLU
+–
+–
+75.2
+41.8
+LOGIQA
+–
+–
+69.1
+45.5
+5.4
+Ablations
+Reward head. Table 7 in App. C.4 compares
+reward head choices under MCTS(10,3) with
+Qwen2.5-1.5B-Instruct agents. BT is the best
+MASPRM head on all four datasets for both scorer
+sizes, and BCE is the best or tied ORM head.
+With size-matched 1.5B models and optimal heads,
+MASPRM is 2.0 to 3.0 points above ORM across
+datasets under the same MCTS(10,3) setting.
+Scorer observability. Table 8 in App. C.5 tests
+scorer observability in the same setting. The full
+routed transcript beats the local view variant on
+every dataset by 2.2 to 5.5 points: 82.9 vs. 77.4 on
+GSM8K, 51.8 vs. 49.4 on MATH, 75.2 vs. 71.7
+on MMLU, and 45.5 vs. 43.3 on LOGIQA in the
+same MCTS(10,3) setting.
+Dynamic-scheduler feasibility.
+As an ex-
+ploratory check, Table 9 in App. C.6 evaluates a
+GSM8K DYLAN-style scheduler. The dynamic
+scheduler has higher mean Hit@1 than sched-
+uled MAS1 in Single-Pass (51.2 vs. 47.2) and
+MCTS(10,3) (84.6 vs. 82.9), but MCTS cost rises
+7
+
+
+substantially, from 5.5 to 11.9 TOK (×103) and
+from 34.4 to 93.8 AC. We therefore treat this re-
+sult as preliminary evidence that MASPRM can
+be applied beyond the main predefined MAS con-
+figurations, not as a broad claim about dynamic
+scheduling.
+Ranking stability and graph sensitivity. Ta-
+ble 5 in App. C.2 and Table 10 in App. C.7 test
+ranking stability and graph sensitivity. MASPRM-
+7B reduces the average Hit@1 to Hit@5 gap from
+16.1 to 5.8 under MCTS and from 19.0 to 10.5
+under SC@5, indicating better top-ranked selec-
+tion. Across three GSM8K graphs, guided search
+ranges are 1.8 to 2.2 points, compared with a 9.0
+point Single-Pass range, indicating reduced sensi-
+tivity to graph choice.
+6
+Discussion
+RQ1. The main supported claim is that MASPRM
+improves inference-time search in the predefined
+MAS configurations studied here for verifiable
+terminal-answer tasks (Sec. 5.2). The evidence
+is strongest for stepwise search, especially MCTS,
+where the scorer is queried on intermediate routed
+transcripts and can affect which branches are ex-
+panded or pruned (Sec. 5.2, Table 1). When search
+returns a ranked list, MASPRM also narrows
+Hit@1 to Hit@5 gaps (Sec. 5.4 and Table 5 in
+App. C.2), suggesting better ranking of routed tran-
+scripts. The local-observability ablation suggests
+that the multi-agent state representation is part of
+the gain rather than only a generic answer-scoring
+signal (Sec. 5.4 and Table 8 in App. C.5).
+RQ2. MASPRM is not uniformly better than
+ORM across all inference procedures (Sec. 5.2).
+The size-matched MCTS rows are the cleaner
+comparison to ORM and are consistently positive
+across all four datasets: +2.0 to +3.0 points at
+1.5B and +4.1 to +14.5 at 7B; the 7B-vs-policy-
+likelihood gains additionally reflect scorer scaling
+with fixed 1.5B agents (Sec. 5.2). At 1.5B, SC@5
+is mixed: MASPRM improves over policy likeli-
+hood but does not beat ORM. This pattern is con-
+sistent with the role of each scorer. SC@5 primar-
+ily selects among final answers, which is closer
+to the outcome-level task ORM is designed for,
+while MASPRM is designed for stepwise guid-
+ance. Thus, the mixed SC@5 result does not con-
+tradict the stronger MCTS gains because the two
+procedures use the scorers in different ways. To-
+gether, the MCTS results and head ablation support
+the narrower claim that process guidance is most
+useful when the algorithm repeatedly makes inter-
+mediate search decisions (Sec. 5.2 and Sec. 5.4).
+They do not show that MASPRM universally re-
+places ORM for final-answer selection. Head ab-
+lations also suggest that preference ranking heads
+are a particularly good fit for search because they
+mirror the pairwise comparisons performed during
+selection (Sec. 5.4, Table 7 in App. C.4).
+RQ3. The learned process signal generalizes
+beyond a single rollout distribution: MASPRM
+transfers nontrivially across related datasets and
+one different generator model without retraining,
+while in-domain reward-model training remains
+better (Sec. 5.3, Table 2, and Table 6 in App. C.3).
+The graph-sensitivity ablation gives the same direc-
+tion across three GSM8K communication graphs
+(Sec. 5.4, Table 10 in App. C.7), so the effect is not
+limited to one tested graph. It suggests that guided
+search can reduce, though not eliminate, sensitiv-
+ity to the particular MAS graph among the tested
+GSM8K configurations.
+Finally, App. C.1 shows guided small-agent
+MAS is strong on GSM8K/MMLU and roughly
+competitive on MATH (Table 4). On LOGIQA,
+the strongest single-agent baselines remain ahead,
+indicating that inference-time MAS scaling com-
+plements but does not yet substitute for large-
+model scaling on harder reasoning tasks. Together,
+these results suggest that inference-time multi-
+agent search becomes substantially more reliable
+when guided by a learned process value model
+trained from terminal rewards alone, offering dense
+feedback without human step-level annotations.
+7
+Conclusion
+We presented MASPRM, a process reward model
+for multi-agent systems on verifiable terminal-
+answer tasks. It scores routed transcript prefixes
+and guides SBS and MCTS. Across four bench-
+marks, MASPRM improves predefined MAS
+search over policy likelihood under comparable
+within-method budgets. Relative to ORM, the com-
+parison depends on the inference method: SC@5
+at 1.5B is mixed, while stepwise search that uses
+intermediate decisions, especially MCTS, benefits
+more from MASPRM, exceeding size-matched
+ORM by +2.0 to +3.0 points at 1.5B and +4.1
+to +14.5 at 7B across the four benchmarks. The
+7B-vs-policy-likelihood gains additionally reflect
+scorer scaling. MASPRM also transfers across
+related datasets and agent LLMs without retraining,
+suggesting that learned process-level value signals
+8
+
+
+can be a useful component for MAS search.
+8
+Limitations
+We scope our study to predefined, role-pipelined
+MAS configurations on verifiable terminal-answer
+tasks, where a learned process value model has
+a well-defined supervision signal; extending to
+open-ended generation, where terminal correct-
+ness is undefined, is left to future work. Extend-
+ing MASPRM to mixed-initiative or dynamically
+structured MAS, where routing and termination de-
+pend on intermediate outputs, is a natural next step;
+App. C.6 reports one preliminary instance. The
+default scorer conditions on the full routed tran-
+script, which fits centralized inference; our local-
+observability ablation (Sec. 5.4) shows that the
+full-transcript scorer outperforms a local-view vari-
+ant by 2.2 to 5.5 Hit@1 points, motivating future
+work on decentralized scorers that close this gap.
+Inference-time scoring cost scales with transcript
+length, but remains substantially below per-agent
+generation cost (App. C.9, e.g., 0.16s scorer call vs.
+18.94s agent call on GSM8K).
+9
+Ethical Considerations
+MASPRM is a research method for guiding
+inference-time search in predefined MAS on ver-
+ifiable terminal-answer benchmarks, not a guar-
+antee of correctness or safety. Because it ranks
+intermediate routed transcripts, it could encourage
+trust in a flawed trajectory without task-specific
+validation, uncertainty reporting, and human over-
+sight, especially in high-stakes use. It also adds
+inference-time computation through extra agent
+generations and scorer calls, so use should weigh
+accuracy gains against latency, energy use, and
+environmental cost. Our experiments use public
+datasets and pretrained models under their licenses,
+collect no new human subject data, and do not re-
+distribute third-party datasets, weights, or API out-
+puts. Open-ended, tool-use, or user-facing agents
+may add privacy, security, and misuse risks beyond
+those studied here, such as sensitive routed mes-
+sages and adversarial manipulation of the search
+controller.
+References
+Guoxin Chen, Minpeng Liao, Chengxi Li, and Kai Fan.
+2024. AlphaMath almost zero: Process supervision
+without process. Advances in Neural Information
+Processing Systems, 37:27689–27724.
+Zhenfang Chen, Delin Chen, Rui Sun, Wenjun Liu,
+and Chuang Gan. 2025. Scaling autonomous agents
+via automatic reward modeling and planning.
+In
+The Thirteenth International Conference on Learn-
+ing Representations.
+Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian,
+Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias
+Plappert, Jerry Tworek, Jacob Hilton, Reiichiro
+Nakano, Christopher Hesse, and John Schulman.
+2021. Training verifiers to solve math word prob-
+lems.
+Ganqu Cui, Lifan Yuan, Zefan Wang, Hanbin Wang,
+Yuchen Zhang, Jiacheng Chen, Wendi Li, Bingxiang
+He, Yuchen Fan, Tianyu Yu, Qixin Xu, Weize Chen,
+Jiarui Yuan, Huayu Chen, Kaiyan Zhang, Xingtai
+Lv, Shuo Wang, Yuan Yao, Xu Han, and 6 others.
+2026. Process reinforcement through implicit re-
+wards. Transactions on Machine Learning Research.
+Yilun Du, Shuang Li, Antonio Torralba, Joshua B.
+Tenenbaum, and Igor Mordatch. 2024. Improving
+factuality and reasoning in language models through
+multiagent debate. In Proceedings of the 41st Inter-
+national Conference on Machine Learning, volume
+235 of Proceedings of Machine Learning Research,
+pages 11733–11763. PMLR.
+Bingzheng Gan, Yufan Zhao, Tianyi Zhang, Jing Huang,
+Li Yusu, Shu Xian Teo, Changwang Zhang, and Wei
+Shi. 2025. MASTER: A multi-agent system with
+LLM specialized MCTS. In Proceedings of the 2025
+Conference of the Nations of the Americas Chap-
+ter of the Association for Computational Linguistics:
+Human Language Technologies (Volume 1: Long
+Papers), pages 9409–9426. Association for Compu-
+tational Linguistics.
+Xinyu Guan, Li Lyna Zhang, Yifei Liu, Ning Shang,
+Youran Sun, Yi Zhu, Fan Yang, and Mao Yang. 2025.
+rStar-math: Small LLMs can master math reason-
+ing with self-evolved deep thinking. In Proceedings
+of the 42nd International Conference on Machine
+Learning, volume 267 of Proceedings of Machine
+Learning Research, pages 20640–20661. PMLR.
+Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou,
+Mantas Mazeika, Dawn Song, and Jacob Steinhardt.
+2021a. Measuring massive multitask language under-
+standing. In International Conference on Learning
+Representations.
+Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul
+Arora, Steven Basart, Eric Tang, Dawn Song, and
+Jacob Steinhardt. 2021b. Measuring mathematical
+problem solving with the MATH dataset. In Thirty-
+fifth Conference on Neural Information Processing
+Systems Datasets and Benchmarks Track (Round 2).
+Levente Kocsis and Csaba Szepesvári. 2006. Bandit
+based monte-carlo planning. In European conference
+on machine learning, pages 282–293. Springer.
+Philipp Koehn and Rebecca Knowles. 2017. Six chal-
+lenges for neural machine translation. In Proceedings
+of the First Workshop on Neural Machine Transla-
+tion, pages 28–39. Association for Computational
+Linguistics.
+9
+
+
+Tian Liang, Zhiwei He, Wenxiang Jiao, Xing Wang,
+Yan Wang, Rui Wang, Yujiu Yang, Shuming Shi, and
+Zhaopeng Tu. 2024. Encouraging divergent think-
+ing in large language models through multi-agent
+debate. In Proceedings of the 2024 Conference on
+Empirical Methods in Natural Language Processing,
+pages 17889–17904. Association for Computational
+Linguistics.
+Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harri-
+son Edwards, Bowen Baker, Teddy Lee, Jan Leike,
+John Schulman, Ilya Sutskever, and Karl Cobbe.
+2024. Let’s verify step by step. In The Twelfth Inter-
+national Conference on Learning Representations.
+Muhan Lin, Shuyang Shi, Yue Guo, Vaishnav Tadi-
+parthi, Behdad Chalaki, Ehsan Moradi Pari, Simon
+Stepputtis, Woojun Kim, Joseph Campbell, and Ka-
+tia P. Sycara. 2025. Speaking the language of team-
+work: LLM-guided credit assignment in multi-agent
+reinforcement learning. In NeurIPS 2025 Workshop:
+Second Workshop on Aligning Reinforcement Learn-
+ing Experimentalists and Theorists.
+Jian Liu, Leyang Cui, Hanmeng Liu, Dandan Huang,
+Yile Wang, and Yue Zhang. 2020. Logiqa: A chal-
+lenge dataset for machine reading comprehension
+with logical reasoning. In Proceedings of the Twenty-
+Ninth International Joint Conference on Artificial
+Intelligence, IJCAI-20, pages 3622–3628. Interna-
+tional Joint Conferences on Artificial Intelligence
+Organization. Main track.
+Zijun Liu, Yanzhe Zhang, Peng Li, Yang Liu, and Diyi
+Yang. 2024. A dynamic LLM-powered agent net-
+work for task-oriented agent collaboration. In First
+Conference on Language Modeling.
+Aman Madaan, Niket Tandon, Prakhar Gupta, Skyler
+Hallinan, Luyu Gao, Sarah Wiegreffe, Uri Alon,
+Nouha Dziri, Shrimai Prabhumoye, Yiming Yang,
+and 1 others. 2023. Self-refine: Iterative refinement
+with self-feedback. Advances in Neural Information
+Processing Systems, 36:46534–46594.
+Kartik Nagpal, Dayi Dong, and Negar Mehr. 2025.
+Leveraging large language models for effective and
+explainable multi-agent credit assignment. In Pro-
+ceedings of the 24th International Conference on
+Autonomous Agents and Multiagent Systems, pages
+1501–1510.
+Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida,
+Carroll Wainwright, Pamela Mishkin, Chong Zhang,
+Sandhini Agarwal, Katarina Slama, Alex Ray, and 1
+others. 2022. Training language models to follow in-
+structions with human feedback. Advances in neural
+information processing systems, 35:27730–27744.
+Mihir Parmar, Xin Liu, Palash Goyal, Yanfei Chen,
+Long Le, Swaroop Mishra, Hossein Mobahi, Jindong
+Gu, Zifeng Wang, Hootan Nakhost, Chitta Baral,
+Chen-Yu Lee, Tomas Pfister, and Hamid Palangi.
+2025. PlanGEN: A multi-agent framework for gen-
+erating planning and reasoning trajectories for com-
+plex problem solving. In Proceedings of the 2025
+Conference on Empirical Methods in Natural Lan-
+guage Processing, pages 20640–20666. Association
+for Computational Linguistics.
+Amrith Setlur, Chirag Nagpal, Adam Fisch, Xinyang
+Geng, Jacob Eisenstein, Rishabh Agarwal, Alekh
+Agarwal, Jonathan Berant, and Aviral Kumar. 2025.
+Rewarding progress: Scaling automated process veri-
+fiers for LLM reasoning. In The Thirteenth Interna-
+tional Conference on Learning Representations.
+Charlie Victor Snell, Jaehoon Lee, Kelvin Xu, and Avi-
+ral Kumar. 2025. Scaling LLM test-time compute
+optimally can be more effective than scaling param-
+eters for reasoning. In The Thirteenth International
+Conference on Learning Representations.
+Lei Wang, Wanyu Xu, Yihuai Lan, Zhiqiang Hu,
+Yunshi Lan, Roy Ka-Wei Lee, and Ee-Peng Lim.
+2023a. Plan-and-solve prompting: Improving zero-
+shot chain-of-thought reasoning by large language
+models. In Proceedings of the 61st Annual Meeting
+of the Association for Computational Linguistics (Vol-
+ume 1: Long Papers), pages 2609–2634. Association
+for Computational Linguistics.
+Peiyi Wang, Lei Li, Zhihong Shao, Runxin Xu, Damai
+Dai, Yifei Li, Deli Chen, Yu Wu, and Zhifang Sui.
+2024. Math-shepherd: Verify and reinforce LLMs
+step-by-step without human annotations. In Proceed-
+ings of the 62nd Annual Meeting of the Association
+for Computational Linguistics (Volume 1: Long Pa-
+pers), pages 9426–9439. Association for Computa-
+tional Linguistics.
+Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc V Le,
+Ed H. Chi, Sharan Narang, Aakanksha Chowdhery,
+and Denny Zhou. 2023b. Self-consistency improves
+chain of thought reasoning in language models. In
+The Eleventh International Conference on Learning
+Representations.
+Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten
+Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou,
+and 1 others. 2022. Chain-of-thought prompting elic-
+its reasoning in large language models. Advances
+in neural information processing systems, 35:24824–
+24837.
+Zhiheng Xi, Chenyang Liao, Guanyu Li, Yajie Yang,
+Wenxiang Chen, Zhihao Zhang, Binghai Wang, Sen-
+jie Jin, Yuhao Zhou, Jian Guan, Wei Wu, Tao Ji, Tao
+Gui, Qi Zhang, and Xuanjing Huang. 2026. Agent-
+PRM: Process reward models for LLM agents via
+step-wise promise and progress. In Proceedings of
+the ACM Web Conference 2026, pages 4184–4195.
+ACM.
+Weimin Xiong, Yifan Song, Xiutian Zhao, Wenhao Wu,
+Xun Wang, Ke Wang, Cheng Li, Wei Peng, and Su-
+jian Li. 2024. Watch every step! LLM agent learning
+via iterative step-level process refinement. In Pro-
+ceedings of the 2024 Conference on Empirical Meth-
+ods in Natural Language Processing, pages 1556–
+1572. Association for Computational Linguistics.
+10
+
+
+Yilin Yang, Liang Huang, and Mingbo Ma. 2018. Break-
+ing the beam search curse: A study of (re-)scoring
+methods and stopping criteria for neural machine
+translation. In Proceedings of the 2018 Conference
+on Empirical Methods in Natural Language Pro-
+cessing, pages 3054–3059. Association for Computa-
+tional Linguistics.
+Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran,
+Tom Griffiths, Yuan Cao, and Karthik Narasimhan.
+2023. Tree of thoughts: Deliberate problem solving
+with large language models.
+Advances in neural
+information processing systems, 36:11809–11822.
+Thomas Zeng, Shuibai Zhang, Shutong Wu, Christian
+Classen, Daewon Chae, Ethan Ewer, Minjae Lee,
+Heeju Kim, Wonjun Kang, Jackson Kunde, Ying
+Fan, Jungtaek Kim, Hyung Il Koo, Kannan Ram-
+chandran, Dimitris Papailiopoulos, and Kangwook
+Lee. 2025. VersaPRM: Multi-domain process reward
+model via synthetic reasoning data. In Proceedings
+of the 42nd International Conference on Machine
+Learning, volume 267 of Proceedings of Machine
+Learning Research, pages 74197–74239. PMLR.
+Guibin Zhang, Yanwei Yue, Xiangguo Sun, Guancheng
+Wan, Miao Yu, Junfeng Fang, Kun Wang, Tianlong
+Chen, and Dawei Cheng. 2025. G-designer: Archi-
+tecting multi-agent communication topologies via
+graph neural networks. In Proceedings of the 42nd
+International Conference on Machine Learning, vol-
+ume 267 of Proceedings of Machine Learning Re-
+search, pages 76678–76692. PMLR.
+Chujie Zheng, Zhenru Zhang, Beichen Zhang, Runji
+Lin, Keming Lu, Bowen Yu, Dayiheng Liu, Jin-
+gren Zhou, and Junyang Lin. 2025. ProcessBench:
+Identifying process errors in mathematical reasoning.
+In Proceedings of the 63rd Annual Meeting of the
+Association for Computational Linguistics (Volume
+1: Long Papers), pages 1009–1024. Association for
+Computational Linguistics.
+Denny Zhou, Nathanael Schärli, Le Hou, Jason Wei,
+Nathan Scales, Xuezhi Wang, Dale Schuurmans,
+Claire Cui, Olivier Bousquet, Quoc V Le, and Ed H.
+Chi. 2023. Least-to-most prompting enables com-
+plex reasoning in large language models. In The
+Eleventh International Conference on Learning Rep-
+resentations.
+Han Zhou, Xingchen Wan, Ruoxi Sun, Hamid Palangi,
+Shariq Iqbal, Ivan Vuli´c, Anna Korhonen, and Ser-
+can O Arik. 2026.
+Multi-agent design: Optimiz-
+ing agents with better prompts and topologies. In
+The Fourteenth International Conference on Learn-
+ing Representations.
+A
+Illustrative Examples
+A.1
+Example MAS and schedule
+Fig. 3 shows an illustrative four-agent MAS. Its
+schedule σ orders Agent 0, Agent 1, Agent 2, and
+Agent 3. The directed edges show allowed message
+routing from the question node through the agents
+to the final answer. This example does not exactly
+match all MAS variants used in experiments. See
+App. D for the full set of MAS configurations used
+in the results and ablations.
+Question
+Final Answer
+Agent 
+Agent 
+Agent 
+Agent 
+Figure 3: Illustrative four-agent MAS with a fixed sched-
+ule. The schedule orders one turn per agent, and directed
+edges define allowed routing from the question to the
+final answer.
+A.2
+Stylized transcript for an arithmetic word
+problem
+We visualize (Fig. 4) one rollout on a ticket-revenue
+problem: "A fundraiser sold 48 tickets. Standard
+tickets cost $35 each and VIP tickets cost $60 each.
+The total revenue was $2230. How much more
+revenue came from VIP tickets than from standard
+tickets?" The available outputs are from the Equa-
+tion Planner and Solver. The green trajectory keeps
+the requested target as VIP revenue minus standard
+revenue and returns 410. The gray trajectory solves
+the same system but answers a different quantity,
+the extra revenue from VIP pricing, and returns
+550.
+A.3
+MCTS backpropagation example
+Fig. 5 illustrates MCTS backpropagation on an
+unrolled MAS tree. Terminal leaves are scored
+by the final answer reward, with green for correct
+answers (+1) and gray for wrong answers (−1).
+The blue arrows show reward backup from leaves
+to earlier agent outputs, producing empirical values
+such as 0.5, 1.0, and 0.25. These backed-up values
+11
+
+
+A fundraiser sold 48 tickets. Standard tickets cost 35 dollars each and VIP tickets cost 60
+dollars each. The total revenue was 2230 dollars. How much more revenue came from VIP
+tickets than from standard tickets?
+48 tickets total. Standard = 35 dollars. VIP = 60 dollars. Total revenue = 2230
+dollars. Target: VIP revenue minus standard revenue.
+Let s = standard tickets and v = VIP tickets. Then s + v = 48 and 35s + 60v =
+2230. Target: 60v - 35s.
+Fact Extractor
+Equation Planner
+Solver
+Verifier
+Check: 22 + 26 = 48 and 1320 + 910 = 2230. The question asks for VIP revenue
+minus standard revenue, so the answer is 410 dollars. Final answer: 410 dollars.
+Check: 22 + 26 = 48 and the total revenue is 2230. The VIP tickets generated
+550 dollars of extra revenue compared with standard pricing. Final answer: 550
+dollars.
+From s + v = 48, get 35s + 35v = 1680. Subtract from 35s + 60v = 2230: 25v =
+550, so v = 22 and s = 26. VIP revenue = 60 times 22 = 1320. Standard revenue
+= 35 times 26 = 910. The requested difference is 1320 - 910 = 410.
+From s + v = 48, get 35s + 35v = 1680. Subtract from 35s + 60v = 2230: 25v =
+550, so v = 22 and s = 26. Since each VIP ticket costs 25 dollars more than a
+standard ticket, the extra revenue from VIP pricing is 25 times 22 = 550.
+Transcript Example
+Figure 4: Example transcript trajectories for a ticket-revenue word problem. A four-agent MAS extracts facts, plans
+equations, solves the system, and verifies the final answer. The green trajectory keeps the requested quantity as VIP
+revenue minus standard revenue and reaches 1320−910 = 410. The gray trajectory finds the same ticket counts but
+switches to a different quantity, extra revenue from VIP pricing, and returns 25×22 = 550.
+define the process targets used to compare sibling
+successor states in MASPRM training.
+0.25
+0.5
+Question
+0.5
+0.5
+0.0
+1.0
+...
+...
+...
+1
+-1
+...
+1
+1
+Correct Answer
+Wrong Answer
+Agent Output
+Backpropagation
+MCTS Example
+Figure 5: Example of MCTS backpropagation in MAS-
+MCTS data generation. Terminal leaves are labeled by
+the final answer reward, with green leaves for correct
+answers (R = +1) and gray leaves for wrong answers
+(R = −1). Blue arrows show how rewards are backed
+up along visited paths to update empirical values for
+earlier agent outputs. These values provide the sibling
+comparisons used to train MASPRM.
+B
+Additional Experimental Details
+B.1
+Benchmarks and Dataset Splits
+We use the four benchmarks from Sec. 5.1.
+All datasets are loaded with the HuggingFace
+datasets library. When forming subsets, we shuf-
+fle with a fixed random seed (42). For each dataset,
+we define a training pool Dtrain and a disjoint held
+out evaluation set Deval used for reporting. We then
+create a development set Ddev (for hyperparame-
+ter selection) by holding out 5% of the (shuffled)
+training pool:
+|Ddev| = ⌊0.05 |Dtrain|⌋, Dtrain ←Dtrain \Ddev.
+(3)
+For MATH (Competition-Math), we use a held
+out evaluation subset Deval with |Deval|=2000 ex-
+amples and use the remainder as the training pool,
+holding out 5% of Dtrain as a development set.
+For GSM8K and LogiQA, we use the train split
+as Dtrain and the test split as Deval, and we hold
+out 5% of Dtrain as a development set (we do not
+use any provided validation split).
+For MMLU, we use the larger provided partition
+as Dtrain and the other partition as Deval, and we
+hold out 5% of Dtrain as a development set.
+Finally, we optionally cap the number of used
+examples to n by taking the first n examples after
+shuffling. Table 3 in App. B.1 reports the exact
+split sizes after applying this protocol.
+B.2
+Answer extraction and normalization
+Final answers are extracted from the terminal
+agent output (e.g., Verifier, Judge, FinalJudge,
+Query_Checker, or the single-agent baseline),
+with multiple fallback patterns to accommodate the
+different MAS prompt templates used in App. D.
+We first attempt to extract a final answer span us-
+ing the following regex over common final answer
+12
+
+
+Dataset
+Train
+Dev
+Eval
+MATH (Competition-Math)
+9,975
+525
+2,000
+GSM8K
+7,100
+373
+1,319
+MMLU
+13,340
+702
+1,531
+LogiQA
+7,008
+368
+651
+Table 3: Dataset split sizes (Train/Dev/Eval).
+templates:
+(?i)\b(?:Final Answer|Answer)\s*:?\s*(.+).
+If a match is found, we use the captured group as
+the candidate answer.
+If no explicit final answer tag is present, we
+fall back to: (i) for free-form datasets (GSM8K,
+MATH): strip trailing units from the final mes-
+sage (e.g., cm, degrees, or \text{...}) and then
+take the last remaining number-like token. (ii) for
+multiple-choice datasets (MMLU, LOGIQA): the
+first option label in {A, B, C, D} (case insensitive)
+that appears as a standalone token in the final mes-
+sage.
+For free-form datasets, we parse the captured
+span as a number when possible and apply light nor-
+malization (lowercase, strip commas/spaces, and
+remove trailing unit markers). We accept numeric
+answers within tolerance δ = 10−3. For multiple-
+choice datasets, we map the extracted label to the
+canonical answer. Non-parsable outputs or time-
+outs are scored incorrect.
+B.3
+MASPRM training data generation
+For training data generation, we run MAS-
+MCTS(40,3) on training problems (i.e., Nsim=40
+simulations and expansion cap Cmax=3 children
+per expanded state) with cUCT=4.0.
+Leaf val-
+ues are set to the ground-truth terminal reward,
+vleaf(sT ) = R(sT ) ∈{−1, +1} (no virtual visits
+during training).
+Process targets.
+From the resulting search trees,
+we construct process targets at the post action state
+level. For each visited edge (st, a) with successor
+s′ = next(st, a), we assign yproc(s′) ≜bQ(st, a)
+where bQ(st, a) = W(st, a)/N(st, a) is the backed
+up Monte Carlo estimate. Targets are clipped to
+[−1, 1].
+Preference pairs (BT head).
+Eq. (2) in the main
+text defines Dpref as all ordered sibling pairs with
+yproc(s+) > yproc(s−). In practice, materializing
+all such pairs can be quadratic in the number of
+expanded children and can introduce many near-
+duplicate comparisons (e.g., formatting variants
+of the same action). We therefore mine a small,
+high-signal subset of pairs from each MAS-MCTS
+tree and use it as the instantiated Dpref in our ex-
+periments. We fix the path length to D+1 nodes
+(the initial state plus D agent actions) and, for each
+prefix node at depth d (0 ≤d < D), we compare
+next step candidate children that share the same
+prefix state. Concretely, at each such prefix we: (i)
+deduplicate children by normalized action text, (ii)
+rank unique candidates by their backed up value
+yproc(s′), (iii) take up to K+=4 top-valued and
+K−=4 bottom-valued candidates (disjoint), and
+(iv) emit pairs (s+, s−) between the two sets when
+yproc(s+) > yproc(s−) (ties ignored). For the final
+step (d=D−1), we restrict candidates to terminal
+children. We cap the total number of mined prefer-
+ence pairs per tree to 8.
+Pointwise samples (MSE head).
+For the MSE
+head ablations, we extract fixed length transcripts
+of D+1 nodes from the initial state to terminal
+states and supervise each step with the node value
+(clipped to [−1, 1]). We keep only terminal leaves
+with reward ±1, and remove exact duplicate sam-
+ples.
+B.4
+MASPRM model and optimization
+Backbone:
+Qwen2.5-1.5B or Qwen2.5-7B, de-
+pending on scorer size, with a scalar head that
+maps each state to a single score in [−1, 1] (via a
+tanh output). For the BT variant, this scalar is the
+Bradley-Terry score used for pairwise ranking, and
+we use its raw value as the inference score. For the
+MSE variant, we regress the scalar to yproc(s′). We
+use QLoRA 4-bit with rank 256 and dropout 0.05.
+Batch size is 8 (effective with grad accumulation
+16), LR 1×10−5, epochs 5, optimizer ADAMW, and
+weight decay 0.01. Evaluation metrics on held out
+preference pairs include average margin, pairwise
+accuracy, AUC, and BT loss.
+B.5
+Search configurations
+When a full rollout must be ranked, each candidate
+is the complete path from s1(x) to a terminal state.
+With MASPRM, the path score is the mean value
+after each action, averaged across turns. With pol-
+icy likelihood, the path score is the mean policy
+score over the generated actions. ORMs score only
+the completed transcript.
+SC@K: We run K=5 independent MAS roll-
+outs that produce answers ˆy(i) and scalar path
+scores w(i).
+When no scorer is used, SC@5
+13
+
+
+uses unweighted majority vote. Otherwise, we
+sigmoid normalize {w(i)}K
+i=1 to ˜w(i) ∈[0, 1],
+compute a total score for each distinct answer
+S(ˆy) = P
+i:ˆy(i)=ˆy ˜w(i), and return the answer with
+the largest S(ˆy).
+SBS(B2, B1): At each depth, we sample B2 can-
+didates per beam state and keep the top B1 glob-
+ally (we report SBS(5,1) and SBS(5,3)). Temper-
+ature = 0.7, top-p = 0.95. Tie-breaking uses the
+higher MASPRM score (if applicable), otherwise
+the higher final answer policy likelihood.
+MCTS(Nsim, Cmax):
+Selection uses UCT
+(Eq. (1)).
+In our main experiments we use
+MCTS(10,3) (Nsim=10, Cmax=3).
+Expansion
+samples up to Cmax children by top-p sampling
+from the current agent. Leaf evaluation uses Vϕ.
+Rollout depth is capped at the scheduled depth D
+of the active MAS configuration (App. D), so that
+the final scheduled agent produces the answer. On
+dead ends, we back up the current MASPRM leaf
+value. No policy priors are added to UCT unless
+otherwise stated. For the DYLAN-style dynamic
+experiment (App. C.6), the same MCTS code fol-
+lows the enabled conditional edges and stops at the
+active terminal output; all other reported experi-
+ments use the fixed depth D above.
+B.6
+Compute budgets and accounting
+Within each search-method block, we use matched/-
+comparable agent-call and token budgets. An agent
+call is one LLM generation by one agent at one
+depth. TOK counts total generated tokens aggre-
+gated over all agent calls. RC counts reward model
+forward passes used to score candidate successor
+states during search.
+Recovering RC from AC.
+In our reported setups,
+RC is deterministically recoverable from AC and
+the inference hyperparameters (and the scheduled
+depth D, App. D), so we omit RC from the main
+tables. Policy likelihood guidance uses no learned
+scorer, so RC = 0. When a scorer is applied to
+each newly generated successor state (SBS, MCTS
+with MASPRM, and SC@K with MASPRM), we
+score each successor once, giving RC = AC. For
+ORMs used only to score terminal candidates, RC
+equals the number of terminal evaluations: SC@K
+uses RC = K = AC/D, and MCTS(Nsim, Cmax)
+with an ORM at simulation leaves uses RC = Nsim
+(one ORM call per simulation).
+Let D denote the scheduled depth (number of
+agent turns) in a single MAS pass. D depends on
+the MAS configuration (App. D). Single-Pass uses
+AC = D, and SC@K uses AC = K D. For SBS
+with global beam B1 and samples per state B2, the
+agent call budget is AC = B2 + (D−1) B1 B2.
+For MCTS, AC is not deterministic due to stochas-
+ticity. We report the empirical mean ± std and tune
+hyperparameters to obtain comparable average AC
+and TOK across scorers.
+Total compute reported for the checklist.
+Data
+generation uses MAS-MCTS(40,3), so a conserva-
+tive upper bound is 40CmaxD agent calls per train-
+ing instance. For the four main in-domain datasets,
+this is at most 15.5M agent calls total: 3.4M for
+GSM8K, 4.8M for MATH, 4.8M for MMLU, and
+2.5M for LOGIQA; the separate GSM8K DYLAN-
+style run adds at most 6.8M. Evaluation compute is
+obtained by multiplying the per-example AC/TOK
+values in the result tables by the evaluation-set sizes
+in Table 3. Scorer fine-tuning uses at most 384/576
+V100-GPU hours per 1.5B/7B scorer (App. B.8);
+across the 37 scorer fine-tunes used for the main
+results and ablations, this gives an upper bound of
+18.2k V100-GPU hours for scorer training.
+B.7
+Hardware
+Experiments run on 8× NVIDIA Tesla V100-PCIE-
+32GB (32 GB VRAM, driver 535.54.03, CUDA
+12.2), an Intel Xeon Gold 6140 CPU @ 2.30 GHz,
+and 754 GB RAM.
+B.8
+MASPRM training time
+As a minimal reference point, GSM8K has 7,100
+training instances (Table 3 in App. B.1). With our
+cap of at most 8 preference pairs mined per MAS-
+MCTS tree (App. B.3), this yields at most 56,800
+preference pairs for MASPRM fine-tuning. With
+5 epochs and effective batch size 128 (batch size
+8 with grad accumulation 16), this corresponds to
+≈2.2×103 optimizer steps. On our V100 setup,
+fine-tuning a single scorer typically takes at most
+48 hours for the 1.5B model and at most 72 hours
+for 7B. Other datasets are similar and scale roughly
+with the corresponding pair counts (56k–107k from
+Table 3 in App. B.1).
+B.9
+Policy likelihood guidance
+To compare against policy likelihood guidance,
+we score each candidate action a by its length-
+normalized log-likelihood under the acting agent’s
+policy (Yang et al., 2018; Koehn and Knowles,
+14
+
+
+2017):
+ψpol(a | st) = 1
+L
+L
+X
+ℓ=1
+log π(it) zℓ| z<ℓ, x, H(it)
+t−1
+
+,
+(4)
+where z1:L are the L generated tokens of candi-
+date action a. Because ψpol has a different scale
+than learned value heads, we map it to [0, 1] with
+a sigmoid:
+˜ψpol(a | st) = sigmoid(ψpol(a |
+st)) where sigmoid(z) = 1/(1 + exp(−z)). In
+MCTS, we use ˜ψpol for virtual-visit initializa-
+tion fINIT(st, a) and for frontier leaf evaluation
+vleaf(st) = maxa∈Ct ˜ψpol(a | st). In SBS, we
+rank successors by ˜ψpol.
+B.10
+ORM Γ
+We compare against a standard ORM that assigns
+a scalar score to a completed transcript.
+Con-
+cretely, an ORM Γ maps a terminal state sT =
+(x, HT−1, sink) (i.e., the full routed transcript, the
+same input MASPRM receives at the final step) to
+a scalar score and is only defined on terminal states
+(it is not used on intermediate states).
+We train ORMs from the same MAS-MCTS roll-
+outs used for MASPRM, but using only terminal
+outcomes for supervision. From each terminal state
+sT , we compute the terminal reward r = R(sT ) ∈
+{−1, +1} (via the extracted final answer ˆy(sT )) to
+form: Dout =
+
+(sT , r)
+:
+sT terminal, r = R(sT )
+	
+.
+We then fit the ORM ΓθΓ by minimizing
+min
+θΓ
+1
+|Dout|
+X
+(sT ,r)∈Dout
+ℓ
+ ΓθΓ(sT ), r
+
+,
+using either a BCE classification head (treating cor-
+rectness as a binary label) or an MSE regression
+head (regressing to r ∈{−1, +1}). Training hy-
+perparameters and optimizer mirror the MASPRM
+training. Loss/head variants (BCE vs. MSE) are
+detailed in App. C.4.
+B.11
+Artifact licenses and intended use
+We use external artifacts only for scientific train-
+ing and evaluation. Datasets: GSM8K (MIT),
+MATH (MIT), MMLU (MIT), and LOGIQA (pub-
+lic research release; no explicit dataset license
+found in the original repository or Hugging Face
+loader).
+Models:
+Qwen2.5-1.5B/7B (Apache-
+2.0), Llama3.1/3.2 checkpoints (Llama Commu-
+nity License), Mistral 24B-Instruct (Apache-2.0),
+and GPT-4o-mini through the OpenAI API under
+provider terms. We do not redistribute third-party
+datasets, third-party weights, or API outputs. Re-
+leased code will use MIT; any released adapter-
+s/checkpoints will include model cards preserving
+upstream model and dataset notices.
+C
+Additional Experiments
+This section gives the full setup for additional ex-
+periments referenced in the main text and states the
+main observation for each one.
+C.1
+Contextual single-agent comparison
+We include a scale-context comparison between
+direct single-agent baselines and guided MAS
+search.
+A single-agent baseline means one in-
+struction model answers the problem directly with-
+out MAS communication, multi-agent search, or
+a learned scorer.
+The guided MAS rows use
+Qwen2.5-1.5B-Instruct generator agents and
+MASPRM-7B; the reported MCTS(10,3) and
+SBS(5,3) results are the same predefined MAS con-
+figurations used in the main results. This compar-
+ison is not matched by AC/TOK and should not
+be read as evidence against optimized single-agent
+PRM+search systems or as a compute-matched
+comparison with larger single-agent models.
+Table 4:
+Contextual Hit@1 (%) comparison:
+di-
+rect single-agent baselines versus guided MAS with
+Qwen2.5-1.5B-Instruct agents and MASPRM-7B.
+Method
+GSM8K
+MATH
+MMLU
+LOGIQA
+Single-Agent Baselines
+Qwen2.5-1.5B-Instruct
+41.9
+17.5
+34.3
+25.8
+Llama3.2 3B-Instruct
+54.8
+24.4
+41.2
+35.3
+Llama3.1 8B-Instruct
+36.2
+26.7
+50.5
+42.2
+GPT-4o-mini
+62.0
+51.0
+59.0
+50.1
+Mistral 24B-Instruct
+80.4
+51.9
+60.6
+56.4
+Guided MAS (Qwen2.5-1.5B-Instruct)
+MCTS(10,3)+MASPRM
+82.9
+51.8
+75.2
+45.5
+SBS(5,3)+MASPRM
+77.5
+51.3
+74.8
+45.0
+Guided MAS search with 1.5B agents and
+MASPRM-7B substantially improves over the di-
+rect Qwen2.5-1.5B-Instruct baseline on every
+dataset.
+MCTS(10,3)+MASPRM gains +41.0,
++34.3, +40.9, and +19.7 points on GSM8K,
+MATH, MMLU, and LOGIQA, respectively;
+SBS(5,3)+MASPRM gains +35.6, +33.8, +40.5,
+and +19.2 points.
+Relative to the larger di-
+rect single-agent baselines listed here, guided
+MAS is strongest on GSM8K and MMLU and
+roughly competitive on MATH (51.8 vs. 51.9
+for Mistral 24B-Instruct). On LOGIQA, how-
+ever, MCTS(10,3)+MASPRM reaches 45.5, below
+GPT-4o-mini at 50.1 and Mistral 24B-Instruct
+at 56.4.
+15
+
+
+C.2
+Hit@k sensitivity under limited
+candidates
+We study robustness when only a small number
+of candidate solutions can be generated and re-
+turned. Table 5 in App. C.2 reports Hit@k for
+k ∈{1, 3, 5} under MCTS(10,3), SC@5, and
+SBS(5,3) with Qwen2.5-1.5B-Instruct agents.
+For SBS(5,3), only three terminal candidates are
+returned, so Hit@5 is not applicable. Policy like-
+lihood scoring shows Hit@1 to Hit@5 gaps av-
+eraging +16.1 points for MCTS and +19.0 points
+for SC@5. MASPRM scoring reduces these gaps
+to +5.8 points (MCTS) and +10.5 points (SC@5),
+improvements of 10.3 and 8.5 points respectively.
+C.3
+Cross-LLM transfer results
+We test whether reward models trained on
+Qwen2.5-1.5B-Instruct rollouts can guide a dif-
+ferent agent LLM. We replace only the agent model
+with Llama3.2 3B-Instruct. The reward mod-
+els remain fixed and are not retrained. We use the
+same inference procedures, metrics, and budget
+accounting as Sec. 5.1.
+Across SC@5, SBS, and MCTS, MASPRM-7B
+gives the highest Hit@1 in every dataset.
+Un-
+der MCTS(10,3), gains over policy likelihood are
++11.2 points on GSM8K, +8.7 on MATH, +13.0
+on MMLU, and +8.7 on LOGIQA. Gains over
+ORM-7B are +8.0, +5.2, +7.2, and +4.0 points.
+C.4
+Head-type ablation for MASPRM and
+ORM
+We ablate reward-model head choices under
+a fixed search budget.
+We focus on MCTS
+with Nsim=10 simulations (MCTS(10,3)) using
+Qwen2.5-1.5B-Instruct as the agent LLM and
+compare:
+ORM variants trained with BCE vs. MSE heads.
+MASPRM-1.5B and MASPRM-7B with MSE
+vs. BT heads.
+We report Hit@1 on all four datasets in Table 7
+in App. C.4.
+For MASPRM, we use the same MAS-MCTS
+rollouts and preprocessing as App. B.3. For the
+BT head, we train on extracted preference pairs
+with the Bradley-Terry ranking loss (Sec. 4.1). For
+the MSE head, we train pointwise by minimizing
+ℓMSE =
+ Vϕ(s′) −yproc(s′)
+2 to the clipped pro-
+cess targets.
+For ORM training, we discard intermediate
+states and use only terminal outcomes from the
+same rollouts: Dout = {(sT , r)} with r = R(sT ).
+The BCE ORM treats correctness as a binary label,
+while the MSE ORM regresses to the scalar reward
+r ∈{−1, +1}.
+BT is the best MASPRM head on all four datasets
+for both model sizes. Gains over MSE are +0.3 to
++4.3 points for the 1.5B model and +0.3 to +9.6
+points for the 7B model. For ORM, BCE is best or
+tied: gains over MSE are +0.6 to +0.8 points for the
+1.5B model and 0.0 to +0.8 points for the 7B model.
+These results support using BT for MASPRM and
+BCE for ORM in the main comparison.
+C.5
+Local observability ablation for
+MASPRM
+We compare the default MASPRM scorer, which
+receives the full routed transcript, to a local-
+observability variant. At each scoring step, the
+local variant receives only the task input and the act-
+ing agent’s local routed view, including that agent’s
+candidate output, rather than the full routed tran-
+script.
+The setup is controlled: both variants use the
+same rollouts, the same Qwen2.5-1.5B-Instruct
+agent model, the same search budget, the same
+MCTS(10,3) setting, and the same MASPRM-7B
+backbone as the main MCTS results. Table 8 in
+App. C.5 reports Hit@1 on all four datasets.
+The full routed transcript gives the highest Hit@1
+on all four datasets. The local view lowers Hit@1
+by 5.5 points on GSM8K, 2.4 on MATH, 3.5 on
+MMLU, and 2.2 on LOGIQA, while remaining
+above the policy likelihood MCTS baselines in
+Table 1.
+C.6
+DYLAN-style dynamic scheduler on
+GSM8K
+We include a separate GSM8K dynamic-scheduler
+experiment inspired by DYLAN (Liu et al., 2024).
+This experiment is not part of the graph-sensitivity
+ablation in App. C.7. The dynamic setup uses three
+solver agents, a judge that checks agreement, and
+a conditional refinement layer. If the judge emits
+VERDICT: AGREE, the judge output is used as the
+terminal answer. If it emits VERDICT: DISAGREE,
+three refiners run and a final judge returns the ter-
+minal answer. We express this as an acyclic graph
+with conditional edges so the same MAS-MCTS
+data generation and inference code can be used.
+Table 9 reports Single-Pass and MCTS(10,3)
+for both setups.
+All rows use GSM8K and
+Qwen2.5-1.5B-Instruct generator agents. The
+16
+
+
+Table 5: Hit@k (%) for k ∈{1, 3, 5} under MCTS(10,3), SC@5, and SBS(5,3).
+Method
+GSM8K
+MATH
+MMLU
+LOGIQA
+Hit@1
+Hit@3
+Hit@5
+Hit@1
+Hit@3
+Hit@5
+Hit@1
+Hit@3
+Hit@5
+Hit@1
+Hit@3
+Hit@5
+MCTS(10,3) (policy likelihood)
+62.5
+76.4
+82.1
+42.5
+54.5
+60.6
+60.5
+68.2
+71.3
+36.5
+47.3
+52.4
+MCTS(10,3) (MASPRM-7B)
+82.9
+85.0
+88.2
+51.8
+57.5
+60.5
+75.2
+76.7
+77.4
+45.5
+50.5
+52.5
+SC@5 (policy likelihood)
+61.2
+73.3
+81.4
+41.5
+50.6
+57.5
+54.5
+69.2
+74.9
+35.9
+46.5
+55.4
+SC@5 (MASPRM-7B)
+67.8
+77.0
+81.4
+49.2
+55.3
+57.5
+67.2
+72.7
+74.9
+43.0
+50.2
+55.2
+SBS(5,3) (policy likelihood)
+60.3
+66.8
+–
+40.4
+45.6
+–
+59.4
+59.7
+–
+37.0
+40.5
+–
+SBS(5,3) (MASPRM-7B)
+77.5
+79.5
+–
+51.3
+55.8
+–
+74.8
+77.6
+–
+45.0
+47.7
+–
+Table 6: Cross-LLM results with Llama3.2 3B-Instruct agents and fixed Qwen2.5-trained reward models (no
+retraining): Hit@1 (%), TOK (×103), and AC.
+Search
+Scorer
+GSM8K
+MATH
+MMLU
+LOGIQA
+Hit@1
+TOK
+AC
+Hit@1
+TOK
+AC
+Hit@1
+TOK
+AC
+Hit@1
+TOK
+AC
+Single-Pass
+–
+52.6
+0.8
+4
+35.2
+1.2
+4
+56.0
+0.1
+3
+36.3
+0.5
+3
+SC@5
+Policy Likelihood
+64.2
+3.7
+20
+44.1
+5.6
+20
+56.4
+0.3
+15
+37.2
+2.6
+15
+SC@5
+ORM-7B
+68.8
+3.7
+20
+47.8
+5.6
+20
+63.4
+0.3
+15
+42.1
+2.6
+15
+SC@5
+MASPRM-7B
+69.8
+3.7
+20
+48.6
+5.6
+20
+66.7
+0.3
+15
+43.3
+2.6
+15
+SBS(5,1)
+Policy Likelihood
+58.4
+3.8
+20
+42.1
+5.5
+20
+55.0
+0.3
+15
+36.1
+2.5
+15
+SBS(5,1)
+MASPRM-7B
+74.6
+3.7
+20
+49.1
+5.5
+20
+71.6
+0.3
+15
+44.1
+2.5
+15
+SBS(5,3)
+Policy Likelihood
+63.1
+8.3
+50
+41.3
+12.3
+50
+58.5
+0.8
+35
+37.6
+6.5
+35
+SBS(5,3)
+MASPRM-7B
+78.2
+8.5
+50
+52.2
+12.5
+50
+74.3
+0.8
+35
+45.4
+6.5
+35
+MCTS(10,3)
+Policy Likelihood
+64.1
+5.9
+38.7
+43.4
+9.8
+34.5
+61.9
+0.2
+12.8
+37.4
+2.5
+13.9
+MCTS(10,3)
+ORM-7B
+67.3
+5.7
+35.8
+46.9
+9.7
+34.2
+67.7
+0.2
+12.8
+42.1
+2.5
+13.8
+MCTS(10,3)
+MASPRM-7B
+75.3
+5.4
+35.4
+52.1
+9.7
+37.8
+74.9
+0.3
+13.1
+46.1
+2.6
+14.0
+Table 7:
+Head-type ablation (Hit@1, %) under
+MCTS(10,3) with Qwen2.5-1.5B-Instruct agents.
+Head
+GSM8K
+MATH
+MMLU
+LOGIQA
+ORM-1.5B
+BCE
+66.8
+45.3
+66.2
+40.2
+MSE
+66.1
+44.5
+65.4
+39.6
+ORM-7B
+BCE
+68.4
+46.2
+67.1
+41.4
+MSE
+68.2
+46.2
+66.3
+40.8
+MASPRM-1.5B
+BT
+69.8
+47.3
+68.8
+42.2
+MSE
+65.5
+44.1
+67.6
+41.9
+MASPRM-7B
+BT
+82.9
+51.8
+75.2
+45.5
+MSE
+73.3
+50.6
+74.9
+44.4
+Table
+8:
+Hit@1
+under
+MCTS(10,3)
+with
+Qwen2.5-1.5B-Instruct
+agents,
+comparing
+full
+vs. local scorer observability.
+Scorer view
+GSM8K
+MATH
+MMLU
+LOGIQA
+Full routed transcript
+82.9
+51.8
+75.2
+45.5
+Local agent view
+77.4
+49.4
+71.7
+43.3
+Single-Pass rows use no scorer. The MCTS rows
+use MASPRM-7B. For each setup, training data
+generation and testing are run from scratch: we gen-
+erate MAS-MCTS(40,3) rollouts on the GSM8K
+training split for that setup, train a new MASPRM-
+7B on those rollouts, and evaluate MCTS(10,3)
+on the GSM8K test split. Other settings follow
+App. B. The exact prompts and conditional edges
+are in App. D.
+C.7
+Graph sensitivity ablation on GSM8K
+We evaluate three GSM8K MAS instantiations, de-
+noted MAS1-MAS3.
+All three share the same
+generator model family and reward backbone:
+the agents are Qwen2.5-1.5B-Instruct, and the
+scorer is MASPRM-7B built on Qwen2.5-7B.
+The scorer is trained on MAS1 rollouts and then
+transferred unchanged to MAS2 and MAS3. We
+keep the search/decoding hyperparameters fixed
+(App. B). The only differences across MAS1-
+MAS3 are the agent role prompts and the directed
+communication graph (which determines what each
+agent can condition on at its turn).
+MAS definitions are as follows. MAS1 corre-
+17
+
+
+Table 9: GSM8K dynamic-scheduler feasibility check with Qwen2.5-1.5B-Instruct generator agents. We report
+this as preliminary evidence that MASPRM extends to conditional schedules, not as a head-to-head comparison
+with MAS1. The MCTS(10,3) rows use MASPRM-7B; each setup uses fresh MAS-MCTS training data and a
+newly trained scorer.
+Setup
+Search
+Scorer
+Hit@1 (%)
+TOK (×103)
+AC
+MAS1
+Single-Pass
+–
+47.2 (± 1.9)
+0.7 (± 0.0)
+4
+DYLAN-style dynamic MAS
+Single-Pass
+–
+51.2 (± 1.9)
+1.1 (± 0.5)
+5.8 (± 0.9)
+MAS1
+MCTS(10,3)
+MASPRM-7B
+82.9 (± 1.2)
+5.5 (± 0.1)
+34.4 (± 1.7)
+DYLAN-style dynamic MAS
+MCTS(10,3)
+MASPRM-7B
+84.6 (± 2.1)
+11.9 (± 4.4)
+93.8 (± 1.2)
+sponds to a plan-then-solve pipeline with verifi-
+cation (Reader →Planner →Solver →Verifier)
+(Wang et al., 2023a). MAS2 corresponds to the cri-
+tique and revise pipeline (Solver →Evaluator →
+Reflector →Reviser) (Madaan et al., 2023). MAS3
+corresponds to a consensus style pipeline with two
+independent solutions and a final judge (Reader →
+SolverA →SolverB →Judge), inspired by self-
+consistency (Wang et al., 2023b). Exact prompts
+and graphs are in App. D.
+Under the MASPRM scoring protocol, at a fixed
+prefix state s, candidate continuations share iden-
+tical previous steps and differ only in the next
+newly generated step. Concretely, for candidate
+next step messages a, we form successor states
+s′ = next(s, a) and score each s′ with MASPRM.
+Search selects and expands based on these relative
+scores.
+Table 10: GSM8K graph sensitivity (Hit@1, %) across
+MAS1-MAS3.
+Method
+MAS1
+MAS2
+MAS3
+Single-Pass
+47.2
+54.4
+56.2
+SBS(5,1)+MASPRM
+73.4
+73.7
+75.2
+SBS(5,3)+MASPRM
+77.5
+78.5
+79.7
+MCTS(10,3)+MASPRM
+82.9
+81.4
+80.9
+Single-Pass performance varies by 9.0 points
+across MAS1 to MAS3 (47.2 to 56.2).
+With
+MASPRM guidance, all three configurations are
+within 1.8 to 2.2 points (SBS/MCTS ranges: 73.4
+to 75.2, 77.5 to 79.7, 80.9 to 82.9), reducing the
+ranges by 6.8 to 7.2 points.
+C.8
+OOD transfer protocol
+For Table 2, we train MASPRM-7B on one source
+dataset and evaluate it on a held out target dataset
+without further tuning.
+We use MCTS(10,3),
+Qwen2.5-1.5B-Instruct agents, and the same an-
+swer extraction as the main experiments. We eval-
+uate within-domain transfers: GSM8K to MATH,
+MATH to GSM8K, MMLU to LOGIQA, and
+LOGIQA to MMLU. The policy likelihood row
+is the no-reward-model baseline under the same
+search setting.
+Cross-dataset transfer stays below the in-domain
+diagonal entries, but remains above policy likeli-
+hood on each target by +5.3 to +11.1 points.
+C.9
+Wall-clock Comparison
+We measure wall-clock time on GSM8K using
+the hardware in App. B.7. An AC is one agent
+generation, and an RC is one MASPRM scorer
+forward pass. The mean AC time is 18.94 s, while
+the mean RC time is 0.16 s.
+Estimated per-instance wall-clock on GSM8K:
+MCTS(10,3) ≈11 min; SBS(5,3) ≈16 min. In this
+setup, one RC is about 118 times faster than one
+AC.
+D
+MAS Graph, Prompts, and
+Configuration
+This work uses multiple MAS instantiations (vary-
+ing in depth D, agent roles, and directed communi-
+cation graphs) rather than a single fixed MAS for all
+settings. The overall design choices are inspired by:
+decomposition/plan-then-solve prompting (Wang
+et al., 2023a), self-refinement/self-critique loops
+(Madaan et al., 2023), and multi-agent debate (Du
+et al., 2024; Liang et al., 2024). Below we list
+the exact YAML-style configurations used, plus
+the GSM8K MAS3 consensus configuration intro-
+duced for the graph sensitivity ablation and the
+GSM8K DYLAN-style dynamic scheduler used in
+App. C.6. In these implementation-style listings,
+agent IDs are 0-indexed, and the integer −1 is an
+alias for the question node q from Sec. 3.
+18
+
+
+D.1
+Agent roles, system prompts, and
+decoding
+Each MAS is specified by a list of agents (name,
+system prompt, and a per-agent decoding cap). For
+readability, we present each MAS’s agents block.
+MASSingle: single-agent baseline.
+- name: Assistant
+system_prompt: |
+You are an intelligent assistant that
+. . . helps users by providing accurate
+. . . and concise answers.
+Solve the problem carefully.
+Output exactly:
+Final Answer: <your answer>
+max_new_tokens: 1024
+This is a standard single-pass baseline aligned
+with chain-of-thought style prompting (Wei et al.,
+2022).
+MASRPSV (GSM8K MAS1/MATH): Reader →
+Planner →Solver →Verifier.
+- name: Reader
+system_prompt: "You are the Reader. Extract
+. . . key facts and restate the question
+. . . ."
+max_new_tokens: 1024
+- name: Planner
+system_prompt: "You are the Planner. Propose
+. . .
+a concise plan to solve the task
+. . . ."
+max_new_tokens: 1024
+- name: Solver
+system_prompt: "You are the Solver. Carry
+. . . out the plan and compute results."
+max_new_tokens: 1024
+- name: Verifier
+system_prompt: "You are the Verifier. Double
+. . . -check the result and produce the
+. . . final answer only."
+max_new_tokens: 1024
+This is a plan-then-solve decomposition with an
+explicit verification stage (Wang et al., 2023a).
+MASRefine (GSM8K MAS2): Solver →Evalua-
+tor →Reflector →Reviser.
+- name: Agent_Solver
+system_prompt: |
+You are a math solver. Solve the problem
+. . . step by step.
+First show your work, then give the final
+. . . answer.
+End with: FINAL ANSWER: [your answer]
+max_new_tokens: 512
+- name: Agent_Evaluator
+system_prompt: |
+You are a checker. Look at the solution
+. . . and check if it is correct.
+Check:
+- Are the steps logical?
+- Is the math correct?
+Reply with only one of these:
+CORRECT
+or
+INCORRECT: [explain the error]
+max_new_tokens: 256
+- name: Agent_Reflector
+system_prompt: |
+You are an advisor. A solution was wrong.
+Give one short tip to fix the mistake.
+Do not solve the problem yourself.
+Reply with: TIP: [your advice]
+max_new_tokens: 256
+- name: Agent_Reviser
+system_prompt: |
+You are a math solver. A previous answer
+. . . was wrong.
+Use the tip given to solve the problem
+. . . correctly.
+Show your work step by step.
+End with: FINAL ANSWER: [your answer]
+max_new_tokens: 512
+This configuration implements an explicit
+feedback→refine loop (Madaan et al., 2023).
+MASConsensus (GSM8K MAS3):
+Reader →
+SolverA →SolverB →Judge.
+- name: Reader
+system_prompt: "You are the Reader. Extract
+. . . key facts and restate the question
+. . . ."
+max_new_tokens: 512
+- name: Solver_A
+system_prompt: |
+You are Solver A. Solve the problem step
+. . . by step.
+Be careful with arithmetic.
+End with: FINAL ANSWER: <number>
+max_new_tokens: 1024
+- name: Solver_B
+system_prompt: |
+You are Solver B. Independently solve the
+. . . same problem from scratch.
+Try a different approach if possible and
+. . . be careful with arithmetic.
+End with: FINAL ANSWER: <number>
+max_new_tokens: 1024
+- name: Judge
+19
+
+
+system_prompt: |
+You are the Judge/Verifier. You receive:
+(i) the original question,
+(ii) the Reader summary,
+(iii) Solver_A's solution,
+(iv) Solver_B's solution.
+If both solvers agree and the reasoning is
+. . .
+sound, output exactly:
+Final Answer: <value>
+If they disagree or either contains an
+. . . error, identify the mistake and
+. . . recompute cleanly.
+Then output exactly:
+Final Answer: <value>
+max_new_tokens: 512
+This
+configuration
+is
+motivated
+by
+self-
+consistency style aggregation and final answer se-
+lection (Wang et al., 2023b).
+MASDyLAN
+(GSM8K
+dynamic
+scheduler):
+solver pool →Judge →optional refiners →
+FinalJudge.
+- name: SolverA_MathAnalyst
+system_prompt: |
+You are a careful Math Analyst. Read the
+. . . problem, list the relevant
+quantities and relationships, then solve
+. . . step by step, showing
+arithmetic. End with a single line in the
+. . . exact format:
+Final Answer: <number>
+max_new_tokens: 512
+- name: SolverB_AlgebraSolver
+system_prompt: |
+You are an Algebra Solver. Set up explicit
+. . .
+variables and equations,
+then solve them step by step, showing
+. . . arithmetic. End with a single
+line in the exact format:
+Final Answer: <number>
+max_new_tokens: 512
+- name: SolverC_ArithmeticReasoner
+system_prompt: |
+You are an Arithmetic Reasoner. Translate
+. . . the problem into a
+sequence of concrete arithmetic operations
+. . .
+and execute each one,
+showing your work. End with a single line
+. . . in the exact format:
+Final Answer: <number>
+max_new_tokens: 512
+- name: Judge
+system_prompt: |
+You are the Judge. You receive the
+. . . original question and three
+candidate solutions from peer solvers.
+. . . Independently re-derive the
+answer and compare it against the
+. . . candidates.
+If at least two of the three candidates
+. . . agree with your re-derived
+answer AND the reasoning is sound, output
+. . . EXACTLY:
+VERDICT: AGREE
+Final Answer: <number>
+Otherwise, output EXACTLY:
+VERDICT: DISAGREE
+<one short paragraph identifying where the
+. . .
+candidates went wrong;
+do NOT give a final number on the second
+. . . line>
+max_new_tokens: 384
+- name: RefinerA
+system_prompt: |
+You are Refiner A. You receive the
+. . . original question, your own
+previous draft, and the Judge's critique.
+. . . Produce a corrected
+solution that addresses the critique,
+. . . showing arithmetic. End with
+a single line in the exact format:
+Final Answer: <number>
+max_new_tokens: 512
+- name: RefinerB
+system_prompt: |
+You are Refiner B. You receive the
+. . . original question, your own
+previous draft, and the Judge's critique.
+. . . Produce a corrected
+solution that addresses the critique,
+. . . showing arithmetic. End with
+a single line in the exact format:
+Final Answer: <number>
+max_new_tokens: 512
+- name: RefinerC
+system_prompt: |
+You are Refiner C. You receive the
+. . . original question, your own
+previous draft, and the Judge's critique.
+. . . Produce a corrected
+solution that addresses the critique,
+. . . showing arithmetic. End with
+a single line in the exact format:
+Final Answer: <number>
+max_new_tokens: 512
+- name: FinalJudge
+system_prompt: |
+You are the Final Judge. You receive the
+. . . original question and
+three refined solutions. Decide on the
+. . . correct numeric answer
+(re-derive if needed) and output EXACTLY
+. . . one line:
+Final Answer: <number>
+max_new_tokens: 256
+This configuration follows the DYLAN idea of
+diverse solvers, agent communication, and a dy-
+namic scheduler, implemented here as a judge-
+20
+
+
+gated refinement layer (Liu et al., 2024).
+MASDebate: Angel/Devil debate with Judge ag-
+gregation (MMLU).
+- name: Angel
+system_prompt: |
+You are a helpful debater. Read the
+. . . multiple-choice question with
+. . . options A-D.
+Reason briefly and choose the best option.
+max_new_tokens: 1024
+- name: Devil
+system_prompt: |
+You are a skeptical debater. Read the same
+. . .
+question.
+Challenge assumptions and choose the best
+. . . option.
+max_new_tokens: 1024
+- name: Judge
+system_prompt: |
+You are the Judge. Read the question and
+. . . both debaters' letters.
+Decide the final answer.
+Respond EXACTLY with this format:
+Final Answer: X
+where X is one of A, B, C, or D.
+max_new_tokens: 1024
+This configuration follows debate and judge
+style aggregation (Liang et al., 2024).
+MASLogic: constraint extraction →world build-
+ing →option checking (LogiQA).
+- name: Constraint_Extractor
+system_prompt: |
+You are the Constraint Extractor.
+Ignore the answer options for now.
+Extract all explicit constraints and
+. . . logical rules stated in the
+. . . passage.
+Format them as a numbered list (e.g., "1)
+. . . A != B", "2) If C then D").
+max_new_tokens: 1024
+- name: World_Builder
+system_prompt: |
+You are the World Builder.
+You receive a list of constraints.
+Construct one or more concrete "valid
+. . . states" that satisfy all
+. . . constraints.
+If multiple states are possible, describe
+. . . what must be true in all valid
+. . . states.
+max_new_tokens: 1024
+- name: Query_Checker
+system_prompt: |
+You are the Query Checker.
+You receive the question (with options)
+. . . and the valid state summary.
+Determine which option is entailed by (or
+. . . most consistent with) the valid
+. . . state(s).
+Output exactly:
+Final Answer: X
+where X is one of A, B, C, or D.
+max_new_tokens: 1024
+This configuration uses decomposition into struc-
+tured intermediate artifacts (Zhou et al., 2023).
+D.2
+Communication edges and schedule
+Edges are directed. The integer −1 follows the
+implementation-style alias above. For fixed MAS,
+the schedule order is one turn per agent in the order
+listed in the agents block. The DYLAN-style dy-
+namic MAS follows the listed topological order and
+conditionally enables the refinement layer based
+on the Judge output. Edges to the terminal node
+sink from the active terminal agent are implicit and
+omitted from the YAML-style edge lists.
+MASSingle
+schedule.
+Schedule
+order:
+[Assistant].
+Edges:
+Edges
+edges:
+- [-1, 0]
+MASRPSV schedule.
+Schedule order: [Reader,
+Planner, Solver, Verifier].
+Edges:
+Edges
+edges:
+- [-1, 0]
+- [-1, 1]
+- [0, 1]
+- [1, 2]
+- [-1, 3]
+- [2, 3]
+MASRefine
+schedule.
+Schedule
+order:
+[Agent_Solver,
+Agent_Evaluator,
+Agent_Reflector, Agent_Reviser].
+Edges:
+21
+
+
+Edges
+edges:
+- [-1, 0]
+- [0, 1]
+- [0, 2]
+- [1, 2]
+- [-1, 3]
+- [2, 3]
+MASConsensus
+schedule.
+Schedule
+order:
+[Reader, Solver_A, Solver_B, Judge].
+Edges:
+Edges
+edges:
+- [-1, 0]
+- [-1, 1]
+- [-1, 2]
+- [ 0, 1]
+- [ 0, 2]
+- [-1, 3]
+- [ 0, 3]
+- [ 1, 3]
+- [ 2, 3]
+MASDyLAN
+dynamic
+schedule.
+Topo-
+logical
+order:
+[SolverA_MathAnalyst,
+SolverB_AlgebraSolver,
+SolverC_ArithmeticReasoner,
+Judge,
+RefinerA,
+RefinerB,
+RefinerC,
+FinalJudge].
+The conditional edges into
+the refiners are enabled only when the Judge emits
+VERDICT: DISAGREE. If the Judge emits VERDICT:
+AGREE, the refinement layer is skipped and the
+Judge output is treated as the terminal answer.
+Edges:
+Edges
+edges:
+- [-1, 0]
+- [-1, 1]
+- [-1, 2]
+- [-1, 3]
+- [ 0, 3]
+- [ 1, 3]
+- [ 2, 3]
+- [-1, 4]
+- [ 0, 4]
+- [ 3, 4, "regex:(?i)verdict:\\s*
+. . . disagree"]
+- [-1, 5]
+- [ 1, 5]
+- [ 3, 5, "regex:(?i)verdict:\\s*
+. . . disagree"]
+- [-1, 6]
+- [ 2, 6]
+- [ 3, 6, "regex:(?i)verdict:\\s*
+. . . disagree"]
+- [-1, 7]
+- [ 4, 7]
+- [ 5, 7]
+- [ 6, 7]
+MASDebate schedule.
+Schedule order: [Angel,
+Devil, Judge].
+Edges:
+Edges
+edges:
+- [-1, 0]
+- [-1, 1]
+- [-1, 2]
+- [0, 2]
+- [1, 2]
+MASLogic
+schedule.
+Schedule
+order:
+[Constraint_Extractor,
+World_Builder,
+Query_Checker].
+Edges:
+Edges
+edges:
+- [-1, 0]
+- [0, 1]
+- [-1, 2]
+- [1, 2]
+E
+Algorithms (Brief Overview)
+This appendix summarizes the procedures used
+for MAS-MCTS data generation during training,
+MCTS(Nsim, Cmax) with MASPRM during infer-
+ence, and SBS(B2, B1). The key difference be-
+tween training and inference MCTS is the leaf eval-
+uation: training backs up the ground truth terminal
+reward R(sT ) (no virtual visits), whereas infer-
+ence bootstraps with Vϕ and initializes new chil-
+dren with virtual visits. For the pseudocode, when
+in state s = (x, Ht−1, it), the acting agent is it and
+π(it)(· | x, H(it)
+t−1) denotes its policy conditioned on
+its local view as defined in Sec. 3.
+22
+
+
+Algorithm 1 MAS-MCTS(Nsim, Cmax) Data Generation During Training
+Input: Instance (x, y⋆), graph G, schedule σ, simulations Nsim, candidate cap Cmax, exploration cUCT
+1: Initialize empty search tree with statistics N(s, a)=0, W(s, a)=0
+2: for k = 1 to Nsim do
+3:
+s ←s1(x)
+4:
+path ←[ ]
+▷Selection
+5:
+while s is expanded and non-terminal do
+6:
+a ←arg maxb∈Aexp
+it (s)
+n
+bQ(s, b) + cUCT
+r
+ln(1+P
+u∈Aexp
+it
+(s) N(s,u))
+1+N(s,b)
+o
+7:
+Append (s, a) to path
+8:
+s ←next(s, a)
+9:
+end while
+▷Expansion (no virtual visits in training)
+10:
+if s non-terminal then
+11:
+Sample up to Cmax candidates Ct from the acting agent’s policy π(it)(· | x, H(it)
+t−1) where
+s = (x, Ht−1, it)
+12:
+For each a ∈Ct, create child s′ = next(s, a)
+13:
+end if
+▷Evaluation with ground truth (terminal reward)
+14:
+Continue selection/expansion, appending each traversed edge to path, until reaching a terminal
+leaf sT
+15:
+v ←R(sT ) ∈{−1, +1}
+▷Backpropagation
+16:
+for each (u, b) in path do
+17:
+N(u, b)←N(u, b) + 1
+18:
+W(u, b)←W(u, b) + v
+19:
+bQ(u, b)←W(u,b)
+N(u,b)
+20:
+end for
+21: end for
+22: Process targets: For every expanded edge (s, a) with N(s, a) > 0 and child s′ = next(s, a), set
+yproc(s′) ←bQ(s, a) and add (s′, yproc(s′)) to Dproc
+23: Fit the process head: Within each parent state, form sibling preference pairs (s+, s−) with yproc(s+) >
+yproc(s−) and train Vϕ with a Bradley-Terry ranking loss
+23
+
+
+Algorithm 2 MCTS(Nsim, Cmax) with MASPRM During Inference
+Input: Instance x, graph G, schedule σ, simulations Nsim, candidate cap Cmax, exploration cUCT, value
+model Vϕ
+1: Initialize empty search tree with statistics N(s, a)=0, W(s, a)=0
+2: for k = 1 to Nsim do
+3:
+s ←s1(x)
+4:
+path ←[ ]
+▷Selection
+5:
+while s is expanded and non-terminal do
+6:
+a ←arg maxb∈Aexp
+it (s)
+n
+bQ(s, b) + cUCT
+r
+ln(1+P
+u∈Aexp
+it
+(s) N(s,u))
+1+N(s,b)
+o
+7:
+Append (s, a) to path
+8:
+s ←next(s, a)
+9:
+end while
+▷Expansion with virtual visit initialization from Vϕ
+10:
+if s non-terminal then
+11:
+Sample up to Cmax candidates Ct from π(it)(· | x, H(it)
+t−1) where s = (x, Ht−1, it)
+12:
+for each a ∈Ct do
+13:
+s′ ←next(s, a)
+14:
+N(s, a)←1
+15:
+W(s, a)←Vϕ(s′)
+16:
+bQ(s, a)←Vϕ(s′)
+17:
+end for
+18:
+end if
+▷Leaf evaluation by bootstrap
+19:
+v ←Vϕ(s)
+▷Backpropagation
+20:
+for each (u, b) in path do
+21:
+N(u, b)←N(u, b) + 1
+22:
+W(u, b)←W(u, b) + v
+23:
+bQ(u, b)←W(u,b)
+N(u,b)
+24:
+end for
+25: end for
+26: Decode: From s1(x), greedily follow at each depth the child with maximal bQ
+Algorithm 3 Step-Level Beam Search (SBS(B2, B1)) with MASPRM or Policy Score
+Input: Instance x, graph G, schedule σ, global beam B1, samples per state B2, scorer f where
+f(s, a, s′) = Vϕ(s′) or ˜ψpol(a | s)
+1: Initialize beam B ←{s1(x)}
+2: for t = 1 to D do
+▷D is the schedule length (one agent per depth, it = σ(t))
+3:
+P ←[ ]
+4:
+for each s = (x, Ht−1, it) ∈B do
+5:
+Sample B2 candidate actions {a(b)}B2
+b=1 ∼π(it)(· | x, H(it)
+t−1)
+6:
+for b = 1 to B2 do
+7:
+s′ ←next(s, a(b))
+8:
+score(s′) ←f(s, a(b), s′)
+(e.g., Vϕ(s′) or ˜ψpol(a(b) | s))
+9:
+Append (s′, score(s′)) to P
+10:
+end for
+11:
+end for
+12:
+B ←top-B1 states in P by score
+▷Global pool across parents
+13: end for
+14: Select output: Return the highest scoring terminal state in the final beam
+24

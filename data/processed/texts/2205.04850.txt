@@ -1,0 +1,2001 @@
+arXiv:2205.04850v1  [cs.AI]  10 May 2022
+Scaling-up Generalized Planning as Heuristic Search with Landmarks
+(extended version)
+Javier Segovia-Aguas1, Sergio Jim´enez2, Anders Jonsson1 and Laura Sebasti´a 2
+1Universitat Pompeu Fabra
+2VRAIN - Valencian Research Institute for Artiﬁcial Intelligence, Universitat Polit`ecnica de Val`encia
+javier.segovia@upf.edu, serjice@dsic.upv.es, anders.jonsson@upf.edu, lsebastia@dsic.upv.es
+Abstract
+Landmarks are one of the most effective search heuristics for
+classical planning, but largely ignored in generalized plan-
+ning. Generalized planning (GP) is usually addressed as a
+combinatorial search in a given space of algorithmic solu-
+tions, where candidate solutions are evaluated w.r.t. the in-
+stances they solve. This type of solution evaluation ignores
+any sub-goal information that is not explicit in the represen-
+tation of the planning instances, causing plateaus in the space
+of candidate generalized plans. Furthermore, node expansion
+in GP is a run-time bottleneck since it requires evaluating
+every child node over the entire batch of classical planning
+instances in a GP problem. In this paper we deﬁne a land-
+mark counting heuristic for GP (that considers sub-goal in-
+formation that is not explicitly represented in the planning in-
+stances), and a novel heuristic search algorithm for GP (that
+we call PGP) and that progressively processes subsets of the
+planning instances of a GP problem. Our two orthogonal con-
+tributions are analyzed in an ablation study, showing that both
+improve the state-of-the-art in GP as heuristic search, and
+that both beneﬁt from each other when used in combination.
+Introduction
+Generalized
+planning
+(GP)
+addresses
+the
+computa-
+tion
+of
+algorithmic
+solutions
+that
+are
+valid
+for
+a
+set of classical planning instances from a given do-
+main
+(Winner and Veloso
+2003;
+Hu and Levesque
+2011;
+Srivastava, Immerman, and Zilberstein
+2011;
+Siddharth et al.
+2011;
+Hu and De Giacomo
+2011;
+Belle and Levesque
+2016;
+Illanes and McIlraith
+2019;
+Segovia-Aguas, Jim´enez, and Jonsson
+2019;
+Franc`es, Bonet, and Geffner 2021). In the worst case,
+each classical planning instance may require a com-
+pletely different solution but in practice, many planning
+domains are known to have polynomial algorithmic solu-
+tions (Helmert 2006a; Fern, Khardon, and Tadepalli 2011).
+GP is however a challenging computation task; specifying
+an algorithmic solution for a set of classical planning
+instances often requires features that are not explicitly
+represented in those instances and hence, they must be
+discovered (Bonet and Geffner 2021).
+Copyright © 2022, Association for the Advancement of Artiﬁcial
+Intelligence (www.aaai.org). All rights reserved.
+y
+µ
+¤
+y
+µ
+¤
+y
+µ
+¤
+Figure 1: Three initial states, corresponding to three classical plan-
+ning instances where an agent must open a lock in a 1×N corridor.
+GP is typically addressed as a combinatorial search
+in
+a
+space
+of
+algorithmic
+solutions,
+where
+candi-
+date solutions are evaluated w.r.t. the instances they
+solve. Recently, heuristic search in the solution space
+of planning programs for GP has shown to be ef-
+fective when guided by goal-oriented heuristic func-
+tions (Segovia-Aguas, Jim´enez, and Jonsson 2021). How-
+ever the used heuristics ignore sub-goal information, and of-
+ten cause large search plateaus. In addition, each candidate
+solution is evaluated over the entire batch of classical plan-
+ning instances of the GP problem, increasing the likelihood
+of search getting stuck in plateaus.
+Figure 1 shows three initial states that correspond to three
+classical planning instances where an agent must open a lock
+in a 1 × N corridor. The actions available for the agent are:
+move (one cell) right or left, pick-up or drop the key, and
+open the lock with the key. A generalized plan that solves
+these three instances, and that generalizes no matter the ini-
+tial agent location or corridor length, can be formulated as:
+move right until reaching the end of the corridor, pick up
+the key, move left until reaching the beginning of the cor-
+ridor, and ﬁnally, open the lock with the key. Please note
+that the only information provided by the goals of the previ-
+ous instances is whether the lock is open. Relevant sub-goal
+information is however automatically deducible from the
+problem representation (Hoffmann, Porteous, and Sebastia
+2004). For example the landmarks in Figure 2, indicating
+that the agent must reach all cells of the corridor and hold
+the key, can automatically be extracted from the represen-
+tation of the ﬁrst classical planning instance illustrated in
+Figure 1.
+This paper introduces two orthogonal contributions:
+
+
+agent-at(p2)
+lock-at(p0)
+key-at(p5)
+agent-at(p1)
+agent-at(p3)
+agent-at(p0)
+agent-at(p4)
+agent-at(p5)
+agent-has-key()
+unlocked()
+Figure 2: Example of a partial landmark graph for the ﬁrst classi-
+cal planning instance illustrated in Figure 1.
+• A new heuristic search algorithm for GP, that improves
+the performance of computing generalized plans by pro-
+gressively evaluating them on subsets of the input plan-
+ning instances.
+• The adaptation of the landmark graph from classical
+planning to GP, and the deﬁnition of a landmark counting
+heuristic for GP, that considers sub-goal information that
+is not explicitly represented in the planning instances.
+The performance of these two orthogonal contributions
+is analyzed in an ablation study, showing that both out-
+perform BFGP, the state-of-the-art in GP as heuristic
+search (Segovia-Aguas, Jim´enez, and Jonsson 2021), and
+that both beneﬁt from each other when used in combination.
+Background
+Classical Planning
+In this work we consider the STRIPS fragment of the Plan-
+ning Domain Deﬁnition Language (PDDL) for classical
+planning (Haslum et al. 2019), that compactly deﬁnes a
+planning problem as P = ⟨D, I⟩, where D is the planning
+domain and I is an instance. The domain1 D = ⟨F, A⟩
+consists of a set of FOL predicates F, each of the form
+p(x1, . . . , xk) where p denotes a k-ary predicate symbol and
+xi, 1 ≤i ≤k, are variables; and a set of action schemes A,
+where each α ∈A is deﬁned as α = ⟨parα, preα, eﬀα⟩
+with parα denoting its parameters (arguments), and preα
+and eﬀα are sets of atoms deﬁned over variables in parα
+that stand for the preconditions and the effects of the action
+schema α. The instance is deﬁned as I = ⟨Ω, I, G⟩, where
+Ωis the ﬁnite set of world objects, I is the initial state, and
+G is the goal condition, a partial state that compactly repre-
+sents the subset of goals states SG.
+A state consists of all ground atoms p(o1, . . . , ok), with
+k-ary predicate symbols p and instance objects oi ∈Ωfor
+1 ≤i ≤k, interpreted either true or false; a partial state is
+a subset of all ground atoms. The set of ground actions A
+is computed substituting the parameters parα of each action
+schema α ∈A with a tuple of objects −→o of the same size
+as the action parameters, i.e. a ground action a ∈A from
+1We assume domain constants to be included in the set of in-
+stance objects, and reformulate A accordingly if required.
+an action schema α ∈A is a = α[−→o ] s.t. |−→o | = |parα|;
+hence, prea and eﬀa are partial states after grounding preα
+and eﬀα atoms over objects −→o . A ground action a is appli-
+cable iff its preconditions hold in the current state s, i.e. iff
+prea ⊆s. Let us ﬁrst split the action effects into positive
+and negative that respectively interpret ground atoms to true
+and false after applying action a, i.e. eﬀa = eﬀ+
+a ∪eﬀ−
+a .
+The successor state s′ = a(s) is built removing the nega-
+tive effects, and then adding the positive action effects, i.e.
+s′ = (s \ eﬀ−
+a ) ∪eﬀ+
+a .
+A solution to P is a sequence of actions, or sequential
+plan, π = ⟨a1, . . . , am⟩, such that applied in the initial state
+s0 = I it induces a trajectory τ = ⟨s0, a1, s1, . . . , am, sm⟩
+where each action ai(si−1) is applicable, and the goal con-
+dition holds in the last state, i.e. G ⊆sm.
+Example.
+The classical planning instances, with ini-
+tial states illustrated in Figure 1, can be formulated
+with
+ground
+atoms
+{lock-at(p0), key-at(pN−1),
+agent-at(pi), agent-has-key, unlocked,
+adjacent(pi,pi+1)}, where N is the corridor length
+and Ω= {pi|0 ≤i < N} is the set of objects representing
+the different corridor locations, and four action schemes
+A
+={move(x1,x2), pickup-key(x), drop-key(x),
+open-lock(x)}. The initial states of the three clas-
+sical planning instances can then be represented as
+I1={lock-at(p0), key-at(p5), agent-at(p2)},
+I2={lock-at(p0), key-at(p7), agent-at(p1)},
+I3={lock-at(p0), key-at(p4), agent-at(p3)},
+completed with the corresponding adjacent(pi,pi+1)
+ground atoms, that are static. The goal condition is the same
+for the three instances: G1 = G2 = G3 = {unlocked}.
+Landmarks in Classical Planning
+Fact landmarks were introduced for classical planning by
+Porteous, Sebastia, and Hoffmann (2001) as a subgoaling
+mechanism, which later was adopted for the ﬁrst landmark-
+based heuristic by Richter, Helmert, and Westphal (2008).
+In this article we refer to fact landmarks as landmarks.
+Deﬁnition 1 (Landmark). A ground atom p(o1, . . . , ok) is
+a landmark of a classical planning problem P iff for every
+sequential plan π = ⟨a1, . . . , am⟩that solves P, the ground
+atom p(o1, . . . , ok) holds for some state si with 0 ≤i ≤m
+of the induced trajectory τ = ⟨s0, a1, s1, ..., am, sm⟩.
+According to Deﬁnition 1, all the facts appearing in
+the initial state and goals of a classical planning problem
+are landmarks (resp. considering time steps i = 0 and
+i = m). Landmarks can also be formulae over the state
+variables and actions. For instance, disjunctive landmarks
+indicate that, for every sequential plan that solves P, one
+of the atoms in a given disjunction holds at some state si,
+0 ≤i ≤m, in the induced trajectory τ. Landmarks can be
+(partially) ordered according to the time step where they
+must
+be
+achieved
+(Hoffmann, Porteous, and Sebastia
+2004;
+Richter, Helmert, and Westphal
+2008;
+Karpas and Domshlak 2009).
+In this paper we focus on fact, disjunctive land-
+marks,
+and
+their
+orderings,
+while
+considering
+as
+
+
+future work
+other formalisms such
+as
+action
+land-
+marks (Karpas and Domshlak 2009; Helmert and Domshlak
+2009; B¨uchner, Keller, and Helmert 2021). The two kinds of
+orderings we extract between landmarks are natural order-
+ings, i.e. a landmark is true some time before another land-
+mark, and greedy necessary orderings, i.e. one landmark is
+always true one step before another landmark becomes true
+for the ﬁrst time (Hoffmann, Porteous, and Sebastia 2004).
+Given a classical planning problem P, its corresponding
+landmark graph, LG = ⟨LM, O⟩, is a directed graph that
+comprises the set of landmarks LM, and the set of order-
+ings O between these landmarks. For instance, Figure 2 il-
+lustrates the landmark graph of the ﬁrst instance introduced
+in Figure 1. For clarity, static atoms indicating the adjacency
+of two corridor cells and natural orderings are omitted.
+Generalized Planning with Planning Programs
+This
+work
+builds
+on
+top
+of
+the
+inductive
+formal-
+ism
+for GP,
+where a
+GP
+problem is
+a
+ﬁnite
+set
+of
+classical
+planning
+instances
+from
+a
+given
+do-
+main
+(Jim´enez, Segovia-Aguas, and Jonsson
+2019).
+In
+more detail, we build on top of the GP as heuristic search
+approach
+(Segovia-Aguas, Jim´enez, and Jonsson
+2021),
+which represents generalized plans as planning programs.
+Deﬁnition 2 (GP problem).
+A GP problem P
+=
+{P1, . . . , PT } is a ﬁnite and non-empty set of T classical
+planning problems P1 = ⟨D, I1⟩, . . . , PT = ⟨D, IT ⟩that
+belong to the same domain D, and where each instance It,
+1 ≤t ≤T, may actually differ in the set of ground atoms
+and actions, initial state, or goals.
+Unlike sequential plans, planning programs include
+a control ﬂow construct which allows the compact
+representation of solutions to classical and GP prob-
+lems (Segovia-Aguas, Jim´enez, and Jonsson 2019). For-
+mally a planning program is a sequence of n instructions
+Π = ⟨w0, . . . , wn−1⟩, where each instruction wi ∈Π is
+associated with a program line 0 ≤i < n, and is either:
+• A planning action wi ∈A.
+• A goto instruction wi = go(i′, y), where i′ is a program
+line and y is a proposition.
+• A termination instruction wi = end. The last instruction
+of a planning program is always a termination instruc-
+tion, i.e. wn−1 = end.
+The execution model for a planning program is a program
+state (s, i), i.e. a pair of a planning state s ∈S and pro-
+gram counter 0 ≤i < n. Given a program state (s, i), the
+execution of a programmed instruction wi is deﬁned as:
+• If wi ∈A, and wi is applicable in s, the new program
+state is (s′, i+1), where s′ = wi(s) is the successor state.
+If wi is not applicable the new program state is (s, i+ 1),
+i.e. the planning state is unmodiﬁed.
+• If wi = go(i′, y), the new program state is (s, i′) if y
+holds in s, and (s, i + 1) otherwise. The proposition y
+can actually be the result of an arbitrary expression on the
+state variables, e.g. a state feature (Lotinac et al. 2016).
+• If wi = end, program execution terminates.
+To execute a planning program Π on a classical plan-
+ning problem P = ⟨D, I⟩, the initial program state is set
+to (I, 0), i.e. the initial state of P and the ﬁrst program
+line of Π. A program Π solves P iff the execution termi-
+nates in a program state (s, i) that satisﬁes the goal condi-
+tion, i.e. wi = end and G ⊆s. Otherwise the execution of
+the program fails. The two possible sources of failure of the
+execution of a planning program Π on a classical planning
+problem P are then:
+1. Incorrect program, i.e. execution terminates in a pro-
+gram state (s, i) that does not satisfy the goal condition,
+i.e. (wi = end) ∧(s /∈SG).
+2. Inﬁnite program, i.e. execution enters into an inﬁnite loop
+that never reaches an end instruction. This can be easily
+detected whenever a program state is duplicated.
+Deﬁnition 3 (GP solution). A generalized plan Π is a so-
+lution to a GP problem P = {P1, . . . , PT } iff, for every
+classical planning problem Pt ∈P, 1 ≤t ≤T , the
+sequential plan that results from executing Π on Pt, i.e.
+exec(Π, Pt) = ⟨a1, . . . , am⟩, solves Pt.
+Planning programs for STRIPS domains
+To build planning programs that generalize over the in-
+stances of a STRIPS domain, we introduce the notion of
+pointer over the world objects, and redeﬁne planning pro-
+grams accordingly.
+Deﬁnition 4 (Pointer). A pointer z ∈Z is a bound variable,
+with ﬁnite domain Dz = [0..|Ω|), that indexes an object of a
+planning instance I.
+We redeﬁne planning programs, so planning actions wi ∈
+A are not ground actions over the instance objects, but action
+schemes A instantiated over pointers in Z, i.e. α[−→z ] ∈AZ.
+The execution model of planning programs is updated ac-
+cordingly; instructions wi = α[−→z ] ∈AZ ﬁrst map every
+pointer to its indexed object in constant time, which turns
+the instruction into a ground action a = α[−→o ] ∈A, from
+which the standard execution model applies. Figure 3 illus-
+trates the relation between (i) an action schema; (ii) its in-
+stantiation over pointers; and (iii) its instantiation over ob-
+jects. Pointers may be typed to address the subset of objects
+of the same type, although we also refer to them as pointers
+in the article for short.
+In addition, the set of instructions of planning programs
+is extended with the set of primitive pointer operations
+that comprises: {inc(z1), dec(z1), clear(z1), set(z1, z2)
+| z1, z2 ∈Z} over the pointers in Z, and {testp(−→z ) | −→z ∈
+Zar(p)} over the lists of pointers in Zar(p) for each predicate
+symbol p ∈F in a given planning domain D. Respectively
+these primitive instructions increment/decrement a pointer
+by one, set a pointer to zero, and set the value of a pointer
+z2 to another pointer z1. Instruction inc(z1) is applicable
+iff z1 < |Ω| −1, and dec(z1) is applicable iff z1 > 0,
+while the remaining instructions are always applicable. The
+testp(−→z ) instruction returns the interpretation of p(−→z ) at
+the current state which, similarly to planning actions, re-
+quires ﬁrst to map −→z to the corresponding indexed objects
+−→o s.t. p(−→o ) is a ground atom.
+
+
+move(x1,x2)
+move(z1,z2)
+move(p0,p0)
+move(p0,p1)
+...
+move(p3,p2)
+move(p3,p3)
+Z grounding
+z1 = 3
+z2 = 2
+Z indexing in
+current state
+Ωgrounding
+Map Z →Ω
+Figure 3: Action schema move(x1,x2) ∈
+A, where x1 and
+x2 are free variables, for moving the agent in the domain of
+Figure 1. The action move(z1,z2) ∈AZ ground over the pointers
+Z = {z1, z2}, where z1 and z2 are bound variables in [0, |Ω|),
+that are respectively indexing objects p3 and p2. The set of actions
+{move(p0, p0), move(p0, p1), . . . , move(p3, p2), move(p3, p3)}
+ground over the set of objects Ω= {p0, p1, p2, p3}.
+Last the goto instructions of planning programs are re-
+stricted to be conditioned by a single Boolean yz that, play-
+ing the role of a zero FLAGS register (Dandamudi 2005), is
+dedicated to store the outcome of the last executed primitive
+operation over pointers. The FLAG yz allows to keeping the
+solution space tractable. Formally, it is deﬁned as:
+yz ≡
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+False,
+if applicable wi = inc(z1),
+(z1 == 1),
+if applicable wi = dec(z1),
+T rue,
+if wi = clear(z1),
+(z2 == 0),
+if wi = set(z1, z2),
+¬p(−→z ),
+if wi = testp(−→z ),
+T rue,
+if inapplicable wi.
+Object typing is naturally supported by pointers, special-
+izing them to the number of objects of a particular type.
+Pointers can trivially be mapped to a mutually exclusive set
+of PDDL propositional variables. Likewise primitive pointer
+operations, and goto instructions, can be coded as PDDL ac-
+tions with conditional effects.
+Example.
+Figure 4 shows a planning program with n =
+12 program lines, and pointers Z = {z1, z2}, that solves the
+three planning instances above, and that is computed by our
+PGP algorithm. Program lines 1, 5, 7 and 10 contain plan-
+ning actions in AZ, where pointers index the corridor loca-
+tions. The program lines 4 and 9 contain goto instructions
+Ago that branch the program execution ﬂow according to the
+value of the zero ﬂag yz. The remaining lines contain primi-
+tive pointers instructions, that operate over pointers, and up-
+date the zero ﬂag yz accordingly. The last instruction is an
+end instruction. The program of Figure 4 leverages the fact
+that, in the three classical planning instances given as input,
+adjacent locations are named with consecutive numbers.
+Pointers are always initialized to zero. Therefore, the
+execution of the planning program of Figure 4 on
+the ﬁrst classical planning instance illustrated in Fig-
+ure 1 produces the following sequential plan π
+=
+LOCK
+0.
+i nc (z1 )
+1. move (z2 ,z1 )
+2.
+i nc (z1 )
+3.
+i nc (z2 )
+4.
+goto ( 1 , ! yz )
+5.
+pickup (z1 )
+6.
+dec (z1 )
+7. move (z1 ,z2 )
+8.
+dec (z2 )
+9.
+goto ( 5 , ! yz )
+10.
+open (z1 )
+11.
+end
+Move to rightmost
+corridor location
+Pick-up the key
+Move to leftmost
+corridor location
+Open the lock
+Figure 4: Example of a planning program that solves the GP prob-
+lem of the three classical planning instances illustrated in Figure 1.
+Note that yz captures the outcome of the last executed primitive
+pointer instruction, and that a pointer increase makes yz = False
+until it becomes inapplicable where yz = T rue, while a decrease
+instruction makes yz = T rue when the pointer decreases from 1
+to 0 or if it is inapplicable, otherwise yz = False.
+⟨move(p0, p1), move(p1, p2), move(p2, p3), move(p3, p4),
+pickup(p4), move(p4, p3), move(p3, p2), move(p2, p1),
+move(p1, p0), open(p0)⟩. Next we detail the execution of
+the ﬁrst ﬁve program lines, which produces the sequence of
+ground actions to reach the rightmost location of the corri-
+dor; pointers z1 and z2 are initialized to zero, so they ini-
+tially index the same object p0. Program line 0 increments
+the value of pointer z1, so it indexes p1 and hence, the exe-
+cution of program line 1 corresponds to the execution of the
+ground action move(p0, p1). Lines 2 and 3 increment the
+two pointers, so z1 indexes p2 while z2 indexes p1. Line 4
+indicates that the block of program lines [1−4] is repeated
+until pointer z2 can no longer be incremented.
+Progressive Generalized Planning
+This section describes our Progressive heuristic search al-
+gorithm for Generalized Planning (PGP). This algorithm
+adapts a Best-First Search (BFS), in the solution space of the
+possible planning programs that can be built with n program
+lines and |Z| pointers, so that it progressively processes the
+full batch of classical planning instances of a GP problem.
+Progressive Best-First Search for GP
+The input to our PGP algorithm is a GP problem Pn,Z =
+{P1, . . . , PT }. PGP outputs a planning program Π that
+solves {P1, . . . , PT }, or it reports unsolvability within the
+maximum number of n program lines and |Z| pointers.
+Brieﬂy, PGP keeps a subset of the classical planning in-
+stances called the active instances, that initially contains
+only the ﬁrst classical planning instance of the GP prob-
+lem. When PGP ﬁnds a program that solves the full set of
+active instances, it validates that program on the remain-
+ing instances of the GP problem, and augments the set of
+active instances with the ﬁrst instance for which the pro-
+gram fails. The procedure is repeated until PGP ﬁnds a pro-
+gram that solves all the instances in the GP problem. PGP
+
+
+Algorithm 1: PGP
+Data: A GP problem Pn,Z
+Result: A planning program Π that solves Pn,Z (or
+unsolvable)
+active ←{P1} ;
+open ←insertProgram(∅, Πempty, active);
+while open̸ = ∅do
+Π ←extractBestProgram(open) ;
+childs ←expandProgram(Π, Pn,Z) ;
+for Π′ ∈childs do
+if isSolution(Π′,active) then
+if isSolution(Π′,Pn,Z) then
+return Π′;
+Pfail ←getFirstFailed(Π′,Pn,Z);
+active ←active ∪{Pfail};
+reevaluateQueue(open,active);
+if not isDeadEnd(Π′, active) then
+open ←insertProgram(open, Π′, active);
+end
+end
+return unsolvable;
+can be understood as a variant of counterexample-guided
+search (Seipp and Helmert 2018).
+Algorithm 1 shows the pseudo-code of PGP. In more de-
+tail, in Lines 1-2, the algorithm initializes the subset of ac-
+tive instances with the ﬁrst planning instance P1 ∈Pn,Z,
+and inserts an empty planning program Πempty with n un-
+deﬁned program lines, into the empty open priority queue.
+The main loop runs in Lines 3-16, while there are programs
+to expand, and it returns a GP solution if found (Line 9), oth-
+erwise it returns unsolvable on Line 17. In every iteration,
+the best-evaluated program Π is selected and removed from
+the open priority queue (Line 4), and expanded (Line 5).
+For each child node Π′, PGP checks whether Π′ solves the
+active instances (Line 7). If Π′ also solves Pn,Z then it is
+returned as the GP solution (Lines 8-9), otherwise the ﬁrst
+instance Pfail where Π′ fails is added to the active set, and
+the open queue is reevaluated (Lines 10-12) w.r.t. the prob-
+lems in the augmented active set. In Lines 13-14, the child
+Π′ is evaluated over the set of active instances and inserted
+in the open queue if it is not a deadend for the active set.
+PGP is a frontier search algorithm meaning that, to re-
+duce memory requirements, it stores only the open list
+of generated nodes but not the closed list of expanded
+nodes (Korf et al. 2005). With regard to node expansion, let
+Π be the partially speciﬁed program that corresponds to the
+best-evaluated node extracted by PGP from the open list
+(Line 4). PGP generates one successor for each program
+that results from programming the ﬁrst undeﬁned line of
+Π. This node expansion procedure guarantees that duplicate
+successors are not generated and it keeps the branching fac-
+tor tractable; at a given undeﬁned program line PGP can
+only program (i) a planning action; (ii) a primitive pointer
+instruction; or (iii) a goto instruction. The maximum depth
+of the PGP search tree is the number of program lines n,
+since only an undeﬁned line can be programmed.
+Theorem 1 (Termination). The execution of PGP on a GP
+problem, always terminates.
+Proof. The only possible cause for non-termination would
+be that PGP could generate duplicate search nodes, allowing
+the inﬁnite re-opening of an already discarded program. By
+the deﬁnition of the PGP expansion procedure, it does not
+generate duplicate successors; a child node always has one
+more line programmed than its parent.
+Theorem 2 (Completeness). Given a GP problem, and a
+maximum number of program lines n and pointers |Z|, if
+there is a solution planning program within these bounds
+then PGP can compute it.
+Proof. PGP only discards a search node when its corre-
+sponding partially speciﬁed planning program fails to solve
+a planning instance. This is precisely the deﬁnition for not
+being a GP solution. Further, any planning program that
+could be built programming the remaining undeﬁned pro-
+gram lines would also fail to solve that same instance.
+Theorem 3 (Soundness). If the execution of PGP on a GP
+problem outputs a generalized plan Π, then this means that
+Π is a solution for that GP problem.
+Proof. PGP runs until (i) the open list is empty, which
+means that search space is exhausted without ﬁnding a so-
+lution and no generalized plan is output; or (ii) PGP ex-
+tracted from the open list a planning program whose exe-
+cution solves all the instances Pt ∈Pn,Z. This is precisely
+the deﬁnition of a solution for a GP problem.
+Landmarks in Generalized Planning
+This section deﬁnes a landmark counting heuristic for guid-
+ing a combinatorial search in our GP solution-space.
+The landmark graph with pointer assignments
+For each classical planning problem Pt ∈Pn,Z, we en-
+rich its corresponding landmark graph LGt with: (i) pointer
+landmarks, that indicate pointer assignments that must be
+achieved by a solution to Pt; and (ii) orderings between
+pointer landmarks and the regular landmarks, computed by
+the LAMA algorithm.
+First we compute, for every classical planning problem
+Pt ∈Pn,Z, 1 ≤t ≤T, its corresponding landmark graph
+LGt = ⟨LMt, Ot⟩, as a pre-processing step. We implement
+the back-chaining LAMA algorithm for ﬁnding landmarks
+and orderings between landmarks (Richter and Westphal
+2010). Brieﬂy we start from a set of known landmarks, and
+ﬁnd new landmarks that hold in any plan before an already
+known landmark may become true. The procedure stops
+when no more new landmarks are discovered. In more de-
+tail, given a landmark q, if all actions that achieve q for the
+ﬁrst time share a precondition p, this means that p is also
+a landmark, and that there is a greedy necessary ordering
+p →gn q between them. The algorithm discovers disjunctive
+landmarks too; when q is a landmark, and all actions that
+ﬁrst achieve q have p1, or p2, ..., or pk as a precondition,this
+means that p1 ∨p2 ∨. . .∨pk is also a landmark. We also im-
+plement the algorithm for adding additional orderings from
+
+
+restricted Relaxed Planning Graphs (RPGs) to discover
+natural orderings between landmarks (Richter and Westphal
+2010).
+Deﬁnition 5 (Pointer landmarks). Given a classical plan-
+ning problem P and a set of pointers Z, we say that the
+assignments V
+j
+W
+i(zi = oj) are pointer landmarks iff the
+ground atom p(−→o ) is a landmark for P, zi ∈Z, and
+oj ∈−→o .
+In other words given a landmark p(−→o ), a pointer land-
+mark indicates that at least one pointer must point to each
+object in −→o . Pointer landmarks, and their corresponding or-
+derings, are computed as follows. For every greedy neces-
+sary order p →gn q in the landmark graph LGt computed by
+the LAMA algorithm, if an action a ≡α(−→o ) is an achiever
+for q, then we have that the assignments V
+j
+W
+i(zi = oj) are
+pointer landmarks, and furthermore, V
+j
+W
+i(zi = oj) →gn q
+is a greedy necessary ordering where {zi} ⊆Z are the
+pointers of the same type of the corresponding object oj ∈
+−→o . For example given the ﬁrst instance illustrated in Fig-
+ure 1 and the set of pointers Z = {z1, z2}, then the corre-
+sponding landmark graph of Figure 2 is enriched with the
+disjunctive landmark (z1 = 5 ∨z2 = 5) and the greedy
+necessary order (z1 = 5 ∨z2 = 5) →gn agent-has-key,
+among other orderings. These particular pointer landmarks,
+and their greedy necessary ordering, are created since the
+actions pickup(z1) or pickup(z2) for z1 = 5 or z2 = 5,
+are ﬁrst achievers of the agent-has-key landmark.
+The landmark counting heuristic for GP
+The landmark graph extracted from a given classi-
+cal planning instance can be used to guide a forward
+search in the space of states reachable from the ini-
+tial state of that instance (Richter and Westphal 2010;
+B¨uchner, Keller, and Helmert 2021). For example, to imple-
+ment the evaluation function fLM(s, π) of the LAMA plan-
+ner, that computes the number of landmarks that have not
+been achieved on the path from the initial state to the state
+s ∈S, given by the sequence of planning actions π. This
+evaluation function is formalized as:
+fLM(s, π) = |(LM \ Reached(s, π)) ∪ReqAgain(s, π)|,
+where LM is the set of landmarks discovered with the pre-
+viously described mechanism, Reached(s, π) ⊆LM is the
+subset of reached landmarks; a landmark p is ﬁrst reached
+in state s if all predecessors of p in the corresponding land-
+mark graph have been reached, and p ∈s. Once a landmark
+is reached in a state s, it remains reached in all successor
+states. Last, ReqAgain(s, π) ⊆Reached(s, π) is the sub-
+set of landmarks that must be achieved again that comprises:
+goals p that are false in s, and greedy necessary predeces-
+sors p of some landmark q that has not been reached yet.
+Note that fLM(s, π) is not a heuristic function in the stan-
+dard sense, since its value is path-dependent, but it works
+well for classical planning.
+Next we show how we leverage landmarks to inform a
+combinatorial search in our GP solution-space. When a pro-
+gram execution terminates because an unspeciﬁed program
+line is reached, we retrieve the last state reached, and esti-
+mate how far this state is from a goal state with the following
+heuristic function:
+• fLM(Π, Pn,Z) = P
+t fLM(Π, Pt) for each Pt ∈Pn,Z,
+where fLM(Π, Pt) = fLM(s, π) such that:
+– π = exec(Π, Pt) is the sequential plan that results
+from executing Π on Pt,
+– s is the last state reached after executing Π on Pt,
+– fLM(s, π) is the landmark counting heuristic deﬁned
+above.
+Note that, when used in combination with our PGP search
+algorithm, the fLM(Π, Pn,Z) heuristic is evaluated only
+over the active set, i.e. fLM(Π, active), instead of over the
+full GP problem Pn,Z which allows to saving computations.
+A potential issue with our landmark counting heuristic
+is that aggregating each fLM(Π, Pt) could make instances
+with more landmarks bias the search. This issue could be
+mitigated normalizing the heuristic values with the total
+number of landmarks; however, we have not observed this
+issue to have an impact in the experiments.
+Evaluation
+We compare on eight STRIPS domains the performance of
+PGP(fGC), our algorithm guided by our landmark count-
+ing heuristic for GP, w.r.t the GP as heuristic search
+approach (Segovia-Aguas, Jim´enez, and Jonsson 2021) that
+serves as a baseline. We also report an ablation study of
+our two orthogonal contributions. All experiments were per-
+formed using 10 random input instances of increasing dif-
+ﬁculty per domain, in an Ubuntu 20.04 LTS, with AMD®
+Ryzen 7 3700x 8-core processor and 32GB of RAM, with a
+1 hour time bound 2.
+Benchmarks.
+The Baking domain, where an agent fol-
+lows the steps to bake a set of cakes. Corridor, where an
+agent moves from an arbitrary initial location to a destina-
+tion location in a corridor. Gripper, where a robot must pick
+all balls from room A and drop them in room B. Intrusion,
+where an attacker performs a number of actions to steal data
+from some host computers. Lock, the domain illustrated in
+Figure 1. Ontable, in which towers of blocks are placed on
+the table. Spanner, where an agent must pick up spanners to
+tighten the loose nuts at the end of a corridor (spanners can
+only be used once and the agent cannot go back, introduc-
+ing dead-ends). Visitall, where starting from the bottom-left
+corner of a square grid, an agent must visit all grid cells.
+Synthesis and ablation study.
+In the ﬁrst experiment
+we use as a baseline the GP as heuristic search ap-
+proach (Segovia-Aguas, Jim´enez, and Jonsson 2021) that
+implements a Best-First Search (BFS) guided by its best
+single heuristic; a Euclidean distance (which actually acts
+as a counter of unachieved goals in propositional domains)
+and that we denote as fGC. Table 1 reports the best so-
+lutions found in terms of the number of required program
+lines n and pointers |Z|. The results show that BFS(fGC)
+2Repository at https://github.com/aig-upf/pgp-landmarks.
+
+
+n, |Z|
+Baseline - BFS(fGC)
+Contribution 1 - BFS(fLM )
+Contribution 2 - PGP(fGC)
+Contributions 1&2 - PGP(fLM)
+T
+M
+Ex
+Ev
+T
+M
+Ex
+Ev
+T
+M
+Ex
+Ev
+T
+M
+Ex
+Ev
+Baking
+13, 6
+TE
+TE
+TE
+TE
+TE
+TE
+TE
+TE
+ME
+ME
+ME
+ME
+98
+46
+48K
+1.4M
+Corridor
+11, 2
+101
+27
+6K
+120K ()
+45
+34
+7K
+114K
+12
+50
+6K
+120K
+16
+57
+6K
+121K
+Gripper
+8, 4
+5
+15
+3K
+63K
+43
+20
+19K
+339K
+1
+28
+3K
+63K
+8
+20
+19K
+336K
+Intrusion
+9, 1
+94
+284
+73K
+1.3M
+0
+18
+8
+190
+24
+877
+74K
+1.3M
+0
+18
+8
+190
+Lock
+12, 2
+TE
+TE
+TE
+TE
+TE
+TE
+TE
+TE
+ME
+ME
+ME
+ME
+3
+46
+1K
+30K
+Ontable
+11, 3
+TE
+TE
+TE
+TE
+TE
+TE
+TE
+TE
+25
+196
+10K
+366K
+323
+98
+3K
+113K
+Spanner
+12, 5
+TE
+TE
+TE
+TE
+TE
+TE
+TE
+TE
+TE
+TE
+TE
+TE
+172
+604
+25K
+705K
+Visitall
+7, 2
+0
+7
+50
+511
+7
+17
+27
+249
+0
+7
+88
+900
+0
+17
+49
+446
+Table 1: Number of program lines n and pointers |Z|, total time (T) in seconds, memory peak (M) in MB, expanded (Ex) and evaluated (Ev)
+nodes (K is 103 and M is 106). TE and ME stand for time and memory exceeded. Best results in bold.
+works well for Visitall and Gripper, where tracking the
+achieved problem goals provides a monotonic measure of
+search progress; however, it becomes insufﬁcient when ex-
+plicit goals do not provide such information (e.g. in Bak-
+ing, Intrusion, Lock or Spanner). The beneﬁts of combin-
+ing our two orthogonal contributions are represented by
+PGP(fLM), where our landmark counting heuristic fLM
+is used to inform our PGP algorithm. PGP(fLM) solves
+all domains within ﬁve minutes (approx.) including the pre-
+processing time of all the landmark graphs. Figure 5 shows
+the generalized plans computed by PGP(fLM); the solu-
+tion for the lock domain was already shown in Figure 4. We
+successfully validated all these solutions on large instances.
+Our two orthogonal contributions are also evaluated sep-
+arately in an ablation study, where we either ablate the con-
+tributed PGP algorithm which is the case for BFS(fLM), or
+ablate the contributed heuristic fLM which is the case for
+PGP(fGC). BFS(fLM), has the same coverage as the base-
+line. Its main drawback is that aggregating landmarks over
+all input instances may bias search towards certain regions
+of the space of planning programs where no solution gener-
+alized plan exists, e.g. consuming the ﬁrst program line with
+an instruction that reaches a new landmark but that must be
+actually used some lines after invalidating the rest of the pro-
+gram. On the other hand, PGP(fGC) outperforms the base-
+line; its heuristic is evaluated only in the subset of active
+instances, improving the coverage and total time of the base-
+line, but still it suffers from large plateaus due to the poorly
+informed heuristic.
+As a rule of thumb, fLM is not better than fGC in domains
+where the explicit problem goals are already providing an in-
+formative notion of search progress; the Gripper domain is
+a representative example of this. On the other hand, PGP ex-
+ploits the fact that, in many domains, computing a succinct
+solution that generalizes to a small set of instances is gen-
+eralizing to unseen problems. Therefore, PGP will perform
+worse than BFS when the programs that successfully solve
+the problems of the active set successively fail to generalize
+to the remaining problems.
+Synthesis
+with
+f1
+for
+tie
+breaking.
+In
+Segovia-Aguas, Jim´enez, and Jonsson
+(2021),
+fGC
+is
+also used in combination with the structural evalua-
+tion function f1(Π), that counts the number of goto
+instructions in
+a
+planning program Π,
+and
+that
+is
+used for tie breaking. In this experiment we evalu-
+ate this same tie breaking with our contributions, i.e.
+PGP(fLM, f1), and compare it with the best original
+setting in Segovia-Aguas, Jim´enez, and Jonsson (2021), i.e.
+BFS(fGC,f1) in our subset of propositional domains. Re-
+sults in Table 2 show that PGP(fLM, f1) also outperforms
+the state-of-the-art in GP as heuristic search, BFS(fGC,f1),
+in almost all domains.
+BFS(fGC,f1)
+PGP(fLM ,f1)
+T
+M
+Ex
+Ev
+T
+M
+Ex
+Ev
+Baking
+TE
+TE
+TE
+TE
+63
+35
+30K
+937K
+Corridor
+49
+16
+3K
+67K
+8
+43
+3K
+62K
+Gripper
+4
+14
+3K
+59K
+8
+18
+19K
+336K
+Intrusion
+55
+183
+51K
+896K
+0
+18
+8
+190
+Lock
+TE
+TE
+TE
+TE
+3
+45
+1K
+26K
+Ontable
+TE
+TE
+TE
+TE
+312
+97
+3K
+110K
+Spanner
+TE
+TE
+TE
+TE
+168
+604
+24K
+670K
+Visitall
+0
+7
+45
+496
+0
+17
+53
+458
+Table 2: Synthesis with BFS(fGC,f1) and PGP(fLM,f1), with the
+same input settings and metrics from Table 1.
+Related work
+Our GP approach is related to previous work that
+computes
+generalized
+heuristics
+for
+guiding
+state-
+space
+search
+on
+new
+classical
+planning
+instances
+of
+a
+given
+domain
+(Franc`es Medina et al.
+2019;
+St˚ahlberg, Franc`es, and Seipp 2021; Karia and Srivastava
+2021). However, PGP(fLM) does not aim learning a
+generalized heuristic but instead, it leverages the classical
+planning landmark machinery, that was originally con-
+ceived for state space search. We believe that our approach
+opens the door to incorporating into GP other successful
+techniques coming from classical planning, e.g. helpful
+actions/preferred operators.
+Most of the previous work on GP compute generalized
+plans that solve, at once, the entire set of classical planning
+instances given as input. PGP(fLM) implements a progres-
+sive approach that, one by one, processes the full batch of
+classical planning instances in a GP problem. Remarkably
+our progressive approach overcomes the main drawback
+of bottom-up/online approaches for GP (Winner and Veloso
+2003; Srivastava, Immerman, and Zilberstein 2011), which
+
+
+GRIPPER
+0 .
+pick (zb ,zr1 ,zg )
+1 .
+inc (zr2 )
+2 . move (zr1 ,zr2 )
+3 .
+drop (zb ,zr2 ,zg )
+4 . move (zr2 ,zr1 )
+5 .
+inc (zb )
+6 .
+goto (0 ,¬yz )
+7 .
+end
+INTRUSION
+0 .
+recon (zh )
+1 .
+break −i n t o (zh )
+2 .
+c l e a n (zh )
+3 .
+gain −ro o t (zh )
+4 .
+download −f i l e s (zh )
+5 .
+s t e a l −d a t a (zh )
+6 .
+inc (zh )
+7 .
+goto (0 ,¬yz )
+8 .
+end
+ONTABLE (BLOCKS)
+0 .
+unstack (zo1 ,zo2 )
+1 .
+inc (zo2 )
+2 .
+goto (0 ,¬yz )
+3 .
+put −down (zo1 )
+4 .
+c l e a r (zo2 )
+5 .
+inc (zo1 )
+6 .
+goto (0 ,¬yz )
+7 .
+c l e a r (zo1 )
+8 .
+inc (zo3 )
+9 .
+goto (0 ,¬yz )
+10.
+end
+VISITALL
+0 .
+v i s i t (zi ,zj )
+1 .
+inc (zi )
+2 .
+goto (0 ,¬yz )
+3 .
+c l e a r (zi )
+4 .
+inc (zj )
+5 .
+goto (0 ,¬yz )
+6 .
+end
+BAKING
+0 .
+putegginpan (ze ,zp )
+1 .
+p u t f l o u r i n p a n (zf ,zp )
+2 . mix (ze ,zf ,zp )
+3 .
+putpaninoven (zp ,zo )
+4 .
+bakecake (zo ,zp ,zc )
+5 .
+removepanfromoven (zp ,zo )
+6 .
+cleanpan (zp ,zs )
+7 .
+inc (zc )
+8 .
+inc (ze )
+9 .
+inc (zf )
+10.
+inc (zs )
+11.
+goto (0 ,¬yz )
+12.
+end
+CORRIDOR
+0 .
+inc (z1 )
+1 . move (z2 ,z1 )
+2 .
+inc (z1 )
+3 .
+inc (z2 )
+4 .
+goto (1 ,¬yz )
+5 . move (z1 ,z2 )
+6 .
+s e t (z1 ,z2 )
+7 .
+dec (z2 )
+8 .
+t e s t ( goal −a t (z1 ) )
+9 .
+goto (4 ,yz )
+10.
+end
+SPANNER
+0 .
+p i c k u p s p a n n e r (zl1 ,zs ,zm )
+1 .
+t i g h t e n n u t (zl1 ,zs ,zm ,zn )
+2 .
+inc (zn )
+3 .
+inc (zs )
+4 .
+goto (0 ,¬yz )
+5 .
+inc (zl1 )
+6 .
+walk (zl2 ,zl1 ,zm )
+7 .
+c l e a r (zn )
+8 .
+c l e a r (zs )
+9 .
+inc (zl1 )
+10.
+goto (0 ,¬yz )
+11.
+end
+Figure 5: Generalized plans computed by PGP(fLM). The pa-
+rameters of non-goto instructions are pointers. Goto instructions
+have two parameters; the destination line, and a condition over the
+zero ﬂag (either yz or ¬yz).
+suffer from the complexity of merging a new individual so-
+lution with the previously found solutions.
+First-order logic (FOL) policies that specify a strategy
+for solving planning instances have also shown to general-
+ize to planning domains (Khardon 1999; Martin and Geffner
+2004). Validating FOL policies over large instances (with
+large numbers of objects) is difﬁcult because of the com-
+plexity of variable matching; our approach has constant vari-
+able matching complexity since planning programs have
+no free variables. On the other hand, generalized polices
+are able to solve problems when actions are not deter-
+ministic (Belle and Levesque 2016), which connects GP
+to more general notions of planning, such as MDPs and
+POMDPs (Kolobov 2012). Unlike related work that focus
+on the computation of generalized policies, our GP approach
+does not require knowing the full state space of the input in-
+stances (Franc`es, Bonet, and Geffner 2021), which may eas-
+ily be too large to be fully speciﬁed, or reformulating actions
+w.r.t. a pool of features (Bonet, Franc`es, and Geffner 2019).
+Deep Reinforcement Learning (DRL) is also used to learn
+policies (Sutton and Barto 2018), represented with Deep
+Neural Networks (DNNs), that solve sequential decision-
+making problems, even when symbolic representations of
+states and actions are not available (Mnih et al. 2015). Off-
+the-shelf tools for learning DNNs have also been success-
+fully applied to learn black-box generalized policies, and
+heuristics, from PDDL representations (Bueno et al. 2019;
+Garg, Bajpai, and Mausam 2020; Toyer et al. 2020). DNNs
+are suitable for black box decision-making, but they are dif-
+ﬁcult to interpret; DNNs represent knowledge as millions of
+coupled parameters, so it becomes difﬁcult to identify the
+piece of knowledge responsible for solving a particular task,
+as well as to understand whether this piece of knowledge
+will be useful for unseen problems. Last but not least, model-
+based DRL approaches have exhibited good performance in
+several domains (Hafner et al. 2020), but the learned world
+models are again represented as NNs; solutions are then dif-
+ﬁcult to interpret and their generalization capacity in the
+presence of new objects is not evaluated.
+Conclusions
+We presented PGP(fLM), a novel heuristic search ap-
+proach to GP that progressively processes the classical
+planning instances of a GP problem, and that leverages a
+landmark counting heuristic to search in the space of plan-
+ning programs. PGP(fLM) allows to transfer landmark
+counting heuristics, originally conceived for state-space, to
+the solution-space search of GP. There is still room for im-
+proving our fLM heuristic for GP; the information captured
+by our landmark graphs could be augmented exploit-
+ing
+cyclic
+dependencies
+(B¨uchner, Keller, and Helmert
+2021),
+considering
+the
+remaining
+number
+of
+pro-
+grammable lines (Marzal, Sebastia, and Onaindia 2014),
+or leveraging different relaxations of the planning in-
+stances
+(Keyder, Richter, and Helmert
+2010).
+Besides
+landmarks,
+heuristic
+planners
+implement
+complemen-
+tary
+ideas
+such
+as
+helpful
+actions/preferred
+opera-
+tors (Hoffmann and Nebel 2001), multi-queue best-ﬁrst
+search for multiple heuristics combination (Helmert 2006b),
+or
+novelty-based
+exploration
+(Lipovetzky and Geffner
+2012). A promising future research direction is to in-
+corporate into the GP as heuristic search approach all
+these techniques that have proved successful for classical
+planning.
+Acknowledgements
+Javier Segovia-Aguas is supported by TAILOR, a project funded
+by EU H2020 research and innovation programme no. 952215. Ser-
+gio Jim´enez is supported by Spanish grants RYC-2015-18009 and
+TIN2017-88476-C2-1-R. Anders Jonsson is partially supported by
+
+
+Spanish grants PID2019-108141GB-I00. Laura Sebastia is sup-
+ported by TIN2017-88476-C2-1-R and TAILOR-952215.
+References
+Belle, V.; and Levesque, H. J. 2016. Foundations for gener-
+alized planning in unbounded stochastic domains. In KR.
+Bonet, B.; Franc`es, G.; and Geffner, H. 2019. Learning fea-
+tures and abstract actions for computing generalized plans.
+In AAAI.
+Bonet, B.; and Geffner, H. 2021. General policies, represen-
+tations, and planning width. In AAAI.
+B¨uchner, C.; Keller, T.; and Helmert, M. 2021. Exploiting
+Cyclic Dependencies in Landmark Heuristics. In ICAPS.
+Bueno, T. P.; de Barros, L. N.; Mau´a, D. D.; and Sanner,
+S. 2019. Deep reactive policies for planning in stochastic
+nonlinear domains. In AAAI.
+Dandamudi, S. P. 2005. Installing and using nasm. Guide to
+Assembly Language Programming in Linux.
+Fern, A.; Khardon, R.; and Tadepalli, P. 2011.
+The ﬁrst
+learning track of the international planning competition.
+Machine Learning, 84(1-2): 81–107.
+Franc`es, G.; Bonet, B.; and Geffner, H. 2021. Learning Gen-
+eral Policies from Small Examples Without Supervision. In
+AAAI.
+Franc`es Medina, G.; Corrˆea, A. B.; Geissmann, C.; and
+Pommerening, F. 2019. Generalized potential heuristics for
+classical planning. IJCAI.
+Garg, S.; Bajpai, A.; and Mausam. 2020. Symbolic network:
+generalized neural policies for relational MDPs. In ICML.
+Hafner, D.; Lillicrap, T. P.; Norouzi, M.; and Ba, J. 2020.
+Mastering Atari with Discrete World Models. In ICLR.
+Haslum, P.; Lipovetzky, N.; Magazzeni, D.; and Muise, C.
+2019.
+An introduction to the planning domain deﬁnition
+language. Synthesis Lectures on Artiﬁcial Intelligence and
+Machine Learning, 13(2): 1–187.
+Helmert, M. 2006a. New Complexity Results for Classical
+Planning Benchmarks. In ICAPS.
+Helmert, M. 2006b. The Fast Downward Planning System.
+JAIR, 26: 191–246.
+Helmert, M.; and Domshlak, C. 2009. Landmarks, critical
+paths and abstractions: what’s the difference anyway? In
+ICAPS.
+Hoffmann, J.; and Nebel, B. 2001. The FF planning sys-
+tem: Fast plan generation through heuristic search. JAIR,
+14: 253–302.
+Hoffmann, J.; Porteous, J.; and Sebastia, L. 2004. Ordered
+landmarks in planning. JAIR, 22: 215–278.
+Hu, Y.; and De Giacomo, G. 2011. Generalized planning:
+Synthesizing plans that work for multiple environments. In
+IJCAI.
+Hu, Y.; and Levesque, H. J. 2011. A Correctness Result for
+Reasoning about One-Dimensional Planning Problems. In
+IJCAI.
+Illanes, L.; and McIlraith, S. A. 2019. Generalized planning
+via abstraction: arbitrary numbers of objects. In AAAI.
+Jim´enez, S.; Segovia-Aguas, J.; and Jonsson, A. 2019. A
+review of generalized planning. KER, 34.
+Karia, R.; and Srivastava, S. 2021. Learning Generalized Re-
+lational Heuristic Networks for Model-Agnostic Planning.
+In AAAI.
+Karpas, E.; and Domshlak, C. 2009. Cost-optimal planning
+with landmarks. In IJCAI.
+Keyder, E.; Richter, S.; and Helmert, M. 2010. Sound and
+Complete Landmarks for And/Or Graphs. In ECAI.
+Khardon, R. 1999. Learning action strategies for planning
+domains. Artiﬁcial Intelligence, 113(1-2): 125–148.
+Kolobov, A. 2012.
+Planning with Markov decision pro-
+cesses: An AI perspective. Synthesis Lectures on Artiﬁcial
+Intelligence and Machine Learning, 6(1): 1–210.
+Korf, R. E.; Zhang, W.; Thayer, I.; and Hohwald, H. 2005.
+Frontier search. Journal of the ACM, 52(5).
+Lipovetzky, N.; and Geffner, H. 2012. Width and serializa-
+tion of classical planning problems. In ECAI.
+Lotinac, D.; Segovia-Aguas, J.; Jim´enez, S.; and Jonsson, A.
+2016. Automatic generation of high-level state features for
+generalized planning. In IJCAI.
+Martin, M.; and Geffner, H. 2004.
+Learning generalized
+policies from planning examples using concept languages.
+Applied Intelligence, 20: 9–19.
+Marzal, E.; Sebastia, L.; and Onaindia, E. 2014.
+On the
+use of temporal landmarks for planning with deadlines. In
+ICAPS.
+Mnih, V.; Kavukcuoglu, K.; Silver, D.; Rusu, A. A.; Veness,
+J.; Bellemare, M. G.; Graves, A.; Riedmiller, M.; Fidjeland,
+A. K.; Ostrovski, G.; Petersen, S.; Beattie, C.; Sadik, A.;
+Antonoglou, I.; King, H.; Kumaran, D.; Wierstra, D.; Legg,
+S.; and Hassabis, D. 2015.
+Human-level control through
+deep reinforcement learning. Nature, 518(7540): 529–533.
+Porteous, J.; Sebastia, L.; and Hoffmann, J. 2001. On the
+extraction, ordering, and usage of landmarks in planning. In
+ECP.
+Richter, S.; Helmert, M.; and Westphal, M. 2008. Land-
+marks Revisited. In AAAI.
+Richter, S.; and Westphal, M. 2010. The LAMA planner:
+Guiding cost-based anytime planning with landmarks. JAIR,
+39: 127–177.
+Segovia-Aguas, J.; Jim´enez, S.; and Jonsson, A. 2019. Com-
+puting programs for generalized planning using a classical
+planner. Artiﬁcial Intelligence.
+Segovia-Aguas, J.; Jim´enez, S.; and Jonsson, A. 2021. Gen-
+eralized Planning as Heuristic Search. In ICAPS.
+Seipp, J.; and Helmert, M. 2018. Counterexample-guided
+Cartesian abstraction reﬁnement for classical planning.
+JAIR, 62: 535–577.
+Siddharth, S.; Neil, I.; Shlomo, Z.; and Tianjiao, Z. 2011.
+Directed Search for Generalized Plans Using Classical Plan-
+ners. In ICAPS.
+Srivastava, S.; Immerman, N.; and Zilberstein, S. 2011. A
+new representation and associated algorithms for general-
+ized planning. Artiﬁcial Intelligence, 175(2): 615–647.
+
+
+St˚ahlberg, S.; Franc`es, G.; and Seipp, J. 2021.
+Learning
+Generalized Unsolvability Heuristics for Classical Planning.
+In IJCAI.
+Sutton, R. S.; and Barto, A. G. 2018. Reinforcement learn-
+ing: An introduction. MIT press.
+Toyer, S.; Thi´ebaux, S.; Trevizan, F.; and Xie, L. 2020. AS-
+Nets: Deep Learning for Generalised Planning. JAIR, 68:
+1–68.
+Winner, E.; and Veloso, M. 2003.
+DISTILL: Learning
+Domain-Speciﬁc Planners by Example. In ICML.
+
+
+Appendices
+Experimental Setup and Discussion
+Table 1 focus on reporting data about nodes in the search
+where every node is a (partial) program. The evaluation of
+a node consists of ﬁrst applying it on every input instance,
+then retrieve the resulting states of each instance, and com-
+pute the evaluation functions over them to insert the node
+in the open queue. Since BFS works on the full set of in-
+stances and PGP only on the active set, one interesting
+observation is how many states are both evaluating. Note
+that node evaluation may return a failure, e.g. the node is a
+deadend, in such cases the node evaluation counter increases
+by one but the state evaluation counter remains unchanged.
+Table 3 shows these differences between node evaluations,
+node deadends and state evaluations for each setting from
+Table 1. From Table 3 we conclude that fLM almost dom-
+inates in all facets of evaluations in the search, being Grip-
+per the only domain where fGC does better in the number
+of node evaluations; and the best general performance and
+coverage is found in the PGP(fLM) setting, complement-
+ing Table 1 results.
+Next we analyze each computed solution by PGP(fLM)
+in Table 1, which all have been successfully validated and
+generalization can be proven 3.
+Baking
+This domain consists of baking cakes in an oven after
+mixing eggs and ﬂour in a pan, which has to be cleaned
+before baking the next cake. There are 7 action schemes, to
+put an egg or ﬂour in a pan, mix the egg and ﬂour in the pan,
+put and remove a pan from an oven, bake a cake or clean a
+pan.
+Inputs: there are 10 training instances to bake n ∈[1, 10]
+cakes. In the validation set there are n ∈[11, 60] cakes (a
+total of 50 instances).
+Baking solution: the parameters are pointers to indirectly ad-
+dress typed objects eggs (ze), ﬂour (zf), pan (zp), oven (zo),
+cake (zc), and soap (zs).
+0 .
+putegginpan (ze ,zp )
+1 .
+p u t f l o u r i n p a n (zf ,zp )
+2 .
+mix (ze ,zf ,zp )
+3 .
+putpaninoven (zp ,zo )
+4 .
+bakecake (zo ,zp ,zc )
+5 .
+removepanfromoven (zp ,zo )
+6 .
+cleanpan (zp ,zs )
+7 .
+in c (zc )
+8 .
+in c (ze )
+9 .
+in c (zf )
+10.
+in c (zs )
+11.
+goto (0 ,¬yz )
+12.
+end
+3The experiments are all reproducible by following the code
+tutorial.
+The baking solution generalizes.
+Proof. All pointers start indexing the ﬁrst typed object of
+their list. The program puts the ﬁrst egg and ﬂour in the pan,
+mix them, then it puts the pan in the oven, bakes the cake,
+removes the pan from the oven and leaves the pan clean.
+Then, the cake, egg, ﬂour and soap pointers are increased by
+one, and the procedure repeats until the soap pointer cannot
+be increased more. Since, there are as many soap objects
+as eggs, ﬂours and cakes, this guarantees that all cakes are
+going to be baked iteratively.
+Blocks Ontable
+This domain is a speciﬁc instance of the blocksworld
+domain, where n blocks are arranged into one or multiple
+towers of blocks with the goal of putting all down onto
+the table. There are 4 action schemes to pick up a block
+from the table, or put it down onto the table, and to stack or
+unstack a block onto/from another one.
+Inputs: the training set consists of 12 instances with
+n ∈[10, 15] blocks, and the validation set has 50 instances
+with n ∈[16, 65] blocks.
+Blocks ontable solution: there are 3 pointers (zo1, zo2 and
+zo3) to indirectly address the blocks of each instance.
+0 .
+u n stack (zo1 ,zo2 )
+1 .
+in c (zo2 )
+2 .
+goto (0 ,¬yz )
+3 .
+put −down (zo1 )
+4 .
+c l e a r (zo2 )
+5 .
+in c (zo1 )
+6 .
+goto (0 ,¬yz )
+7 .
+c l e a r (zo1 )
+8 .
+in c (zo3 )
+9 .
+goto (0 ,¬yz )
+10.
+end
+The blocks ontable solution generalizes.
+Proof. First, it tries to unstack the ﬁrst object zo1 from any
+other object zo2 and put it down onto the table. Then, it re-
+sets zo2 and increase zo1 by one, and repeats until it has tried
+all unstacks and putdowns between two objects. In the worst
+case, there is a single tower in reverse order, an every time
+that Lines 0-6 are executed, only one block is put down onto
+the table. Since the number of blocks onto the table are in-
+creased at least by one when applying Lines 0-6, execut-
+ing that partial program n times (where n is the number of
+blocks) guarantees to have all blocks onto the table, which
+is what Lines 7-9 do.
+Corridor
+In this domain there is only one action schema to move
+between two adjacent locations of a corridor. The initial
+state and goal are two arbitrary locations, and requires an
+extra predicate in the initial state that is a copy of the “at” in
+the goal for generalization.
+
+
+n, |Z|
+BFS(fGC)
+BFS(fLM )
+PGP(fGC)
+PGP(fLM)
+NE (Dead)
+SE
+NE (Dead)
+SE
+NE (Dead)
+SE
+NE (Dead)
+SE
+Baking
+13, 6
+TE
+TE
+TE
+TE
+ME
+ME
+1.4M (1.3M)
+180K
+Corridor
+11, 2
+120K (33K)
+876K
+114K (102K)
+112K
+120K (31K)
+181K
+121K (57K)
+129K
+Gripper
+8, 4
+63K (16K)
+461K
+339K (317K)
+223K
+63K (16K)
+46K
+336K (314K)
+22K
+Intrusion
+9, 1
+1.3M (207K)
+11.3M
+190 (27)
+1.7K
+1.3M (204K)
+3.3M
+190 (26)
+480
+Lock
+12, 2
+TE
+TE
+TE
+TE
+ME
+ME
+30K (4.6K)
+26K
+Ontable
+11, 3
+TE
+TE
+TE
+TE
+366K (54K)
+312K
+113K (38K)
+75K
+Spanner
+12, 5
+TE
+TE
+TE
+TE
+TE
+TE
+705K (674K)
+63K
+Visitall
+7, 2
+511 (380)
+1.3K
+249 (154)
+970
+900 (669)
+581
+446 (294)
+335
+Table 3: Number of program lines n and pointers |Z|. NE stands for nodes evaluated, Dead for nodes marked as deadends, SE for states
+evaluated, TE and ME for time and memory exceeded, respectively. K is 103 and M is 106. Best results in bold.
+Inputs: consist of corridors of length n, with 10 training
+instances where n ∈[5, 14], and 50 validation instances
+where n ∈[12, 61].
+Corridor solution: pointers z1 and z2 are used to indirectly
+address location objects.
+0 .
+in c (z1 )
+1 . move (z2 ,z1 )
+2 .
+in c (z1 )
+3 .
+in c (z2 )
+4 .
+goto (1 ,¬yz )
+5 . move (z1 ,z2 )
+6 .
+s e t (z1 ,z2 )
+7 .
+dec (z2 )
+8 .
+t e s t ( goal −a t (z1 ) )
+9 .
+goto (4 ,yz )
+10.
+end
+The corridor solution generalizes.
+Proof. Line 0 is applied only once, setting z2 and z1 to the
+ﬁrst and second locations, respectively. After, it moves from
+z2 to z1 (right move), increases both pointers, and repeats
+until the agent is at the rightmost location. Then, the pro-
+gram will ﬁnish with Lines 5-9 if the agent is at the goal
+location, otherwise it will repeat the procedure of moving
+one location to the left until the goal location is reached, ap-
+plying in the worst case twice as many planning actions as
+the size of the corridor.
+Gripper
+There are 3 action schemes: to move between the two
+rooms, to pick a ball with a gripper from a location, and to
+drop a ball in a location with the gripper that holds the ball.
+The goal is to move all balls from room A to room B by
+using left/right grippers.
+Inputs: the training set has 10 instances with n ∈[2, 11]
+balls, always starting in room A. The validation set has 50
+instances with n ∈[12, 61] balls.
+Gripper solution: the room pointers are zr1 and zr2, the ball
+pointer is zb and the gripper pointer is zg.
+0 .
+pick (zb ,zr1 ,zg )
+1 .
+in c (zr2 )
+2 . move(zr1 ,zr2 )
+3 .
+drop (zb ,zr2 ,zg )
+4 . move(zr2 ,zr1 )
+5 .
+in c (zb )
+6 .
+goto (0 ,¬yz )
+7 .
+end
+The gripper solution generalizes.
+Proof. The sequence of actions for one ball (Lines 0-3) is
+to pick up the ﬁrst ball zb with the ﬁrst gripper zg (left) at
+room zr1 (room A), to increase the pointer zr2 to point to
+room B, to move from room A to room B, and to drop the
+ball zb that zg holds at room B. Then, to go for the next
+ball (Lines 4-6), it moves back to room A, and increase the
+pointer zb by one until there are no more balls. Note that
+zr2 is increased in every loop but it is applicable only once,
+thus after the second step it always points to room B while
+zr1 always points room A. Since this procedure works for
+one ball, leaves the robot at room A, and runs iteratively for
+each ball, generalizing to any number of balls.
+Intrusion
+In this domain there is 9 action schemes related to a cyber-
+security intrusion, all parameterized for one speciﬁc host.
+It can recon a host, gather information and obtain access,
+modify the ﬁles of the system, clean the logs, vandalize the
+host, gain root access, download ﬁles and steal data. There
+could be multiple goals, but we focus on stealing the data
+of all hosts, which makes some actions to be unhelpful for
+generalization.
+Inputs: there are 10 training instances with n ∈[1, 10]
+hosts, and a validation set of 50 instances with n ∈[11, 60]
+hosts.
+Intrusion solution: pointer zh addresses the current host.
+0 .
+recon (zh )
+1 .
+break −i n t o (zh )
+2 .
+clean (zh )
+3 .
+gain −r o o t (zh )
+
+
+4 .
+download −f i l e s (zh )
+5 .
+s t e a l −d ata (zh )
+6 .
+in c (zh )
+7 .
+goto (0 ,¬yz )
+8 .
+end
+The intrusion solution generalizes.
+Proof. The steps to steal data from a host zh are shown in
+Lines 0-5, once the data is stolen for zh, it goes for the next
+host increasing zh by one, and going back to the ﬁrst line
+until there are no more hosts. This procedure steals the data
+of all hosts, no matter the number of hosts.
+Lock
+This is the example domain, where an agent starts in an
+arbitrary location of a corridor, then it has to pick up a key
+in the rightmost location, and move back to the leftmost
+location to open a lock with the key. The domain has one
+action schema to move between locations, and 3 for pick up
+a key from a location, drop the key in a given location, and
+open a lock with the key.
+Inputs: the training set has 10 instances with corridors of
+length n ∈[5, 14], where the lock and the key are always in
+the leftmost and rightmost cells, respectively. The validation
+set has 50 instances with n ∈[12, 61].
+Lock solution: pointers z1 and z2 are used to indirectly ad-
+dress locations of the corridor.
+0 .
+in c (z1 )
+1 . move (z2 ,z1 )
+2 .
+in c (z1 )
+3 .
+in c (z2 )
+4 .
+goto ( 1 , ! yz )
+5 .
+pickup (z1 )
+6 .
+dec (z1 )
+7 . move (z1 ,z2 )
+8 .
+dec (z2 )
+9 .
+goto ( 5 , ! yz )
+10.
+open (z1 )
+11.
+end
+The lock solution generalizes
+Proof. Lines 0-4 moves the agent to the rightmost location,
+then it picks up the key (Line 5), and in Lines 6-9 it moves to
+the leftmost location (note that it tries to pick up the key in
+every location when going to the left, but only the ﬁrst one is
+applicable). Once in the leftmost location, it opens the lock
+(Line 10). This applies no matter the size of the corridor.
+Spanner
+In this domain a man starts in the leftmost location of
+a corridor, and must pick all spanners on its way to the
+rightmost location, and tighten all nuts with the collected
+spanners. Two of the main difﬁculties are that spanners
+can only be used once and the man can only traverse the
+corridor in one direction, so it is a deadend whenever the
+man does not pick a spanner in a location and moves to the
+next location. There are 3 action schemas in this domain, a
+man can walk to the next adjacent location, pick up spanners
+and tighten nuts with spanners.
+Inputs: consists of 10 training instances of corridors of
+length n ∈[1, 10], and 2 × n spanners and nuts. The
+validation set has 50 instances with n ∈[12, 61].
+Spanner solution: the location pointers are zl1 and zl2, for
+spanners there is a pointer zs, for nuts a pointer zn and for
+the man is the pointer zm.
+0 .
+p ick u p sp an n er (zl1 ,zs ,zm )
+1 .
+t i g h t e n n u t (zl1 ,zs ,zm ,zn )
+2 .
+in c (zn )
+3 .
+in c (zs )
+4 .
+goto (0 ,¬yz )
+5 .
+in c (zl1 )
+6 .
+walk (zl2 ,zl1 ,zm )
+7 .
+c l e a r (zn )
+8 .
+c l e a r (zs )
+9 .
+in c (zl1 )
+10.
+goto (0 ,¬yz )
+11.
+end
+The spanner solution generalizes.
+Proof. First, there are as many spanners as nuts, so in Lines
+0-4 the man tries to pick up a spanner and use it to tighten
+a nut (note that inapplicable tightens make the man to keep
+the spanners), and continues with the next spanner and nut,
+until pointer zs visits all spanners. Then the man moves to
+the next adjacent location and resets zs and zn (Lines 5-8),
+and continues in the ﬁrst line until zl1 can not be increased
+more (Lines 9-10). In summary, in every location zl1 the
+man picks up all spanners from that location, moves to the
+next location and use the available spanners to tighten all
+loose nuts when applicable. Thus, iff the initial state is not
+a dead-end, it generalizes no matter the distribution of span-
+ners and nuts or the length of the corridor.
+Visitall
+Starting from the bottom-left corner, an agent must visit
+all cells of an n × n grid. There is only one action schema
+“visit” to mark a cell as visited.
+Inputs: there are 10 training instances of n × n grid sizes
+such that n ∈[2, 11]. In the validation, there are 50 instances
+where n ∈[12, 61].
+Visitall solution: pointer zi is used for row objects, and zj
+for column objects.
+0 .
+v i s i t (zi ,zj )
+1 .
+in c (zi )
+2 .
+goto (0 ,¬yz )
+3 .
+c l e a r (zi )
+4 .
+in c (zj )
+5 .
+goto (0 ,¬yz )
+6 .
+end
+
+
+The visitall solution generalizes.
+Proof. Location (0, 0) is visited when applying the ﬁrst in-
+struction (Line 0), then it increases zi by one and repeats
+until there are no more rows for zj = 0, so it visits all cells
+of the ﬁrst column (Lines 0-2). After that, it goes back to the
+ﬁrst row, moves to the next column, and continues from the
+ﬁrst program line until there are no more columns (Lines 3-
+5). This program visits all the cells in the grid, row by row,
+so it generalizes no matter the size of the grid.
+Evaluation of PGP(f∥LM∥)
+One of the main drawbacks of fLM is the searching bias
+towards programs that reach more landmarks for certain in-
+stances. One way to mitigate this effect is to normalize the
+weight of each instance by its total number of landmarks. We
+call this the normalized landmarks heuristic, which works
+with a precision of 4 digits. However, the outcomes of this
+new normalized heuristic is exactly the same as fLM in the
+given set of generalized planning problems, which means
+that even though fLM might be biased from input data, this
+is not observed in the randomly generated datasets.

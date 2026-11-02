@@ -1,0 +1,1349 @@
+Certifying Pareto-Optimality in
+Multi-Objective Maximum Satisfiability
+Christoph Jabs1
+, Jeremias Berg1
+, Bart Bogaerts2,3
+, and Matti
+Järvisalo1
+1 University of Helsinki, Helsinki, Finland
+{christoph.jabs, jeremias.berg, matti.jarvisalo}@helsinki.fi
+2 KU Leuven, Leuven, Belgium
+bart.bogaerts@kuleuven.be
+3 Vrije Universiteit Brussel, Brussels, Belgium
+Abstract. Due to the wide employment of automated reasoning in the
+analysis and construction of correct systems, the results reported by au-
+tomated reasoning engines must be trustworthy. For Boolean satisfiabil-
+ity (SAT) solvers—and more recently SAT-based maximum satisfiability
+(MaxSAT) solvers—trustworthiness is obtained by integrating proof log-
+ging into solvers, making solvers capable of emitting machine-verifiable
+proofs to certify correctness of the reasoning steps performed. In this
+work, we enable for the first time proof logging based on the VeriPB
+proof format for multi-objective MaxSAT (MO-MaxSAT) optimization
+techniques. Although VeriPB does not offer direct support for multi-
+objective problems, we detail how preorders in VeriPB can be used to
+provide certificates for MO-MaxSAT algorithms computing a represen-
+tative solution for each element in the non-dominated set of the search
+space under Pareto-optimality, without extending the VeriPB format or
+the proof checker. By implementing VeriPB proof logging into a state-
+of-the-art multi-objective MaxSAT solver, we show empirically that proof
+logging can be made scalable for MO-MaxSAT with reasonable overhead.
+Keywords: Multi-objective combinatorial optimization · maximum sat-
+isfiability · proof logging
+1
+Introduction
+Automated reasoning is central in enabling the analysis and construction of cor-
+rect systems. Practical solvers developed in the realm of automated reasoning,
+such as Boolean satisfiability (SAT) solvers [9], facilitate the development of
+more complex automated reasoning systems. One successful example of such
+generic SAT-based approaches are solvers developed for maximum satisfiabil-
+ity (MaxSAT) [3]—the optimization extension of SAT—enabling solving various
+NP-hard real-world optimization problems [3]. Further, SAT-based approaches
+are being generalized and developed for MaxSAT under multiple objectives, i.e.,
+multi-objective MaxSAT [11,13,14,29,35,36,37,49,50], with the aim of extend-
+ing the success of MaxSAT to more efficiently solving real-world multi-objective
+arXiv:2501.17493v1  [cs.AI]  29 Jan 2025
+
+
+2
+Jabs et al.
+optimization problems, from, e.g., staff scheduling [18] through package upgrade-
+ability [39] to finding interpretable classifiers [44].
+The more SAT and MaxSAT solvers are used in real-world settings, the
+more important it is to be able to trust the results solvers provide. While so-
+lutions are generally easy to confirm, solvers should be trustworthy also when
+they report unsatisfiability or, in the context of optimization, when the solvers
+claim that a solution is optimal and hence no better solutions exist. In response
+to these concerns, proof logging and checking techniques for SAT solvers have
+been developed and widely adopted [28,15,16], among which DRAT [30,31] re-
+mains today the de facto standard in the context of SAT solving. However,
+DRAT and other SAT proof formats work purely on propositional clauses, which
+makes them unsuitable for proof logging MaxSAT solvers. Instead, the VeriPB
+format [27,10], which is based on pseudo-Boolean constraints (i.e., 0-1 linear
+inequalities) and offers direct support for reasoning about objective values in
+single-objective optimization problems, has enabled proof logging for various op-
+timization contexts [7,10,17,22,23,24,25,26,27,32,33,52], including MaxSAT solv-
+ing [6,7,33,51,52].
+In this work, we enable proof logging for various recently-proposed multi-
+objective MaxSAT solving techniques. To the best of our knowledge, this is the
+first work enabling proof logging in multi-objective optimization.4 Our solution
+builds on the VeriPB format. It is critical to note that VeriPB does not offer di-
+rect support for multiple objective functions, and is thereby seemingly restricted
+to proof logging single-objective optimization algorithms. However, as we will
+detail, proof logging for MO-MaxSAT can in fact be enabled without extending
+the VeriPB format or the proof checker. In particular, in order to provide cer-
+tificates for MO-MaxSAT algorithms developed for computing a representative
+solution for each element in the so-called non-dominated set of the search space
+under Pareto-optimality [21], we make in a specific way use of preorders sup-
+ported by VeriPB. While preorders were first introduced to VeriPB for certi-
+fying symmetry and dominance breaking [10], here we show that, in fact, a single
+preorder suffices for certifying that an MO-MaxSAT algorithm has computed a
+representative solution at each element of the non-dominated set. As representa-
+tive MO-MaxSAT techniques, we detail VeriPB-based proof logging for variants
+of the P-minimal [43,49], BiOptSat [37], and LowerBound [14] approaches,
+as well as the recently-proposed MO-MaxSAT preprocessing/reformulation tech-
+nique of core boosting [36] which has been shown to provide considerable run-
+time improvements to MO-MaxSAT solvers. By adding VeriPB proof logging
+to the implementations of these approaches in the MO-MaxSAT solver Scut-
+tle [34,35,36], we show empirically that proof logging can be made scalable for
+MO-MaxSAT, with average proof logging overhead ranging from 14% to 29%
+depending on the solving approach.
+4 Although relatively distant to the present work, there is some work on certificates
+in the context of multi-objective queries in Markov decision processes [4].
+
+
+Certifying Pareto-Optimality in Multi-Objective Maximum Satisfiability
+3
+2
+Preliminaries
+We begin with necessary preliminaries related to multi-objective MaxSAT and
+VeriPB proofs.
+2.1
+Clauses and Pseudo-Boolean Constraints
+A literal ℓis a {0, 1}-valued Boolean variable x or its negation x ≡1 −x. A
+propositional clause C = (ℓ1 ∨. . . ∨ℓk) is a disjunction of literals. A formula in
+conjunctive normal form (CNF) F = C1 ∧. . . ∧Cm is a conjunction of clauses.
+We often think of clauses as sets of literals and formulas as sets of clauses.
+A (normalized) pseudo-Boolean (PB) constraint is a 0-1 linear inequality
+C = P
+iaiℓi ≥b where ai are positive integers and b a non-negative integer. We
+will assume wlog that all PB constraints are in normal form, meaning that the
+ℓi are over different variables and all coefficients ai and the bound are positive.
+A pseudo-Boolean (PB) formula is a conjunction (or set) of PB constraints. We
+identify the propositional clause C = (ℓ1 ∨. . . ∨ℓk) with the PB constraint
+Pk
+i=1ℓi ≥1. This is convenient as the algorithms and solvers that we develop
+proof logging for expect propositional clauses as input, and—as detailed in this
+work—produce their proofs in pseudo-Boolean format. If C is the PB constraint
+P
+i aiℓi ≥b, we write ¬C for its negation P
+i aiℓi ≥P
+i ai −b + 1. If p is
+furthermore a variable, we write p ⇔C for the two constraints expressing that
+p implies C and vice versa, i.e., Mp + P
+i aiℓi ≥M and bp + P
+i aiℓi ≥b where
+M = P
+i ai −b + 1. An objective O is an expression P
+i aiℓi + L where the ai
+and L are integers.
+A substitution ω maps each variable in its domain to a truth value (either
+0 or 1) or to another literal. We denote by C ↾ω the constraint obtained from
+C by replacing each variable x in the domain of ω by ω(x); the notations O↾ω,
+F↾ω, and #»x↾ω for a tuple of variables #»x are defined analogously. An assignment
+α is a substitution that maps only onto {0, 1}. When convenient, we view an
+assignment as the set of literals it sets to 1. An assignment α is complete for a
+constraint, formula, or objective if α maps each variable in them to a value, and
+partial otherwise. The assignment α satisfies a constraint C if the constraint
+C ↾α= P
+ia′
+iℓ′
+i ≥b′ obtained after normalization has b′ = 0, and falsifies C if
+P
+ia′
+i < b′. In other words, α satisfies C if simplifying C by α leads to a trivial
+constraint and falsifies C if no extension of α satisfies C. An assignment α is
+a solution to a formula F if α satisfies all constraints in F. A constraint C is
+implied by F (denoted by F |= C) if all solutions of F also satisfy C.
+2.2
+Multi-Objective MaxSAT
+An instance (F, O) of multi-objective MaxSAT (MO-MaxSAT) consists of a
+CNF formula F and a set O = (O1, . . . , Op) of p objectives under minimization.
+This definition for MO-MaxSAT captures standard (single-objective, weighted
+partial) MaxSAT by setting p = 1; see, e.g., [37]. Given two assignments α and β
+
+
+4
+Jabs et al.
+F =(x1 ∨x2 ∨x3) ∧(x1 ∨x2 ∨x4)
+∧(x2 ∨x3 ∨x5) ∧(x3 ∨x4 ∨x5)
+O1 = 3x2 + 4x3 + 2x4 + 5x5
+O2 = 7x1 + 4x2 + 1x3 + 2x4
+0
+3
+6
+9 12
+0
+3
+6
+9
+12
+O1
+O2
+Infeasible region
+Pareto-opt. solutions
+Fig. 1. A bi-objective MaxSAT instance and its Pareto-optimal solutions.
+that are complete for each Oi, we say that α weakly dominates β (and write
+α ⪯P β) if Oi↾α≤Oi↾β holds for each i = 1, . . . , p. Note that O↾α is an integer
+value when α is complete for O. If additionally Ot↾α< Ot↾β for some t, we say
+that α dominates β (and write α ≺P β). A solution α to F is Pareto-optimal for
+(F, O) if α is not dominated by any other solution to F. The non-dominated set
+of (F, O) consists of the tuples of objective values of Pareto-optimal solutions,
+i.e., {(O1↾α, . . . , Op↾α) | α is Pareto-optimal for (F, O)}. Note that each element
+in the non-dominated set can correspond to several Pareto-optimal solutions.
+We focus on the task of computing a representative solution for each element of
+the non-dominated set.
+Example 1. Consider the bi-objective MaxSAT instance (F, (O1, O2)) in Fig. 1.
+Its non-dominated set is {(4, 8), (5, 6), (6, 3)}. Its three Pareto-optimal solutions
+are {x1, x2, x3, x4, x5}, {x1, x2, x3, x4, x5}, and {x1, x2, x3, x4, x5}.
+2.3
+Multi-Objective MaxSAT Solving
+We consider the multi-objective MaxSAT problem of finding a representative
+solution of each element in the non-dominated set. Various algorithms for this
+problem setting have been proposed recently [13,14,37,49,50]. These algorithms
+make incremental use of a SAT solver [19,45] while adding constraints to the
+working formula, ending with an unsatisfiable working formula once all elements
+in the non-dominated set have been discovered.
+For many of the existing algorithms for MO-MaxSAT, a crucial building
+block is what we call a Pareto-dominance cut, or PD cut for short. A PD cut
+is a (set of) constraint(s) that, given a solution α, is falsified exactly by all
+solutions that are weakly dominated by α (including α itself). Adding a PD cut
+to the working formula therefore excludes solutions weakly dominated by α from
+further consideration. Note that for the single-objective case (p = 1), a PD cut
+is identical to a solution-improving constraint, admitting only “better” solutions.
+This no longer holds when p > 1 since Pareto-dominance is not a total order:
+solutions that are incomparable to α will satisfy the PD cut.
+For objectives O = (O1, . . . , Op) and solution α, let wi be fresh variables for
+each Oi with their semantics defined by
+wi ⇔Oi ≥Oi↾α .
+(1)
+
+
+Certifying Pareto-Optimality in Multi-Objective Maximum Satisfiability
+5
+The PD cut is the clause (w1 ∨· · · ∨wp). For encoding (1), MO-MaxSAT al-
+gorithms use a choice of various CNF encodings [5,20,41,42,46]. We will return
+in more detail to how PD cuts are employed in the P-minimal [43,49], Lower-
+Bound [14], and BiOptSat [37] algorithms in Section 3 when detailing VeriPB
+proof logging for each of these algorithms.
+2.4
+VeriPB
+We now overview a simplified version of the VeriPB proof system, only dis-
+cussing the rules that are relevant for our current exposition. For instance, while
+VeriPB supports single-objective optimization, we will only use the decision ver-
+sion of this proof system. We refer the interested reader to earlier work [10,27]
+for an exposition of the full proof system.
+Given a PB input formula F, the VeriPB proof system maintains a proof
+configuration ⟨C, D, O, #»z ⟩, consisting of two sets of constraints, the core set C and
+the derived set D, a pseudo-Boolean formula O(#»u, #»v ) over two tuples of variables
+#»u, #»v that do not appear in C, and a tuple of variables #»z . The core set can be
+thought of as being equal to F and the derived set as consisting of all constraints
+derived in the proof. The order O defines a preorder ⪯on assignments as follows.
+If α and β are assignments, then α ⪯β iff O(#»z ↾α, #»z ↾β) is true. The proof system
+will guarantee that ⪯is indeed a preorder, i.e., a reflexive and transitive relation.
+The preorder in this configuration was originally introduced in the context of
+symmetry and dominance breaking [10]. Here we will use the preorder for a
+different purpose and will in fact not use the dominance rule introduced in [10].
+The precise role of the preorder in our proofs for MO-MaxSAT will be detailed
+in Section 3.
+The configuration is initialized by setting C = F, D = ∅, O = ∅(the empty,
+and hence trivially true formula) and #»z = (), the empty tuple. Afterwards, the
+configuration is updated using the rules detailed next.
+New constraints can be added to D by deriving them from previously derived
+constraints in C ∪D using the cutting planes proof system [12] consisting of the
+following rules.
+Literal Axioms. For any literal ℓ, ℓ≥0 is an axiom and can be derived.
+Linear Combination. Any positive integer linear combination of two previ-
+ously derived PB constraints can be inferred.
+Division. Given the normalized PB constraint P
+i wiℓi ≥A and a positive
+integer c, the constraint P
+i⌈wi/c⌉ℓi ≥⌈A/c⌉can be inferred.
+Conveniently, VeriPB also allows adding an implied constraint without giving
+an actual cutting planes derivation, namely, when the constraint is implied by
+reverse unit propagation (RUP), a generalization of the same notion in SAT [28].
+RUP states that if applying integer bounds consistency propagation on C ∪D ∪
+{¬C} results in a contradiction, then C is implied by C ∪D and can hence be
+derived.
+Additionally, VeriPB also allows for deriving non-implied constraints as long
+as the constraints are guaranteed to preserve satisfiability. Specifically VeriPB
+
+
+6
+Jabs et al.
+has the following generalization of the resolution asymmetric tautology (RAT)
+rule in SAT [40].
+Redundance-Based Strengthening. The constraint C can be derived and
+added to D given a substitution ω and explicit (cutting planes) proofs for
+C ∪D ∪{¬C} |= (C ∪D ∪{C})↾ω ∪O(#»z ↾ω, #»z ),
+i.e., explicit proofs that the constraint on the right is implied by the premises
+C ∪D ∪{¬C}.
+Intuitively, this rule ensures that ω remaps any solution α of C ∪D that does not
+satisfy C to a solution α◦ω of C∪D that (i) satisfies C and (ii) for which α◦ω ⪯α,
+i.e., α ◦ω is least as good (in terms of the order) as α. A common application
+of redundance-based strengthening is reification: deriving two pseudo-Boolean
+constraints that encode ℓ⇔D for some PB constraint D ∈C ∪D and for some
+fresh literal ℓ.
+In addition to adding constraints, previously derived constraints can also
+be deleted in order to reduce the number of constraints that the proof checker
+has to work with. However, deletion requires care. Without restrictions, deleting
+everything in C could make an unsatisfiable formula satisfiable, which would
+clearly be incorrect. Deletion is allowed using the following rules.
+Derived Deletion. Any constraint can be removed from D.
+Core Deletion. A constraint C can be removed from C if C can be derived
+from C \ {C} with the redundance-based strengthening rule.
+Solutions found are logged and excluded from further consideration by learning
+a constraint using the following rule.
+Solution Logging. Given a solution α to C ∪D, we can derive the constraint
+P
+ℓ∈α ℓ≥1 that excludes α and add this constraint to C.
+Constraints can always be moved from the derived set to the core set using the
+transfer rule in order to allow e.g. the application of core deletion.
+Transfer Rule. If D′ ⊆D, we can transfer from configuration ⟨C, D, O, #»z ⟩to
+⟨C ∪(D \ D′), D′, O, #»z ⟩.
+Finally, the order can be changed, provided that the derived set is empty (which
+can always be achieved using the transfer rule).
+Order Change Rule. Given a proof in VeriPB format that O′ is reflex-
+ive (i.e., O′(#»u, #»u) is trivial) and transitive (i.e., whenever O′(#»u, #»v ) and
+O′(#»v , #»w) hold, so does O′(#»u, #»w)), and given a tuple of variables #»z ′ of the
+right length, we can transition from ⟨C, ∅, O, #»z ⟩to ⟨C, ∅, O′, #»z ′⟩.
+3
+Proof Logging for Multi-Objective MaxSAT
+As our main contributions, we will now detail how VeriPB can be used for en-
+abling proof logging in the multi-objective setting—despite the fact that VeriPB
+does not directly support multiple objectives. Our solution is based on a new
+type of use of the preorder O in VeriPB.
+
+
+Certifying Pareto-Optimality in Multi-Objective Maximum Satisfiability
+7
+3.1
+The General Setup
+Preorders were originally introduced in VeriPB to enable proofs for symme-
+try breaking [10]. However, the preorder turns out to be applicable for multi-
+objective proof logging as well. Since all rules in VeriPB are guaranteed to
+preserve solutions that are minimal with respect to the defined preorder, the
+preorder generalizes a single objective O: computing a solution optimal wrt O is
+equivalent to computing a solution that is smallest in the order OO defined by
+the formula that is true iff O↾α≤O↾β. As a first step towards the multi-objective
+setting, we introduce a suitable order for encoding Pareto-dominance. In the
+following definition, if #»u and #»v are two tuples of variables of equal length, we
+write ω #»
+u →#»
+v for the substitution that maps every ui to vi and all other variables
+to themselves.
+Definition 1. Let O = (O1, . . . , Op) be a tuple of p objectives over variables
+#»x = (x1, . . . , xk), and define OO
+P (#»u, #»v ) over fresh variables #»u and #»v as the PB
+formula OO
+P (#»u, #»v ) = {O1↾ω #»
+x →#»
+u ≤O1↾ω #»
+x →#»
+v , . . . , Op↾ω #»
+x →#»
+u ≤Op↾ω #»
+x →#»
+v }.
+The following proposition summarizes the properties of OO
+P that are important
+for our setting.
+Proposition 1. Let O = (O1, . . . , Op) be a tuple of objectives and OO
+P (#»u, #»v )
+the PB formula from Definition 1. Then the following hold:
+– OO
+P encodes a preorder, i.e., a reflexive (OO
+P (#»u, #»u) is trivially satisfied) and
+transitive (if OO
+P (#»u, #»v ) and OO
+P (#»v , #»w) also OO
+P (#»u, #»w) holds) relation.
+– OO
+P (#»x ↾α, #»x ↾β) is satisfied if and only if α ⪯P β wrt O, i.e., if α weakly
+dominates β.
+When the objectives are clear from context, we drop the superscript and use
+OP (#»u, #»v ) for the order that encodes Pareto-dominance over the objectives.
+With the transfer and order change rules, the order can be changed arbitrarily
+in VeriPB proofs. In our setting, however, we will use OP unchanged throughout
+the entire proof. From now on, a VeriPB proof for (F, O) refers to a standard
+VeriPB proof for F that (i) as the first derivation step loads the order OP
+over the variables #»x in the objectives O, and (ii) at no other point in the proof
+changes the order. Our observations on valid VeriPB proofs assume that the
+conditions (i) and (ii) are satisfied. The VeriPB proof checker will not verify
+these two conditions for us; however, these are merely syntactic restrictions that
+can be verified easily (e.g., by checking that no other lines in the proof starts
+with load_order).
+The following result now guarantees the correctness of the proofs produced
+for the different MO-MaxSAT algorithms.
+Theorem 1. Let P be a VeriPB proof for (F, O) that derives a contradiction.
+Let S be the set of non-dominated solutions logged in P, i.e., logged solutions
+that are not dominated by other solutions logged in P. Then S contains a repre-
+sentative solution for each element in the non-dominated set of (F, O).
+
+
+8
+Jabs et al.
+Let ⟨Ci, Di, Oi, #»z i⟩be the proof configuration of P at step i. From the ad-
+ditional conditions imposed for multi-objective proofs, we have Oi = OP and
+#»z i = #»x for all i ≥1, since OP over the variables #»x in O is loaded in the first
+derivation step.
+Theorem 1 follows by the following lemmas. Lemma 1 is a restatement of the
+properties of VeriPB proofs shown in [10], included here for completeness.
+Lemma 1. Let ⟨Ci, Di, OP , #»x⟩be the ith configuration of P. For every solution
+α of Ci, there exists a solution β of Ci ∪Di for which OP (#»x↾β, #»x↾α).
+The next lemma establishes that no rule in VeriPB can “create” new non-
+dominated points.
+Lemma 2. Consider the ith configuration ⟨Ci, Di, OP , #»x⟩of P for fixed i ≥1.
+Any solution of Ci is weakly dominated by a Pareto-optimal solution of (F, O).
+Proof. By induction on i. The base case i = 1 follows by Proposition 1 from the
+first configuration having C1 = F. Assume that the statement holds for i −1
+and let ⟨Ci−1, Di−1, OP , #»x⟩be the i−1th configuration. The rules of VeriPB
+that can alter the core set are solution logging, core deletion, and the transfer
+rule. For the transfer rule, the statement follows immediately by Lemma 1. For
+solution logging, the result follows from any solution of Ci being a solution of
+Ci−1. Assume thus that Ci = Ci−1 \ {C} and let α be a solution of Ci, that (for
+the non-trivial case) does not satisfy C. We show that α is weakly dominated
+by a Pareto-optimal solution of (F, O). By the properties of redundance-based
+strengthening and core deletion, there is a substitution ω such that β = α ◦ω
+is a solution to Ci−1 for which OP (#»x↾β, #»x↾α). By the induction assumption, β is
+weakly dominated by a Pareto-optimal solution γ of (F, O). Since β ⪯P α, α is
+weakly dominated by γ.
+⊓⊔
+Lemma 3 establishes that no rule except for solution logging can remove all
+representative solutions for an element in the non-dominated set of (F, O).
+Lemma 3. Let ⟨Ci−1, Di−1, OP , #»x⟩and ⟨Ci, Di, OP , #»x⟩be the i−1th and ith con-
+figurations of P, respectively. Assume that (i) the solutions of Ci−1∪Di−1 include
+a representative for the non-dominated point b and (ii) the ith configuration is
+obtained by a rule other than solution logging. Then the solutions of Ci ∪Di
+include a representative solution for b.
+Proof. Let α be the representative solution to Ci−1 ∪Di−1 for b. We construct a
+solution to Ci ∪Di that is representative for b. For the interesting case, assume
+that α is not a solution to Ci ∪Di. By assumption the ith configuration was
+reached by a rule other than solution logging, and hence Di = Di−1 ∪{C}
+for a constraint C added using the redundance-based strengthening rule and a
+substitution ω. By redundance-based strengthening β = α ◦ω is a solution to
+Ci ∪Di for which OP (#»x↾β, #»x↾α). Hence by Proposition 1, β weakly dominates α.
+As α is representative for the non-dominated point b, β must be representative
+for b as well.
+⊓⊔
+
+
+Certifying Pareto-Optimality in Multi-Objective Maximum Satisfiability
+9
+Using these three lemmas we can now establish Theorem 1 as follows.
+Proof (of Theorem 1). Consider the first configuration ⟨C1, D1, OP , #»x⟩of P,
+where C1 = F and D1 = ∅. By Proposition 1, there is a one-to-one correspondence
+between the Pareto-optimal solutions of (F, O) and the solutions of C1 ∪D1 that
+are minimal wrt OP . Specifically, the solutions of C1∪D1 contain a representative
+solution for each element in the non-dominated set of (F, O). Since P derives
+a contradiction, there are no solutions to the union of the core and derived
+set of the final configuration. Thus the theorem holds if (i) no solutions that
+dominate a Pareto-optimal solution of (F, O) are logged in the proof, and (ii) a
+representative solution for each element in the non-dominated set is logged in
+the proof. (i) follows by Lemma 2 and (ii) by Lemma 3.
+⊓⊔
+We note that Theorem 1 also holds when an instance (F, (O)) only has a
+single objective. In this case α ⪯P β is equivalent to O↾α≤O↾β. Hence Theo-
+rem 1 states that the simplified version of VeriPB using only rules for decision
+problems (recall Section 2.4) is sufficient for certifying single-objective MaxSAT
+solvers as well. Thereby it can be argued that the (more complicated) optimiza-
+tion proof system presented in [10] could be simplified without losing any of its
+expressiveness by replacing the explicit linear objective and objective-specific
+rules by the linear order-based rules we describe.
+3.2
+Proof Logging for Pareto Dominance Cuts
+A key step in proof logging the different multi-objective algorithms is the deriva-
+tion of a constraint called a PD cut given a solution α. In particular, given a
+solution α of F, we will derive a constraint that states that we are no longer
+interested in solutions worse than or equally good as α in terms of Pareto-
+dominance. In single-objective VeriPB, there is a dedicated rule that allows for
+deriving a so-called solution-improving constraint. However we will show that
+PD cuts can be derived only relying on the redundance-based strengthening and
+solution logging rules.
+We will make use of some auxiliary variables wi for each objective Oi (re-
+call Equation (1)). Firstly, introducing such (reified) constraints can be done
+with redundance-based strengthening in a standard way [27]. The introduced
+constraints guarantee that iff β is worse than or equal to α in Oi, then vari-
+able wi holds in β.
+Now let ωα be the substitution that maps every variable
+to their value in α and each wi to 1. We claim that with the redundance-based
+strengthening rule and this witness we can derive the constraint
+Cα :=
+p
+X
+i=1
+|α| · wi +
+X
+ℓ∈α
+ℓ≥|α|.
+Intuitively, this constraint maps each solution weakly dominated by α to α.
+In doing so it excludes all solutions the PD cut excludes (the solutions weakly
+dominated by α) except for α itself. To see that this constraint can be derived
+with redundance-based strengthening, we can verify that all proof obligations
+are indeed met.
+
+
+10
+Jabs et al.
+Table 1. Example proof for certifying a PD cut.
+ID
+Pseudo-Boolean Constraint
+Comment
+Justification
+Input constraints and potential previous proof steps
+[a]
+11wα
+1 + 3x2 + 4x3 + 2x4 + 5x5 ≥11
+wα
+1 ⇐O1 ≥O1↾α
+Redundance {wα
+1 }
+[b]
+4wα
+1 + 3x2 + 4x3 + 2x4 + 5x5 ≥4
+wα
+1 ⇒O1 ≥O1↾α
+Redundance {wα
+1 }
+[c]
+7wα
+2 + 7x1 + 4x2 + 1x3 + 2x4 ≥7
+wα
+2 ⇐O2 ≥O2↾α
+Redundance {wα
+2 }
+[d]
+8wα
+2 + 7x1 + 4x2 + 1x3 + 2x4 ≥8
+wα
+2 ⇒O2 ≥O2↾α
+Redundance {wα
+2 }
+[e]
+5wα
+1 + 5wα
+2 + x1 + x2 + x3 + x4 + x5 ≥5
+Cα
+Redundance ωα
+[f]
+x1 + x2 + x3 + x4 + x5 ≥1
+Log solution α
+[g]
+wα
+1 + wα
+2 ≥1
+PD cut
+([e] + [f])/5
+– For each constraint C in C ∪D that does not mention wi, C↾ωα is trivially
+satisfied since α is a solution that satisfies those constraints.
+– If C is one of the constraints (1), then clearly C↾ωα holds too.
+– Clearly also Cα↾ωα holds.
+– Lastly, what we need to show is that O(#»x↾ωα, #»x) holds if Cα is not satisfied.
+This constraint expresses that α weakly dominates any assignment β that
+satisfies all derived constraints so far but not Cα. As such an assignment β
+must assign all wi to 1, from (1) we immediately have that Oi↾β≥Oi↾α, as
+desired.
+Finally, after deriving Cα, we log the solution α to obtain a solution-excluding
+constraint P
+ℓ∈α ℓ≥1. By adding P
+ℓ∈α ℓ≥1 to Cα, we arrive at Pp
+i=1 |α|·wi ≥
+1. Hence at least one of the wi must be 0. Dividing the result by |α| yields the
+PD cut (w1 ∨· · · ∨wp).
+Example 2. Recall the instance in Fig. 1. Table 1 shows the steps required in the
+VeriPB proof for certifying a PD cut based on solution α = {x1, x2, x3, x4, x5}
+with objective values (4, 8). Steps [a], [b], [c], and [d] first introduce the defini-
+tions of the wα
+1 and wα
+2 variables from Equation (1) as normalized reified PB
+constraints. These steps are justified by redundance-based strengthening using
+the fresh variables wα
+1 and wα
+2 as witnesses. Next, step [e] introduces Cα. Lastly,
+the solution α is logged (in [f]) and the PD cut derived (in [g]).
+3.3
+Proof Logging Multi-Objective MaxSAT Algorithms
+To enforce bounds on the values of the different objectives, multi-objective
+MaxSAT algorithms make use of CNF encodings of (reified) pseudo-Boolean
+constraints. For certifying the correctness of MO-MaxSAT algorithms, the cor-
+rectness of these encodings needs to be certified as well. All algorithms covered in
+this paper make use of the incremental (generalized) totalizer encoding [5,41,46].
+The totalizer encoding can be visualized as a tree where each node has a set of
+output literals that “count” how many of the literals at the leaves of its subtree
+are 1. In earlier work [52] it has been shown how the clauses of the totalizer
+
+
+Certifying Pareto-Optimality in Multi-Objective Maximum Satisfiability
+11
+encoding can be derived in the VeriPB proof system from the constraints de-
+scribing the semantics of the output and internal variables. For certifying the
+generalized totalizer encoding, the semantics of the output variables are slightly
+different. Each output variable ob of a node is defined by the two constraints
+ob ⇔Pn
+i=1 aiℓi ≥b over the n literals at the leaves of the subtree. In contrast
+to the unweighted case, ai can be larger than 1 here and values of b that are not
+subsetsums of {ai | i = 1, . . . , n} are omitted. Deriving the clauses of the gen-
+eralized totalizer encoding now follows the cutting planes procedure described
+in [52].
+Many implementations of MaxSAT algorithms employing the totalizer en-
+coding only derive clauses for enforcing the ob ⇐Pn
+i=1 aiℓi ≥b constraint, since
+these are enough for enforcing upper bounds on the objective values by setting
+ob to 0. As observed in [37], for the generalized totalizer it is additionally nec-
+essary to enforce all output variables in the range [b, max{ai | i = 1, . . . , n}) to
+0 in order to enforce Pn
+i=1 aiℓi < b. With this modification, also for the gener-
+alized totalizer encoding, deriving only one “direction” of clauses is enough from
+the perspective of the solver. In the proof, however, we will make use of both
+directions of the definition of these output variables; this means that a solu-
+tion found by the SAT solver is not necessarily a solution to the constraints in
+the proof. When using a solution found by the SAT solver as a witness for the
+redundance-based strengthening rule for deriving a PD cut (recall Section 3.2),
+we therefore need to adjust the assignment to satisfy the stricter semantics of
+the proof first. This is done during proof generation by traversing through all
+nodes of the (generalized) totalizer encodings and manually assigning the output
+variables to values following the strict semantics described above. This adjusted
+assignment is still guaranteed to satisfy all clauses in the SAT solver.
+Next, we detail three state-of-the-art MO-MaxSAT algorithms and how to
+generate proofs for them.
+P-minimal [43,49]. Starting from any solution α, the P-minimal algorithm in-
+troduces a PD cut excluding all solutions that are weakly dominated by α. A
+SAT solver is then queried while temporarily enforcing the next-found solution
+to dominate α. Both steps are achieved using the generalized totalizer encoding.
+If no solution dominating the latest one can be found, the previous solution is
+guaranteed to be Pareto-optimal. In this case P-minimal drops the temporary
+constraints and starts over. If the working formula is unsatisfiable at this point,
+P-minimal terminates. An example of a search path of P-minimal in objective
+space is illustrated on the left-hand side of Fig. 2. The blue circles and red dots
+represent the solutions found by the SAT solver, with the red dots representing
+Pareto-optimal solutions. In such an execution, P-minimal introduces a PD cut
+for each of these solutions.
+For proof logging P-minimal we certify the generalized totalizer objective
+encodings and the added PD cuts in the VeriPB proof (as already described).
+This allows a contradiction to be derived in the proof iff a PD cut was added for
+each element in the non-dominated set. The temporary constraints that enforce
+domination are not required in the proof since they are merely heuristics guiding
+
+
+12
+Jabs et al.
+P-minimal
+LowerBound
+BiOptSat
+0
+2
+4
+6
+8
+0
+2
+4
+6
+8
+O1
+O2
+0
+2
+4
+6
+8
+0
+2
+4
+6
+8
+O1
+O2
+0
+2
+4
+6
+8
+0
+2
+4
+6
+8
+O1
+O2
+Fig. 2. Illustrations of the search path of MO-MaxSAT algorithms in objective space.
+the SAT solver to certain regions temporarily and are not needed for reaching
+the final contradiction.
+LowerBound [14]. The LowerBound algorithm restricts the search space by
+temporarily enforcing upper bounds of the form Oi ≤bi on each objective and
+then executes P-minimal within these bounds. Once P-minimal terminates, the
+bounds bi are loosened and the process is repeated. LowerBound terminates
+once the bounds include the entire search space. In this last case, P-minimal
+is executed without the temporary bound constraints and will terminate with
+an unsatisfiable working instance. For proof logging LowerBound it therefore
+suffices to proof log the invocations of P-minimal as a subroutine. The search
+path for one invocation of P-minimal within a set of bounds is illustrated in
+green in Fig. 2 (middle).
+BiOptSat [37]. The BiOptSat algorithm is specific to problems with two
+objectives (O1, O2). The algorithm enumerates non-dominated points under the
+guarantee that the values for one objective are monotonically increasing, while
+the values of the other objective are decreasing. BiOptSat first employs the
+subroutine MinInc to minimize O1 without any additional constraints, returning
+the solution α. Next, the subroutine MinDec uses solution-improving search to
+minimize O2 under the condition that O1 = O1↾α. Let the final solution found
+by MinDec be β, which is guaranteed to be Pareto-optimal. BiOptSat then
+repeats this process after introducing the constraint O2 ≤O2↾β −1. An example
+of a search path of BiOptSat is illustrated in Fig. 2 (right). Since MinInc finds
+the global minimum of O1 for the current working formula, assume for now
+that we have a proof logging procedure for MinInc that results in the constraint
+CMinInc := O1 ≥O1↾α being added to the proof. For any solution found during
+the execution of MinDec, we introduce a PD cut, which in turn is strengthened
+to the unit clause (w2) by combining it with CMinInc. This strengthened PD
+cut is semantically equivalent to the constraint added during solution-improving
+search in MinDec and at the end before BiOptSat starts over.
+Example 3. Recall again the instance in Fig. 1. Assume that we have executed
+MinInc and MinDec once already and that MinDec has yielded the Pareto-optimal
+
+
+Certifying Pareto-Optimality in Multi-Objective Maximum Satisfiability
+13
+Table 2. Example proof for a strengthened PD cut in BiOptSat.
+ID
+Pseudo-Boolean Constraint
+Comment
+Justification
+Input constraint and potential previous proof steps
+[lb]
+3x2 + 4x3 + 2x4 + 5x5 ≥4
+Derived during MinInc
+[a]
+11wα
+1 + 3x2 + 4x3 + 2x4 + 5x5 ≥11
+wα
+1 ⇐O1 ≥O1↾α
+Redundance {wα
+1 }
+Other PD cut certification steps from Table 1
+[g]
+wα
+1 + wα
+2 ≥1
+PD cut
+See Table 1
+[h]
+wα
+2 ≥1
+(([lb] + [a])/11) + [g]
+α = {x1, x2, x3, x4, x5}. Table 2 details the proof steps taken to certify the
+constraint O2 < O2↾α added as the last step in BiOptSat. First, assume that
+[lb] is CMinInc derived in the proof during MinInc. Next, we certify the PD cut for
+α in the proof as detailed in Table 1. Finally, by summing up the lower-bounding
+constraint from MinInc, the definition of wα
+1 and the PD cut, we obtain wα
+2 ≥1
+which is semantically equivalent to the constraint added by BiOptSat.
+It remains to show that we can proof log MinInc to derive CMinInc. The details
+depend on the implementation of MinInc for which several variants have been
+proposed [37]. For the SAT-UNSAT variant, where MinInc is implemented as
+solution-improving search, CMinInc is implicitly derived by the SAT solver during
+the final unsatisfiable query. Proof logging for the core-guided variants of MinInc
+can be implemented as already described for the single-objective setting in [7];
+in short, CMinInc can be derived from the final reformulated objective.
+3.4
+Proof Logging Core Boosting
+Core boosting [36] is a recently-proposed preprocessing/reformulation technique
+for MO-MaxSAT, consisting of applying the single-objective core-guided opti-
+mization algorithm OLL [2,47] wrt each objective individually, before executing
+an MO-MaxSAT algorithm on the reformulated objectives obtained from OLL.
+With this, core boosting shrinks the search space that needs to be considered by
+the MO-MaxSAT algorithm by deriving lower bounds for each objective. Core
+boosting also alters the structure of the CNF objective encodings since the total-
+izer structures built by OLL during core boosting can be reused in the objective
+encodings built by the MO-MaxSAT algorithm.
+We give a brief overview of the single-objective core-guided OLL MaxSAT
+algorithm to the extent relevant for understanding how proof logging for core
+boosting works. Given an objective O, OLL invokes a SAT solver with the as-
+sumptions that none of the literals in O incurs cost. If these assumptions are not
+satisfiable, the SAT solver returns an implied clause C—referred to as an unsat-
+isfiable core—over the objective literals. OLL now introduces counting variables
+oi ⇐P
+ℓ∈C ℓ≥i for i = 2, . . . , |C| (encoded by the totalizer encoding) and
+reformulates the objective by adding cC · (P
+ℓ∈C −ℓ+ P|C|
+i=2 oi + 1) to it, where
+cC is the minimum objective coefficient of any literals in C. Iteratively applying
+
+
+14
+Jabs et al.
+□, a2, a3, a4
+x1
+x2
+x3
+x4
+□, b2
+a2
+x4
+c1, c2, c3
+a3, a4
+b2
+c1, c2, c3
+d1, d2
+b2
+a3
+a4
+Fig. 3. An objective encoding structure built by core boosting. The dashed box shows
+the alternative structure that would be built without reusing a3, a4 as an internal node.
+this process guarantees that the reformulated objective is always equal to the
+original objective and OLL terminates once there is a solution that does not
+incur cost on any of the literals in the reformulated objective.
+Example 4. Let O = x1+x2+x3+2x4 be one of the objectives that core boosting
+is performed on. Assume the first core extracted is C1 = (x1 ∨x2 ∨x3 ∨x4).
+OLL reformulates C1 by adding counting variables ai ⇐x1 + x2 + x3 + x4 ≥i
+for i = 2, 3, 4. Assume the next core extracted is C2 = (x4 ∨a2), which is
+reformulated by adding the counting variable b2 ⇐x4 + a2 ≥2. The final
+reformulated objective is O′ = a3 + a4 + b2 + 2.
+Proof logging for OLL is described in [7], yielding a constraint of form O ≥O′
+associating the reformulated objective O′ with the original objective O. After
+OLL has been executed, core boosting builds a CNF encoding for each refor-
+mulated objective. However, if the reformulated objective contains a sequence
+of literals that are outputs for the same totalizer, they should be reused as an
+internal node of the final encoding employed by the MO-MaxSAT algorithm
+rather than individual leaves. This avoids introducing new auxiliary variables
+that would end up being equivalent to the variables introduced by OLL.
+Example 5. Fig. 3 (left and middle-left, respectively) shows the two totalizer
+encodings built by OLL, where □denotes the output variable with value 1 that
+is omitted by OLL. Fig. 3 (middle-right) shows the encoding of the reformulated
+objective built by core boosting after executing OLL, where a3, a4 is reused as
+an internal node. The dashed box shows the encoding that would be built when
+treating a3 and a4 individually. Since a3 and a4 are already totalizer outputs,
+d1 and d2 in this structure are equivalent to a3 and a4 and therefore redundant.
+Going beyond previous work, certifying the encoding of the reformulated
+objective built during core boosting requires special care. In particular, due to
+the process of reusing partial sequences of totalizer output variables as internal
+nodes, using the semantics of the totalizer outputs built by OLL does not allow
+us to derive the clauses required for the encoding. Instead, for a sequence of
+variables or, . . . , or+n reused as an internal node in the encoding, we introduce
+
+
+Certifying Pareto-Optimality in Multi-Objective Maximum Satisfiability
+15
+ordering constraints
+Ca
+v :=
+v
+X
+i=r
+[oi ≥0] +
+r+n
+X
+i=v+1
+[oi + ov ≥1] =
+"
+Mov +
+r+n
+X
+i=r
+oi ≥M
+#
+,
+where M = r + n −v + 1, and
+Cb
+v :=
+r+n
+X
+i=v+1
+[oi ≥0] +
+v−1
+X
+i=r
+[ov + oi ≥1] =
+"
+(v −r)ov +
+r+n
+X
+i=r
+oi ≥(v −r)
+#
+,
+for each v = r, . . . , r + n. These constraints sum up axioms and ordering con-
+straints, which can be derived from the semantic definitions of the totalizer
+output variables, and are therefore derivable in the proof. Furthermore, Ca
+v , Cb
+v
+are identical to ov ⇔Pr+n
+i=r oi ≥(v −r). When deriving the clauses involving
+the reused output variable sequence, we therefore use Ca
+v and Cb
+v instead of the
+semantic definitions of the variables, which allows for deriving the clauses of the
+encoding.
+After core boosting, the output variables of the objective encoding are now
+defined with respect to the reformulated objective rather than the original one.
+As a final step, after certifying a PD cut with respect to the original objectives,
+we therefore use the objective reformulation constraints derived while executing
+OLL to certify the PD cut with respect to the reformulated objectives.
+Example 6. All required clauses for the encoding shown in Fig. 3 (middle-right)
+can be derived from the semantic definitions ci ⇔a3 + a4 + b2 ≥i for i = 1, 2, 3
+while treating the individual variable b2 as a leaf and using Ca and Cb as “pseudo
+semantics” for the node a3, a4. Note that the semantics for ci are with respect
+to the variable part of the reformulated objective.
+4
+Experiments
+We extended all algorithms implemented in the Scuttle [34,35,36] MO-MaxSAT
+solver—namely, P-minimal [43,49], LowerBound [14], and (the SAT-UNSAT
+variant of) BiOptSat [37], each with and without core boosting—with the just-
+described VeriPB proof logging. We used CaDiCaL 2.0.0 [8] as the SAT solver
+within Scuttle and the VeriPB 2.2.2 proof checker [1] for checking the pro-
+duced proofs.5 The proof logging Scuttle implementation is available in open
+source [34,38]. We evaluate the implementation on the same set of benchmark
+instances used in the original work proposing core boosting [36]. This set of
+benchmarks consists of 300 instances from 6 domains with the number of ob-
+jectives ranging from 2 to 5. The experiments were run on 2.50-GHz Intel Xeon
+Gold 6248 machines with 381-GB RAM in RHEL under a 32-GB memory limit
+and 1 hour time limit for Scuttle.
+5 Both VeriPB and CaDiCaL contain bug-fixes obtained directly from their respective
+authors based on our reporting while preparing our experiments.
+
+
+16
+Jabs et al.
+Table 3. Average proof logging overheads and average proof checking overheads.
+with core boosting
+without core boosting
+Algorithm
+solving w/proof log
+solving
+proof checking
+solving w/proof log
+solving w/proof log
+solving
+proof checking
+solving w/proof log
+P-minimal
+1.233
+47.52
+1.176
+47.89
+BiOptSat
+1.247
+29.70
+1.140
+18.70
+LowerBound
+1.220
+21.81
+1.294
+21.78
+The per-instance Scuttle runtimes for each benchmark domain with and with-
+out proof logging are shown in Fig. 4 for all three MO-MaxSAT algorithms in
+Scuttle, both with and without core boosting. We observe that the runtime over-
+head of proof logging is in all cases quite tolerable, with average runtime increase
+ranging from 14% to 29% depending on the algorithm; see Table 3 for details.
+There are at most 3 instances (for P-minimal without core boosting) that were
+only solved without proof logging within the given 1-h time limit. While this
+work is not focussed on improving proof checking but rather realizing for the
+first time proof logging in a multi-objective setting, Table 3 also includes the
+proof checking overhead, i.e., (proof checking time)/(Scuttle runtime with proof
+logging), resulting from checking the Scuttle proofs with the VeriPB checker.
+With a time limit of 10 hours enforced for the VeriPB checker, we observed
+that checking takes on average 1–1.5 orders of magnitude more time than solving
+the instances with proof logging enabled. It should be noted that similar obser-
+vations have been made, e.g., in the realm of VeriPB-based certified MaxSAT
+preprocessing [33]. Indeed, these observations motivate seeking improvements to
+the current runtime performance of the VeriPB checker. We observed that in
+cases, in particular for P-minimal (see the appendix for more details), the proof
+checking overhead appears to somewhat correlate with the number of PD cuts
+produced during search.
+5
+Conclusions
+We realized for the first time proof logging for multi-objective MaxSAT solving.
+Circumventing the fact that VeriPB does not offer direct support for multiple
+objectives, we detailed how preorders in VeriPB can be used to provide cer-
+tificates for MO-MaxSAT algorithms that compute a representative solution for
+each element of the non-dominated set (with respect to the Pareto order). We
+achieved this without changes to the VeriPB format or the proof checker. In-
+tegrating VeriPB proof logging into a state-of-the-art multi-objective MaxSAT
+solver, we empirically showed that proof logging can be made scalable for MO-
+MaxSAT. While we in this work detailed how VeriPB can be employed for
+proof logging SAT-based multi-objective approaches, the same concepts are ap-
+plicable to enabling proof logging for similar algorithmic ideas instantiated for
+other contexts, e.g., in the context of pseudo-Boolean optimization. Developing
+proof logging methods that capture the computation of all Pareto-optimal solu-
+
+
+Certifying Pareto-Optimality in Multi-Objective Maximum Satisfiability
+17
+with core boosting
+P-minimal
+LowerBound
+BiOptSat
+101
+102
+103
+101
+102
+103
+3600
+3600
+proof logging (s)
+101
+102
+103 3600 101
+102
+103 3600
+without core boosting
+101
+102
+103
+101
+102
+103
+3600
+3600
+no proof logging (s)
+proof logging (s)
+101
+102
+103 3600
+no proof logging (s)
+101
+102
+103 3600
+no proof logging (s)
+set-cover-sc
+set-cover-ep
+packup
+lidr
+ftp
+spot5
+Fig. 4. Proof logging runtime overheads.
+tions, i.e., every solution at each element in the non-dominated set, potentially
+by extending VeriPB, also remains part of future work.
+Acknowledgments. We thank Armin Biere, Katalin Fazekas, and Florian Pollitt for
+their help in fixing some bugs in CaDiCaL, and Andy Oertel for fixing a bug in the
+VeriPB proof checker. This work is partially funded by Research Council of Finland
+(grants 356046 and 362987) and the European Union (ERC, CertiFOX, 101122653).
+Views and opinions expressed are however those of the author(s) only and do not
+necessarily reflect those of the European Union or the European Research Council.
+Neither the European Union nor the granting authority can be held responsible for
+them.
+References
+1. VeriPB: Verifier for pseudo-Boolean proofs. https://gitlab.com/MIAOresearch/
+software/VeriPB
+2. Andres, B., Kaufmann, B., Matheis, O., Schaub, T.: Unsatisfiability-based opti-
+mization in clasp. In: Dovier, A., Costa, V.S. (eds.) Technical Communications of
+the 28th International Conference on Logic Programming, ICLP 2012, September
+
+
+18
+Jabs et al.
+4-8, 2012, Budapest, Hungary. LIPIcs, vol. 17, pp. 211–221. Schloss Dagstuhl -
+Leibniz-Zentrum für Informatik (2012). https://doi.org/10.4230/LIPIcs.ICLP.
+2012.211
+3. Bacchus, F., Järvisalo, M., Martins, R.: Maximum satisfiabiliy. In: Biere et al. [9],
+pp. 929–991. https://doi.org/10.3233/FAIA201008
+4. Baier, C., Chau, C., Klüppelholz, S.: Certificates and witnesses for multi-objective
+queries in markov decision processes. In: Hillston, J., Soudjani, S., Waga, M. (eds.)
+Quantitative Evaluation of Systems and Formal Modeling and Analysis of Timed
+Systems - First International Joint Conference, QEST+FORMATS 2024, Cal-
+gary, AB, Canada, September 9-13, 2024, Proceedings. Lecture Notes in Com-
+puter Science, vol. 14996, pp. 1–18. Springer (2024). https://doi.org/10.1007/
+978-3-031-68416-6_1
+5. Bailleux, O., Boufkhad, Y.: Efficient CNF encoding of boolean cardinality con-
+straints. In: Principles and Practice of Constraint Programming – CP 2003,
+pp. 108–122. Springer Berlin Heidelberg (2003). https://doi.org/10.1007/
+978-3-540-45193-8_8
+6. Berg, J., Bogaerts, B., Nordström, J., Oertel, A., Paxian, T., Vandesande, D.:
+Certifying without loss of generality reasoning in solution-improving maximum
+satisfiability. In: Shaw [48], pp. 4:1–4:28. https://doi.org/10.4230/LIPICS.CP.
+2024.4
+7. Berg, J., Bogaerts, B., Nordström, J., Oertel, A., Vandesande, D.: Certified core-
+guided MaxSAT solving. In: Pientka, B., Tinelli, C. (eds.) Automated Deduction -
+CADE 29 - 29th International Conference on Automated Deduction, Rome, Italy,
+July 1-4, 2023, Proceedings. Lecture Notes in Computer Science, vol. 14132, pp.
+1–22. Springer (2023). https://doi.org/10.1007/978-3-031-38499-8_1
+8. Biere, A., Faller, T., Fazekas, K., Fleury, M., Froleyks, N., Pollitt, F.: Cadical 2.0.
+In: Gurfinkel, A., Ganesh, V. (eds.) Computer Aided Verification - 36th Interna-
+tional Conference, CAV 2024, Montreal, QC, Canada, July 24-27, 2024, Proceed-
+ings, Part I. Lecture Notes in Computer Science, vol. 14681, pp. 133–152. Springer
+(2024). https://doi.org/10.1007/978-3-031-65627-9_7
+9. Biere, A., Heule, M., van Maaren, H., Walsh, T. (eds.): Handbook of Satisfiability -
+Second Edition, Frontiers in Artificial Intelligence and Applications, vol. 336. IOS
+Press (2021). https://doi.org/10.3233/FAIA336
+10. Bogaerts, B., Gocht, S., McCreesh, C., Nordström, J.: Certified dominance and
+symmetry breaking for combinatorial optimisation. J. Artif. Intell. Res. 77, 1539–
+1589 (2023). https://doi.org/10.1613/jair.1.14296
+11. Cabral, M., Janota, M., Manquinho, V.: SAT-based leximax optimisation algo-
+rithms. In: Meel, K.S., Strichman, O. (eds.) 25th International Conference on The-
+ory and Applications of Satisfiability Testing, SAT 2022, August 2–5, 2022, Haifa,
+Israel. LIPIcs, vol. 236, pp. 29:1–29:19. Schloss Dagstuhl - Leibniz-Zentrum für
+Informatik (2022). https://doi.org/10.4230/LIPICS.SAT.2022.29
+12. Cook, W.J., Coullard, C.R., Turán, G.: On the complexity of cutting-plane
+proofs. Discret. Appl. Math. 18(1), 25–38 (1987). https://doi.org/10.1016/
+0166-218X(87)90039-4
+13. Cortes, J.a., Lynce, I., Manquinho, V.: Slide&Drill, a New Approach for
+Multi-Objective Combinatorial Optimization. In: Shaw, P. (ed.) 30th Inter-
+national Conference on Principles and Practice of Constraint Programming
+(CP 2024). Leibniz International Proceedings in Informatics (LIPIcs), vol. 307,
+pp. 8:1–8:17. Schloss Dagstuhl – Leibniz-Zentrum für Informatik, Dagstuhl,
+Germany (2024). https://doi.org/10.4230/LIPIcs.CP.2024.8, https://drops.
+dagstuhl.de/entities/document/10.4230/LIPIcs.CP.2024.8
+
+
+Certifying Pareto-Optimality in Multi-Objective Maximum Satisfiability
+19
+14. Cortes, J., Lynce, I., Manquinho, V.M.: New core-guided and hitting set algo-
+rithms for multi-objective combinatorial optimization. In: Sankaranarayanan, S.,
+Sharygina, N. (eds.) Tools and Algorithms for the Construction and Analysis
+of Systems—29th International Conference, TACAS 2023, Held as Part of the
+European Joint Conferences on Theory and Practice of Software, ETAPS 2022,
+Paris, France, April 22–27, 2023, Proceedings, Part II. Lecture Notes in Com-
+puter Science, vol. 13994, pp. 55–73. Springer (2023). https://doi.org/10.1007/
+978-3-031-30820-8_7
+15. Cruz-Filipe, L., Heule, M.J.H., Jr., W.A.H., Kaufmann, M., Schneider-Kamp,
+P.: Efficient certified RAT verification. In: de Moura, L. (ed.) Automated De-
+duction - CADE 26 - 26th International Conference on Automated Deduction,
+Gothenburg, Sweden, August 6-11, 2017, Proceedings. Lecture Notes in Com-
+puter Science, vol. 10395, pp. 220–236. Springer (2017). https://doi.org/10.
+1007/978-3-319-63046-5_14
+16. Cruz-Filipe, L., Marques-Silva, J., Schneider-Kamp, P.: Efficient certified resolution
+proof checking. In: Legay, A., Margaria, T. (eds.) Tools and Algorithms for the
+Construction and Analysis of Systems - 23rd International Conference, TACAS
+2017, Held as Part of the European Joint Conferences on Theory and Practice
+of Software, ETAPS 2017, Uppsala, Sweden, April 22-29, 2017, Proceedings, Part
+I. Lecture Notes in Computer Science, vol. 10205, pp. 118–135 (2017). https:
+//doi.org/10.1007/978-3-662-54577-5_7
+17. Demirovic, E., McCreesh, C., McIlree, M.J., Nordström, J., Oertel, A., Sidorov,
+K.: Pseudo-Boolean reasoning about states and transitions to certify dynamic pro-
+gramming and decision diagram algorithms. In: Shaw [48], pp. 9:1–9:21. https:
+//doi.org/10.4230/LIPICS.CP.2024.9
+18. Demirovic, E., Musliu, N., Winter, F.: Modeling and solving staff scheduling with
+partial weighted maxSAT. Ann. Oper. Res. 275(1), 79–99 (2019). https://doi.
+org/10.1007/S10479-017-2693-Y
+19. Eén, N., Sörensson, N.: An extensible SAT-solver. In: Giunchiglia, E., Tacchella,
+A. (eds.) Theory and Applications of Satisfiability Testing, 6th International Con-
+ference, SAT 2003. Santa Margherita Ligure, Italy, May 5-8, 2003 Selected Re-
+vised Papers. Lecture Notes in Computer Science, vol. 2919, pp. 502–518. Springer
+(2003). https://doi.org/10.1007/978-3-540-24605-3_37
+20. Eén, N., Sörensson, N.: Translating pseudo-boolean constraints into SAT. J. Sat-
+isf. Boolean Model. Comput. 2(1-4), 1–26 (2006). https://doi.org/10.3233/
+sat190014
+21. Ehrgott, M.: Multicriteria Optimization (2. ed.). Springer (2005). https://doi.
+org/10.1007/3-540-27659-9
+22. Elffers, J., Gocht, S., McCreesh, C., Nordström, J.: Justifying all differences using
+pseudo-Boolean reasoning. In: The Thirty-Fourth AAAI Conference on Artificial
+Intelligence, AAAI 2020, The Thirty-Second Innovative Applications of Artificial
+Intelligence Conference, IAAI 2020, The Tenth AAAI Symposium on Educational
+Advances in Artificial Intelligence, EAAI 2020, New York, NY, USA, February 7-
+12, 2020. pp. 1486–1494. AAAI Press (2020), https://ojs.aaai.org/index.php/
+AAAI/article/view/5507
+23. Gocht, S., Martins, R., Nordström, J., Oertel, A.: Certified CNF translations for
+pseudo-Boolean solving. In: Meel, K.S., Strichman, O. (eds.) 25th International
+Conference on Theory and Applications of Satisfiability Testing, SAT 2022, August
+2-5, 2022, Haifa, Israel. LIPIcs, vol. 236, pp. 16:1–16:25. Schloss Dagstuhl - Leibniz-
+Zentrum für Informatik (2022). https://doi.org/10.4230/LIPIcs.SAT.2022.16
+
+
+20
+Jabs et al.
+24. Gocht, S., McBride, R., McCreesh, C., Nordström, J., Prosser, P., Trimble, J.: Cer-
+tifying solvers for clique and maximum common (connected) subgraph problems.
+In: Simonis, H. (ed.) Principles and Practice of Constraint Programming - 26th
+International Conference, CP 2020, Louvain-la-Neuve, Belgium, September 7-11,
+2020, Proceedings. Lecture Notes in Computer Science, vol. 12333, pp. 338–357.
+Springer (2020). https://doi.org/10.1007/978-3-030-58475-7_20
+25. Gocht, S., McCreesh, C., Nordström, J.: Subgraph isomorphism meets cutting
+planes: Solving with certified solutions. In: Bessiere, C. (ed.) Proceedings of
+the Twenty-Ninth International Joint Conference on Artificial Intelligence, IJCAI
+2020. pp. 1134–1140. ijcai.org (2020). https://doi.org/10.24963/ijcai.2020/
+158, scheduled for July 2020, Yokohama, Japan, postponed due to the Corona
+pandemic.
+26. Gocht, S., McCreesh, C., Nordström, J.: An auditable constraint programming
+solver. In: Solnon, C. (ed.) 28th International Conference on Principles and Practice
+of Constraint Programming, CP 2022, July 31 to August 8, 2022, Haifa, Israel.
+LIPIcs, vol. 235, pp. 25:1–25:18. Schloss Dagstuhl - Leibniz-Zentrum für Informatik
+(2022). https://doi.org/10.4230/LIPIcs.CP.2022.25
+27. Gocht, S., Nordström, J.: Certifying parity reasoning efficiently using pseudo-
+Boolean proofs. In: Thirty-Fifth AAAI Conference on Artificial Intelligence, AAAI
+2021, Thirty-Third Conference on Innovative Applications of Artificial Intelligence,
+IAAI 2021, The Eleventh Symposium on Educational Advances in Artificial Intelli-
+gence, EAAI 2021, Virtual Event, February 2-9, 2021. pp. 3768–3777. AAAI Press
+(2021), https://ojs.aaai.org/index.php/AAAI/article/view/16494
+28. Goldberg, E.I., Novikov, Y.: Verification of proofs of unsatisfiability for CNF for-
+mulas. In: 2003 Design, Automation and Test in Europe Conference and Exposition
+(DATE 2003), 3-7 March 2003, Munich, Germany. pp. 10886–10891. IEEE Com-
+puter Society (2003). https://doi.org/10.1109/DATE.2003.10008
+29. Guerreiro, A.P., Cortes, J., Vanderpooten, D., Bazgan, C., Lynce, I., Manquinho,
+V., Figueira, J.R.: Exact and approximate determination of the pareto front using
+minimal correction subsets. Comput. Oper. Res. 153, 106153 (2023). https://
+doi.org/10.1016/J.COR.2023.106153
+30. Heule, M., Jr., W.A.H., Wetzler, N.: Trimming while checking clausal proofs. In:
+Formal Methods in Computer-Aided Design, FMCAD 2013, Portland, OR, USA,
+October 20-23, 2013. pp. 181–188. IEEE (2013), https://ieeexplore.ieee.org/
+document/6679408/
+31. Heule, M., Jr., W.A.H., Wetzler, N.: Verifying refutations with extended resolution.
+In: Bonacina, M.P. (ed.) Automated Deduction - CADE-24 - 24th International
+Conference on Automated Deduction, Lake Placid, NY, USA, June 9-14, 2013.
+Proceedings. Lecture Notes in Computer Science, vol. 7898, pp. 345–359. Springer
+(2013). https://doi.org/10.1007/978-3-642-38574-2_24
+32. Hoen, A., Oertel, A., Gleixner, A.M., Nordström, J.: Certifying MIP-based pre-
+solve reductions for 0-1 integer linear programs. In: Dilkina, B. (ed.) Integration
+of Constraint Programming, Artificial Intelligence, and Operations Research - 21st
+International Conference, CPAIOR 2024, Uppsala, Sweden, May 28-31, 2024, Pro-
+ceedings, Part I. Lecture Notes in Computer Science, vol. 14742, pp. 310–328.
+Springer (2024). https://doi.org/10.1007/978-3-031-60597-0_20
+33. Ihalainen, H., Oertel, A., Tan, Y.K., Berg, J., Järvisalo, M., Myreen, M.O., Nord-
+ström, J.: Certified MaxSAT preprocessing. In: Benzmüller, C., Heule, M.J.H.,
+Schmidt, R.A. (eds.) Automated Reasoning - 12th International Joint Confer-
+ence, IJCAR 2024, Nancy, France, July 3-6, 2024, Proceedings, Part I. Lecture
+
+
+Certifying Pareto-Optimality in Multi-Objective Maximum Satisfiability
+21
+Notes in Computer Science, vol. 14739, pp. 396–418. Springer (2024). https:
+//doi.org/10.1007/978-3-031-63498-7_24
+34. Jabs, C.: Scuttle: A multi-objective MaxSAT solver. https://bitbucket.org/
+coreo-group/scuttle
+35. Jabs, C., Berg, J., Ihalainen, H., Järvisalo, M.: Preprocessing in SAT-based multi-
+objective combinatorial optimization. In: Yap, R.H.C. (ed.) 29th International Con-
+ference on Principles and Practice of Constraint Programming, CP 2023, August
+27-31, 2023, Toronto, Canada. LIPIcs, vol. 280, pp. 18:1–18:20. Schloss Dagstuhl
+- Leibniz-Zentrum für Informatik (2023). https://doi.org/10.4230/LIPICS.CP.
+2023.18
+36. Jabs, C., Berg, J., Järvisalo, M.: Core boosting in SAT-based multi-objective
+optimization. In: Dilkina, B. (ed.) Integration of Constraint Programming, Ar-
+tificial Intelligence, and Operations Research - 21st International Conference,
+CPAIOR 2024, Uppsala, Sweden, May 28-31, 2024, Proceedings, Part II. Lec-
+ture Notes in Computer Science, vol. 14743, pp. 1–19. Springer (2024). https:
+//doi.org/10.1007/978-3-031-60599-4_1
+37. Jabs, C., Berg, J., Niskanen, A., Järvisalo, M.: From single-objective to bi-objective
+maximum satisfiability solving. Journal of Artificial Intelligence Research 80, 1223–
+1269 (Aug 2024). https://doi.org/10.1613/jair.1.15333
+38. Jabs, C.J., Berg, J., Bogaerts, B., Järvisalo, M.: Certifying pareto-optimality in
+multi-objective maximum satisfiability—TACAS 2025 artefact (Jan 2025). https:
+//doi.org/10.5281/zenodo.14731485
+39. Janota, M., Lynce, I., Manquinho, V., Marques-Silva, J.: PackUp: Tools for package
+upgradability solving. J. Satisf. Boolean Model. Comput. 8(1/2), 89–94 (2012).
+https://doi.org/10.3233/SAT190090
+40. Järvisalo, M., Heule, M., Biere, A.: Inprocessing rules. In: Gramlich, B., Miller,
+D., Sattler, U. (eds.) Automated Reasoning - 6th International Joint Conference,
+IJCAR 2012, Manchester, UK, June 26-29, 2012. Proceedings. Lecture Notes in
+Computer Science, vol. 7364, pp. 355–370. Springer (2012). https://doi.org/10.
+1007/978-3-642-31365-3_28
+41. Joshi, S., Martins, R., Manquinho, V.M.: Generalized totalizer encoding for pseudo-
+boolean constraints. In: Pesant, G. (ed.) Principles and Practice of Constraint
+Programming - 21st International Conference, CP 2015, Cork, Ireland, August 31
+- September 4, 2015, Proceedings. Lecture Notes in Computer Science, vol. 9255,
+pp. 200–209. Springer (2015). https://doi.org/10.1007/978-3-319-23219-5_15
+42. Karpinski, M., Piotrów, M.: Encoding cardinality constraints using multiway merge
+selection networks. Constraints An Int. J. 24(3-4), 234–251 (2019). https://doi.
+org/10.1007/S10601-019-09302-0
+43. Koshimura, M., Nabeshima, H., Fujita, H., Hasegawa, R.: Minimal model genera-
+tion with respect to an atom set. In: Peltier, N., Sofronie-Stokkermans, V. (eds.)
+Proceedings of the 7th International Workshop on First-Order Theorem Proving,
+FTP 2009, Oslo, Norway, July 6-7, 2009. CEUR Workshop Proceedings, vol. 556.
+CEUR-WS.org (2009), http://ceur-ws.org/Vol-556/paper06.pdf
+44. Malioutov, D., Meel, K.S.: MLIC: A maxsat-based framework for learning inter-
+pretable classification rules. In: Hooker, J.N. (ed.) Principles and Practice of Con-
+straint Programming - 24th International Conference, CP 2018, Lille, France, Au-
+gust 27–31, 2018, Proceedings. Lecture Notes in Computer Science, vol. 11008, pp.
+312–327. Springer (2018). https://doi.org/10.1007/978-3-319-98334-9_21
+45. Marques-Silva, J., Lynce, I., Malik, S.: Conflict-driven clause learning SAT solvers.
+In: Biere et al. [9], pp. 133–182. https://doi.org/10.3233/FAIA200987
+
+
+22
+Jabs et al.
+46. Martins, R., Joshi, S., Manquinho, V., Lynce, I.: Incremental cardinality
+constraints for MaxSAT. In: Lecture Notes in Computer Science, pp. 531–
+548. Springer International Publishing (aug 2014). https://doi.org/10.1007/
+978-3-319-10428-7_39
+47. Morgado, A., Dodaro, C., Marques-Silva, J.: Core-guided MaxSAT with soft car-
+dinality constraints. In: O’Sullivan, B. (ed.) Principles and Practice of Constraint
+Programming - 20th International Conference, CP 2014, Lyon, France, Septem-
+ber 8-12, 2014. Proceedings. Lecture Notes in Computer Science, vol. 8656, pp.
+564–573. Springer (2014). https://doi.org/10.1007/978-3-319-10428-7_41
+48. Shaw, P. (ed.): 30th International Conference on Principles and Practice of Con-
+straint Programming, CP 2024, September 2-6, 2024, Girona, Spain, LIPIcs,
+vol. 307. Schloss Dagstuhl - Leibniz-Zentrum für Informatik (2024)
+49. Soh, T., Banbara, M., Tamura, N., Le Berre, D.: Solving multiobjective discrete
+optimization problems with propositional minimal model generation. In: Beck, J.C.
+(ed.) Principles and Practice of Constraint Programming—23rd International Con-
+ference, CP 2017, Melbourne, VIC, Australia, August 28 – September 1, 2017,
+Proceedings. Lecture Notes in Computer Science, vol. 10416, pp. 596–614. Springer
+(2017). https://doi.org/10.1007/978-3-319-66158-2_38
+50. Terra-Neves, M., Lynce, I., Manquinho, V.: Multi-objective optimization through
+pareto minimal correction subsets. In: Proceedings of the Twenty-Seventh Interna-
+tional Joint Conference on Artificial Intelligence. International Joint Conferences
+on Artificial Intelligence Organization (jul 2018). https://doi.org/10.24963/
+ijcai.2018/757
+51. Vandesande, D.: Towards Certified MaxSAT Solving: Certified MaxSAT solving
+with SAT oracles and encodings of pseudo-Boolean constraints. Master’s thesis,
+Vrije Universiteit Brussel (VUB) (2023), https://researchportal.vub.be/nl/
+studentTheses/towards-certified-maxsat-solving
+52. Vandesande, D., De Wulf, W., Bogaerts, B.: QMaxSATpb: A certified MaxSAT
+solver. In: Gottlob, G., Inclezan, D., Maratea, M. (eds.) Logic Programming
+and Nonmonotonic Reasoning - 16th International Conference, LPNMR 2022,
+Genova, Italy, September 5-9, 2022, Proceedings. Lecture Notes in Computer
+Science, vol. 13416, pp. 429–442. Springer (2022). https://doi.org/10.1007/
+978-3-031-15707-3_33
+
+
+Certifying Pareto-Optimality in Multi-Objective Maximum Satisfiability
+23
+A
+Additional Empirical Data on Proof Checking
+Fig. 5 shows a comparison between the per-instance solving runtimes with proof
+logging and the runtime of the VeriPB proof checker on the produced proofs.
+The color scale represents the range of the number of PD cuts introduced during
+solving. We observe that for P-minimal and BiOptSat without core boosting,
+a high number of PD cuts leads to a higher proof checking overhead, but for the
+other algorithms there is no such clear connection.
+P-minimal
+with core boosting
+without core boosting
+101
+102
+103
+104
+101
+102
+103
+36000
+mo
+3600
+proof logging (s)
+101
+102
+103
+104
+36000
+mo
+LowerBound
+101
+102
+103
+104
+101
+102
+103
+36000
+mo
+3600
+proof logging (s)
+101
+102
+103
+104
+36000
+mo
+BiOptSat
+101
+102
+103
+104
+101
+102
+103
+36000
+mo
+3600
+proof checking (s)
+proof logging (s)
+101
+102
+103
+104
+36000
+mo
+proof checking (s)
+# PD cuts:
+100
+104
+Fig. 5. Runtime comparison between solving with proof logging and proof checking
+wrt to the number of PD cuts.

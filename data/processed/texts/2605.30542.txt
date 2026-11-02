@@ -1,0 +1,1030 @@
+Physically Viable World Models: A Case for
+Query-Conditioned Embodied AI
+Adam J. Thorpe∗
+Stepan Tretiakov∗
+Cheng-Hsi Hsiao
+Su Ann Low
+Xingjian Li
+Hassan Iqbal
+Neel P. Bhatt
+Ufuk Topcu
+Krishna Kumar
+The University of Texas at Austin
+adam.thorpe@austin.utexas.edu
+stepan@utexas.edu
+chhsiao@utexas.edu
+suann@utexas.edu
+xingjian.li@austin.utexas.edu
+hassan.iqbal@utexas.edu
+npbhatt@utexas.edu
+utopcu@utexas.edu
+krishnak@utexas.edu
+Abstract
+World models for embodied AI must be physically viable: constructed to answer
+intervention queries by representing the underlying physical structure that governs
+the outcomes of an agent’s action, rather than merely serving as generic predictors
+of future observations. Existing world models, trained to predict observations,
+can produce visually plausible rollouts that are physically incorrect. This failure
+is structural; different physical systems can produce identical observations yet
+behave differently under intervention. We expose this problem through controlled
+benchmarks that keep the visible scene fixed while varying the underlying physics.
+We demonstrate that observation-predictive models may recommend infeasible
+actions, mispredict interaction outcomes, or certify behaviors that would otherwise
+be unsafe in the real world. We argue that embodied AI requires world models that
+identify the simplest physical abstraction sufficient to answer a given intervention
+query. Such a physically viable world model is composed from modular compo-
+nents, including environment representation, latent state and parameter estimation,
+action specification, dynamics under intervention, and response to queries. An
+autonomous orchestrator should identify the relevant abstraction and compose the
+world model from compatible learned and structured components for each query.
+The transition model may be analytic, simulated, learned, or hybrid when closed-
+form physics is unavailable, uncertain, or computationally expensive, but it must
+preserve the physical structure that determines the outcome of interventions. The
+resulting modular decomposition makes the model interpretable, its components
+verifiable, and its outputs auditable against the query. It also provides both a design
+principle for new world models and a feasibility test for existing ones: the right
+abstraction is not the most detailed model of the world, but the simplest model that
+preserves the distinctions relevant to the query. We demonstrate how this approach
+could work in practice on intervention queries that existing systems fail to answer
+correctly, and outline how an orchestrator can dynamically assemble and adapt
+physically viable models for planning, control, and verification.
+1
+Introduction
+A world model for embodied AI is physically viable when it supports correct reasoning about how
+a physical system evolves under intervention. For embodied AI, the relevant future is not just a
+sequence of observations, but the evolution of a physical system under intervention. A model used for
+planning, control, counterfactual reasoning, or safety analysis must therefore preserve the physical
+∗Equal contribution.
+Preprint.
+arXiv:2605.30542v1  [cs.AI]  28 May 2026
+
+
+Q: What will happen if I release 
+the ball?
+Q: Where should I release the ball 
+to knock over the cup?
+Q: Would the cup tip over if it was 
+filled with honey?
+?
+water explodes
+ball misses cup
+ball hits cup
+cup stays upright
+water spills
+physically impossible
+identifies physical abstraction to answer query
+Incorrect Prediction
+Correct Prediction
+Query
+Visual World 
+Model
+Query
+Orchestrator
+Physically Viable 
+World Model
+Figure 1: Visual world models can produce visually plausible but physically impossible predictions.
+We argue that embodied AI therefore requires world models that identify the simplest physical
+abstraction sufficient to answer a given intervention query.
+distinctions that affect those decisions. Visual plausibility does not guarantee this property. A rollout
+may look realistic while using invalid dynamics or omitting variables that the action depends on.
+Embodied world modeling therefore requires query-conditioned physically viable world models:
+models whose state variables, dynamics, parameters, and constraints are sufficient for the intervention
+being evaluated. Scaling observation prediction alone does not guarantee this requirement, especially
+when the variables that determine the outcome are latent, unobserved, or revealed only through action.
+As illustrated in Figure 1, the same intervention query may require reasoning over contact, mass,
+fluid response, or stability constraints that are not identifiable from visual appearance alone.
+A query specifies the intervention, the task, and the standard of correctness the prediction must satisfy.
+These elements determine the abstraction the model must construct: which variables, dynamics,
+parameters, constraints, and level of fidelity are required to answer the query. Physical viability
+does not require the most detailed model of the world. It requires the simplest abstraction that
+preserves the distinctions relevant to the query. For example, a grasping task may require contact and
+friction, a pouring task may require volume transfer and conservation laws, and a safety query may
+require reachability or barrier constraints without requiring photorealistic rendering. The right world
+model is therefore not the most realistic model in general, but the model whose variables, equations,
+parameters, and constraints are sufficient for the intervention being considered.
+Current observation-predictive world models fail when their training signal does not identify the dy-
+namics needed for action. Vision-language models, video generators, and latent predictive models can
+match perceptual regularities while failing on the latent physical variables that determine intervention
+outcomes [16, 42, 51, 25, 24, 54, 64, 65]. The issue is structural rather than architectural. The same
+observations can fit multiple physical systems that behave differently when acted on. More passive
+data may improve visual realism and short-horizon prediction without resolving the distinctions that
+determine the intervention outcome.
+We argue that world modeling for embodied AI must shift from observation extrapolation
+to query-conditioned construction of physically viable models. This position does not require
+maximal physical detail, but explicit selection of the abstraction needed to answer the query. A
+physically viable model must represent the variables the intervention acts on, use compatible dynamics
+and constraints, and return the form of answer the query requires. This view separates roles that end-
+to-end predictors often conflate, including perception, abstraction, parameter estimation, dynamics,
+and query-level response. World models should therefore be judged not strictly by perceptual realism,
+but by whether their abstractions support downstream decisions under intervention. We support this
+position with controlled examples that expose the failure modes of visual world models and with
+illustrative constructions that show how query-conditioned physical abstractions could address them.
+Contributions: This paper makes three contributions. (1) We argue observation-predictive world
+models are structurally inadequate for embodied intervention, and embodied world models should
+be constructed per query, around the physical distinctions the intervention depends on. (2) We
+demonstrate the resulting failures in three model families (vision-language, video diffusion, and
+action-conditioned latent prediction) under controlled physical variation. (3) We define a modular
+design framework for query-conditioned construction of a physically viable world model, and specify
+the operations an orchestrator must perform to compose it.
+2
+
+
+(a) balls & blocks
+(b) jelly walls
+(c) ball & cup
+(d) high/low push
+(e) robot pour
+Figure 2: Controlled evaluation scenes used to expose failures of visual world models under latent
+physical variation, including rigid-body collision, deformable interaction, rigid–fluid coupling,
+contact-dependent pushing, and viscosity-dependent pouring.
+2
+How Current World Models Fail to Represent Physics
+Current world models are often optimized to predict future observations from past observations,
+producing visually coherent predictions that fail under intervention. We use the simulations as an
+evaluation suite: static and counterfactual VLM prediction, diffusion video continuation, and action-
+conditioned latent control. Across these tests, appearance or action is held nearly fixed while latent
+physics varies; models often give plausible explanations, videos, or actions without preserving the
+variables that determine the outcome. Full protocols and results are in Appendix B.1, Appendix B.2,
+and Appendix B.3.
+2.1
+Simulation suite and tests
+We evaluate models on controlled simulations with specified physical parameters, interventions, and
+reference rollouts (Figure 2). Each scene family isolates a query-relevant latent variable while holding
+appearance or action nearly fixed. The suite supports the three tests summarized above and detailed
+in Appendix B.1, Appendix B.2, and Appendix B.3.
+Ramp-to-tower rigid-body interactions. These scenes test whether a model tracks latent rigid-body
+properties rather than predicting a generic collision outcome from visual appearance alone. A ball
+rolls down a ramp and collides with a small block tower. We use two closely related setups. In
+the density-variation setup, the tower geometry remains fixed while the block material changes, for
+example from wood to steel, so that the same apparent collision produces different momentum transfer
+and collapse behavior. In the restitution setup, we introduce high-restitution objects, including a
+bouncy projectile and composite towers that may contain a bouncy element above rigid lower blocks.
+These variants are shown in Figure 8. They probe whether predictions account for mass, inertia,
+restitution, frictional dissipation, and contact ordering.
+Deformable-jelly-wall interactions. We replace the rigid block tower with one or two deformable
+jelly walls and vary the release distance. Visually similar collisions can produce deformation, sliding,
+tipping, or momentum transfer through multiple deformable bodies depending on impact energy and
+material response. Correct prediction therefore requires tracking deformation, energy dissipation,
+and sequential contact dynamics. These scenes test whether predictions capture compliance and
+sequential deformable-body interaction. The static VLM benchmark includes the single-jelly-wall
+and two-jelly-wall settings in Figure 7, while Figure 10 compares the physical rollout against a
+diffusion-generated continuation for the two-jelly-wall case.
+Ramp-to-liquid-filled-cup impact. These scenes test whether models capture coupled rigid–fluid
+interaction. A ball strikes a partially or fully liquid-filled cup while geometry and camera position re-
+main fixed. We vary the ball material, release height, and fill level across trials. The outcome depends
+on ball momentum, cup motion, liquid inertia, sloshing, spillage, and the combined cup–fluid center
+of mass. The liquid-filled-cup setting appears in the static VLM benchmark in Figure 7; Figure 9
+3
+
+
+further compares the physically simulated rigid–fluid interaction against a diffusion-generated video
+continuation.
+Robot-wall pushing. A Franka Panda end-effector follows the same horizontal pushing trajectory
+into a freestanding wall while contact height or floor friction is varied. High and low contact points
+separate tipping torque from translation, while friction variation separates sliding from overturning.
+This tests whether action prediction is conditioned on the physical contact regime. Representative
+high-push, low-push, and material-variation rollouts are shown in Figures 11 and 12, where visually
+selected trajectories are compared against simulator-grounded executions.
+Robot-arm pouring and viscosity variants. These scenes test whether models infer latent fluid
+properties that alter the correct action. A robot pours from one glass into another under fixed geometry
+and controlled motion. We compare water-like, honey-like, and synthetic-viscosity liquids. Viscosity
+changes flow rate, transfer timing, retained liquid, and spill behavior, so the correct action may require
+a different hold duration or parameter-identification step. Candidate viscosities are evaluated against
+query-relevant quantities such as receiver fill, residual liquid, and spillage. The viscosity-dependent
+pouring variants and best-match parameter-estimation result are shown in Figure 13.
+Together, these scenes cover rigid impact, restitution, deformable interaction, rigid–fluid coupling,
+contact-rich pushing, and viscosity-dependent pouring. They instantiate the VLM, diffusion, latent-
+control, and viscosity-estimation tests reported in the appendix. The simulation code is available at
+https://github.com/pvwm/physically-viable-world-models, and supplementary videos
+of simulator rollouts, diffusion-generated video continuations, and V-JEPA action-conditioned rollouts
+are available on the project website: https://pvwm.github.io/.
+2.2
+Why the failures are structural
+The failures above are not specific to one architecture. The tests in Sections B.1 to B.3 show the
+same pattern in different forms: VLMs identify relevant effects but miss thresholded outcomes;
+diffusion rollouts remain visually coherent while violating contact, fluid, or deformable dynamics;
+and latent-control plans can be visually plausible but physically infeasible. VLMs mediate physical
+knowledge through image-text priors and token-level reasoning, without an explicit state that evolves
+under action. Video diffusion models represent state as image sequences, so physical variables
+exist only insofar as they are recoverable from pixel statistics. Latent world models learn transition
+functions in representations optimized for prediction [28, 27, 31, 30, 32, 14, 33, 19, 34, 61, 52, 35],
+but these latents need not correspond to physical state variables.
+This limitation follows from the training objective. Prediction over observation sequences asks the
+model to infer dynamics from observed data, but this inverse problem is not unique. Distinct physical
+systems can induce identical or nearly identical observations when the variables that determine
+evolution, such as mass, friction, compliance, inertia, restitution, viscosity, or contact state, are latent
+or indirectly observed. This is not a claim that dynamics can never be identified. With full state
+access, rich interventions, targeted system-identification data, or strong physical priors, the relevant
+system may be recoverable. The issue is that current training regimes often lack this information and
+optimize for observed outcomes rather than recovering the variables needed under intervention.
+Our tests make the ambiguity explicit: appearance and actions stay nearly fixed while the correct
+response changes with density, restitution, deformability, contact height, friction, rigid–fluid coupling,
+or viscosity. Without representing, estimating, or probing these quantities, models follow visual
+similarity rather than intervention-relevant dynamics. Large-scale studies show the same pattern:
+in controlled mechanics environments, out-of-distribution error can remain dominated by visual
+similarity rather than dynamical variables [42], and video generation models can violate physical
+laws despite large-scale training and diverse evaluation settings [51, 25, 24].
+Action-conditioned models reduce ambiguity only over the distribution of actions and regimes they
+observe. They can still fail when extrapolating to unseen contact modes, material properties, or
+control settings [31, 34, 26, 39, 20, 59, 37]. Likewise, existing approaches mitigate the problem
+without eliminating it. Physics-informed losses and architectural priors constrain predictions but are
+often soft regularizers [58, 23, 17, 18, 10]; object-centric models recover useful structure but still
+learn interaction dynamics from data [44, 50, 48]; scientific surrogates and learned simulators can be
+accurate within fixed regimes but typically assume predefined variables or governing dynamics [56,
+45, 11, 12, 8, 46, 15, 60, 57]; and differentiable or hybrid simulators shift difficulty to representation,
+4
+
+
+Orchestrator 
+composes world model from query
+Query 
+counterfactual  parameter estimation  reachability  planning  verification 
+⋅
+⋅
+⋅
+⋅
+Perception 
+video · images · LiDAR · depth 
+force-torque · joint encoders · IMU
+Action Specification 
+task → admissible interventions
+Representation 
+3D geometry · material properties 
+scene structure · contact state
+State  
+pose · velocity · contact state 
+material parameters
+st
+Action 
+ 
+forces · torques · joint commands 
+contacts · boundary conditions
+at
+Next State 
+ 
+physically viable rollout
+st+1
+Prediction 
+trajectory  parameter estimate  reachability set  verification certificate
+⋅
+⋅
+⋅
+Dynamics 
+evolves  under 
+st
+at
+Constraints 
+mass · momentum · energy  
+SE(3) · contact · kinematics
+compatible
+Physically Viable  
+World Model
+called once for world model creation
+called every time using created world model
+Figure 3: Representative construction of a physically viable world model. A user-specified inter-
+vention query determines the physical abstraction to be constructed. Perception and representation
+recover query-relevant scene variables, action specification defines admissible interventions, dynam-
+ics and constraints evolve the selected state under action, and prediction returns the response required
+by the query. The compatibility relation emphasizes that the selected representation, action interface,
+dynamics, constraints, and output must support the same abstraction.
+parameter estimation, and model selection [36, 40, 21, 63, 1, 66, 38, 49, 13, 68]. These tools are
+valuable, but they must be composed around the intervention query.
+The consequence appears under action. Two systems that look the same over the training distribution
+can respond differently when intervened upon. Reliable planning, control, and counterfactual reason-
+ing therefore require physical structure to enter as represented, estimated, or enforced components,
+rather than only as an emergent property of observation prediction.
+3
+Physically viable world modeling
+We now describe a constructive view of physically viable world models. The central idea is that an
+embodied agent should begin with an intervention query, determine which physical distinctions the
+query depends on, and construct the simplest abstraction sufficient to preserve those distinctions.
+We separate this process into two parts: an orchestrator that selects the relevant abstractions and
+compatible components for the query, and a world model that composes those choices into a model
+of the system under intervention. Figure 3 gives a representative construction for counterfactual,
+planning, verification, and parameter-identification queries. We then use three examples—a ramp-
+and-cup interaction, robot pouring with latent viscosity, and flooded-road traversal—to show how the
+query determines variable selection, parameter estimation, action selection, dynamics, and constraints.
+3.1
+Constructing the simplest abstraction sufficient for a query
+Intervention queries. A physically viable world model is constructed around the physical require-
+ments determined by an intervention query. In embodied settings, the query is a request about
+interaction with the world, such as what will happen if a particular action is taken, which action will
+produce a desired outcome, or whether an action remains safe under uncertainty. The query defines
+the modeling problem because it specifies the intervention being considered, the outcome that matters,
+the physical uncertainty that must be resolved, and the form of the answer needed for decision-making.
+5
+
+
+These elements determine the abstraction—the variables to represent, the parameters to estimate
+or bound, the actions to admit, the dynamics to use, the constraints to enforce, and the response
+the model should return. A model that answers the query does not need to represent every physical
+detail of the scene. This query-conditioned construction is a design principle rather than a fixed
+architecture. The appropriate abstraction is the one that preserves the physical distinctions that can
+change the answer. If the answer depends on mass, friction, contact geometry, fill level, or viscosity,
+then those quantities must be represented, estimated, or bounded. A richer model may be useful
+when it improves reuse, robustness, or safety margins, but additional detail also creates estimation
+and validation obligations.
+Variable selection. Variable selection determines the state, latent parameters, and admissible
+actions required to answer the query. In Figure 3, perception provides evidence from available
+sensors, representation maps that evidence into physical variables, and action specification defines
+interventions in the same variable space. These components must be compatible: an action is only
+meaningful if it acts on variables represented in the state, and the state is only useful if it exposes the
+quantities the action changes. For example, a force applied at a contact point requires a representation
+containing geometry, pose, contact location, mass, and velocity, rather than raw pixel observations
+alone. Different queries therefore require different abstractions. Navigation may require free space
+and robot pose, grasping may require contact geometry and friction, and pouring may require fill level,
+container geometry, and fluid properties. Variable selection must also account for latent quantities that
+cannot be identified from passive observation alone, including mass, friction, viscosity, compliance,
+or contact state. When such quantities affect the intervention outcome, the model should estimate
+them, maintain uncertainty over possible values, gather additional information, or return a conditional
+response rather than collapsing unresolved uncertainty into a single unsupported prediction.
+State evolution and constraints. After the state and action variables are selected, the model must
+specify how the state evolves under the admissible intervention. This corresponds to the dynamics,
+constraints, and next-state blocks in Figure 3. A simple query may only require a closed-form relation,
+such as a kinematic equation, conservation law, or stability condition. A query involving contact,
+liquid transfer, deformation, or coupled rigid-body motion may require a numerical solver. A learned
+simulator or constrained surrogate may be appropriate when analytic equations are unavailable,
+numerical solvers are too expensive, or the relevant physical process is only partially specified. A
+composite model may combine these pieces, for example by using learned perception to recover
+geometry, an analytic calculation for a stability margin, a numerical solver for contact, and a verifier
+for safety. The goal is to select dynamics with the fidelity required by the query, not to build a
+universal simulator of the scene.
+The important requirement is that the selected dynamics preserve the physical structure that determines
+the query response. A learned simulator may be physically viable if it respects the relevant regimes,
+invariants, and constraints. A numerical simulator may fail if it uses the wrong physical regime or
+omits the parameter that the query depends on. A reduced analytic model may be preferable when it
+captures the decisive quantity without introducing unnecessary state.
+Query-level response. The output of a physically viable world model is the query-level response
+required for decision-making. This corresponds to the prediction block in Figure 3. For example, the
+answer may be a trajectory, a parameter estimate, a feasible action set, a reachability set, a stability
+boundary, or a verification certificate. The model is judged by whether its response preserves the
+physical distinctions the query depends on. A visually plausible rollout can still fail if it omits the
+variable that determines the intervention outcome.
+Orchestrator. This construction is useful only if the abstraction and components can be selected
+automatically, which remains the central open problem. An early orchestrator does not need to solve
+open-ended physical reasoning. It can instead operate conservatively by starting from a library of
+physical abstractions, selecting candidate variables from the query and scene context, testing whether
+latent parameters are identifiable from available evidence, routing between analytic, numerical,
+learned, or hybrid models, and returning uncertainty when the construction is underdetermined.
+Existing tools already provide partial mechanisms for this role, including model selection in system
+identification, program synthesis, differentiable simulation, tool-using language models, model
+predictive control, active information gathering, and verification over constrained dynamics.
+The orchestrator should therefore be understood not as a fixed module, but as an adaptive, closed-loop
+selection and checking process that routes between analytic models, numerical simulators, learned
+6
+
+
+0.5 volume
+0.5 height
+1.0 height
+2.0 height
+1.0 height
+0.5 volume
+0.5 height
+wood
+steel
+aluminum
+Figure 4: Counterfactual evaluation of a ramp-to-cup intervention query under varying release heights,
+ball materials, and fill conditions.
+surrogates, estimators, controllers, and verification tools while revising the construction when the
+query changes, new evidence arrives, or a selected component fails a compatibility check. It may
+also determine that the available information is insufficient and that additional sensing or interaction
+is required before the query can be answered. Its role is to construct the simplest compatible world
+model for the query and ensure that the composed model supports the required reasoning under
+intervention. The orchestrator does not need to be a single learned module, but it does require the
+selection problem itself to be explicit. A physically viable world model should therefore not only
+produce an answer to the query, but also expose why the selected abstraction is adequate, which
+assumptions it depends on, which latent quantities remain uncertain, and which constraints were
+checked, making the model useful both for planning and control and for diagnosing when the query
+cannot be answered from the available information.
+3.2
+Illustrative demonstrations
+In this section, we support our position with constructions that show how query-conditioned physical
+abstractions could address the failure modes we have identified.
+Placing a ball on a ramp: The first demonstration considers a ball released on a ramp toward a
+fluid-filled cup. The intervention query asks where the ball should be released so that the cup tips
+over, or where it should be released so that the cup remains upright. The query-level response is the
+set of release conditions that produce tipping or non-tipping behavior.
+Figure 4 shows world model evaluations of this query under different release heights, ball materials,
+and fill conditions. Each rollout keeps the scene geometry nearly fixed while changing physical
+parameters that affect the outcome. The same visible setup can tip or remain upright depending on
+the ball mass, restitution, release height, fluid volume, and fluid response. These parameters shift the
+release conditions separating tipping from non-tipping outcomes. The important point is that these
+differences are physical rather than visual. A steel ball, a wooden ball, and an aluminum ball can
+look nearly identical while transferring different momentum at impact. Changing the release height
+changes the impact speed, while changing the fill level changes the cup–fluid center of mass and
+the stability margin. These quantities determine the outcome of the interaction, but they may not be
+recoverable from visual appearance alone.
+This example illustrates the central claim of the paper. The intervention outcome depends on latent
+physical quantities that observation-predictive models can miss when visually similar scenes behave
+differently under action. For this query, the physically viable abstraction is the minimal set of
+variables, parameters, and dynamics needed to determine whether the cup tips under intervention. A
+physically viable world model must therefore represent, estimate, or condition on these quantities
+rather than rely only on visual similarity.
+Pouring fluid into a jar: The second demonstration considers a robot arm pouring liquid from a
+source glass into a receiving jar. The intervention query is not whether a rollout visually resembles
+pouring, but which robot motion transfers a target volume, such as half a glass, without underfilling,
+7
+
+
+Figure 5: Viscosity-dependent pouring under a query-conditioned world model. (a) A fixed probing
+pour is used to infer the viscosity of an unknown liquid from flow, fill, residual, and spill behavior. (b)
+The estimated viscosity is then used to select a pouring motion and stopping condition that transfers a
+target volume equal to half of the liquid initially in the source glass.
+overshooting, or spilling. The query-level response is therefore an action, policy, or termination
+condition rather than a rendered video.
+Let u0:T denote the robot motion over horizon T, including tilt trajectory, angular velocity, hold
+duration, and stopping rule. We consider three related queries. First, a planning query asks for
+a motion such that the received volume reaches a target V ⋆within tolerance, Vrecv(T) ∈[V ⋆−
+ϵ, V ⋆+ ϵ], while the spilled volume satisfies Vspill(T) ≤δ. For a water-like liquid, a nominal tilt
+and hold duration may be sufficient. The required abstraction includes container geometry, robot
+pose, initial fill, liquid volume, gravity, and the fluid parameters governing transfer rate. Second,
+a counterfactual action query asks how the motion should change when liquid properties change
+while geometry and target remain fixed. In our longer-pour experiment, replacing a water-like liquid
+with a honey-like, high-viscosity liquid changes the correct action: the source glass must remain
+inclined longer to transfer the same half-glass volume. This difference is physical rather than visual.
+Higher viscosity slows the transfer curve and changes the residual–spill tradeoff, so a model that
+treats pouring as a generic visual event may underfill slow-flowing liquids or overshoot faster-flowing
+ones. Third, a parameter-identification query asks which latent fluid parameter best explains an
+observed fixed-motion pour. In our viscosity-estimation experiment, the robot executes the same
+prescribed trajectory for the same duration, and candidate simulations with different viscosities are
+scored against query-relevant quantities: receiver fill curve, residual liquid in the source glass, spilled
+volume, and first-arrival time in the receiver. Bayesian optimization then searches over viscosity
+values to identify a parameter estimate, or uncertainty set, that best explains the observed pour and
+can be passed to the planner for a subsequent target volume or tolerance.
+This example illustrates the role of the orchestrator. If the liquid is known, it may directly search
+over tilt angle, duration, and stopping rule. If the liquid is unknown, it should insert a probing action,
+estimate viscosity from observed fill, residual, spill, and arrival behavior, and then re-plan under
+the inferred parameter. If the estimate remains ambiguous near the decision boundary, the response
+should remain conditional or use feedback termination based on receiver fill. Thus, viscosity is not a
+visual attribute but a decision-relevant latent variable. A physically viable world model must expose,
+estimate, and use this variable when the intervention query depends on it.
+Driving a truck on flooded roads: We next consider a driving query in a reconstructed outdoor
+scene with flooded roads. The intervention query asks whether the truck can traverse the flooded
+region without becoming immobilized, unstable, or submerged beyond critical depth. The output is a
+traversal judgment, feasible route, or unsafe region conditioned on vehicle assumptions.
+The scene is reconstructed from aerial observations using a Gaussian splat representation [43], which
+serves as a local geometric map of road layout, terrain shape, obstacles, and appearance from sparse
+8
+
+
+t=0.0 s
+Original Scene
+Physically Viable Model
+t=2.0 s
+t=4.0 s
+t=6.0 s
+t=8.0 s
+t=0.0 s
+t=2.0 s
+t=4.0 s
+t=6.0 s
+t=8.0 s
+Figure 6: Query-conditioned construction of a physically viable driving model from an observation-
+derived Gaussian splat. Top: the original reconstructed scene representation. Bottom: the scene
+augmented with rigid support geometry and MPM-based fluid simulation for evaluating flooded-road
+traversal under rigid-fluid interaction. The orange circle highlights the position of the vehicle in each
+simulation.
+views. Figure 6 compares this observation-based representation with the physically viable model
+constructed for the traversal query. The top row shows the original Gaussian splat scene with rigid
+support geometry, while the bottom row augments it with material point method (MPM)-based fluid
+simulation. The reconstruction alone does not contain the physical structure needed to answer the
+query, but it provides the geometric basis for constructing the query-specific model.
+The orchestrator augments this geometry with intervention-relevant physics. Static scene Gaussians
+are treated as rigid terrain and support boundaries; reconstructed elevation determines where water
+pools; and an MPM fluid simulation evolves the flooded region under gravity and rigid interaction.
+The truck is modeled as a rigid body and evaluated using traversal-relevant quantities, including
+water depth, drag, wheel submersion, traction loss, and stability margins. Under these flooded-road
+dynamics, the truck fails the query’s safety condition, indicating that the flooded region is not safely
+traversable under the assumed vehicle and terrain parameters.
+Several quantities remain unresolved from aerial observations alone, including terrain compliance,
+subsurface support, tire–soil interaction, road friction, water depth, current velocity, and vehicle
+mass distribution. A physically viable response should therefore expose these assumptions, evaluate
+sensitivity to unresolved parameters, or return conditional predictions when the outcome depends on
+variables not identifiable from the available evidence.
+4
+Conclusion & limitations
+In this paper, we argued that physically viable world models should instead construct query-
+conditioned representations that preserve the physical distinctions relevant to the intervention being
+considered. In this view, physical structure is not an emergent property of large-scale observation
+prediction, but an explicit requirement of the model construction process. While this perspective
+does not solve all aspects of world modeling, it identifies a class of failures that cannot be resolved
+through scaling alone and motivates architectures that explicitly represent actions, state, dynamics,
+constraints, and uncertainty.
+Nevertheless, several open problems remain. Physical viability is relative to the query, so no single
+abstraction is sufficient for every intervention. Richer abstractions may improve robustness or
+transfer, but they also increase the burden of estimation and validation. Creating a model that can
+identify the right abstraction, at the right level of fidelity to answer a given query, remains an open
+problem. Physically viable constructions also do not overcome identifiability limits. Latent quantities
+such as mass, friction, viscosity, or hidden contact geometry may remain unresolved from passive
+observation, requiring estimation, active interaction, or conditional responses. Finally, the central
+open problem is orchestration. A physically viable world model must select the abstraction, identify
+unresolved quantities, choose dynamics and constraints, and determine the form of the response.
+Task and motion planning offers a precedent for hierarchical decomposition [22, 41], and recent
+simulator-grounded world models compose perception, simulation, and policy in restricted settings
+9
+
+
+[6]. Our demonstrations show how intervention queries can drive these choices in controlled settings,
+but autonomous orchestration remains an open research problem.
+References
+[1] Jad Abou-Chakra, Krishan Rana, Feras Dayoub, and Niko Sünderhauf. Physically embod-
+ied Gaussian splatting: A realtime correctable world model for robotics.
+arXiv preprint
+arXiv:2406.10788, 2024.
+[2] Artificial Analysis.
+Artificial analysis text-to-video leaderboard (open-weights mod-
+els).
+https://artificialanalysis.ai/video/leaderboard/text-to-video?
+open-weights=true, 2026. Accessed: 2026-04-27.
+[3] Artificial Analysis.
+Artificial analysis text-to-video leaderboard (open-weights mod-
+els).
+https://artificialanalysis.ai/video/leaderboard/image-to-video?
+open-weights=true, 2026. Accessed: 2026-04-27.
+[4] Mido Assran, Adrien Bardes, David Fan, Quentin Garrido, Russell Howes, Matthew Muckley,
+Ammar Rizvi, Claire Roberts, Koustuv Sinha, Artem Zholus, et al. V-jepa 2: Self-supervised
+video models enable understanding, prediction and planning. arXiv preprint arXiv:2506.09985,
+2025.
+[5] Genesis Authors. Genesis: A generative and universal physics engine for robotics and beyond,
+December 2024.
+[6] Leonardo Barcellona, Andrii Zadaianchuk, Davide Allegro, Samuele Papa, Stefano Ghidoni,
+and Efstratios Gavves. Dream to manipulate: Compositional world models empowering robot
+imitation learning with imagination. arXiv preprint arXiv:2412.14957, 2024.
+[7] Adrien Bardes, Quentin Garrido, Jean Ponce, Xinlei Chen, Michael Rabbat, Yann LeCun,
+Mahmoud Assran, and Nicolas Ballas. Revisiting feature prediction for learning visual repre-
+sentations from video. arXiv preprint arXiv:2404.08471, 2024.
+[8] Peter Battaglia, Razvan Pascanu, Matthew Lai, Danilo Jimenez Rezende, et al. Interaction
+networks for learning about objects, relations and physics. Advances in neural information
+processing systems, 29, 2016.
+[9] Jan Bender and Dan Koschier. Divergence-free smoothed particle hydrodynamics. In Proceed-
+ings of the 14th ACM SIGGRAPH/Eurographics symposium on computer animation, pages
+147–155, 2015.
+[10] Tom Beucler, Michael Pritchard, Stephan Rasp, Jordan Ott, Pierre Baldi, and Pierre Gentine.
+Enforcing analytic constraints in neural networks emulating physical systems. Physical review
+letters, 126(9):098302, 2021.
+[11] Kaifeng Bi, Lingxi Xie, Hengheng Zhang, Xin Chen, Xiaotao Gu, and Qi Tian. Pangu-Weather:
+A 3d high-resolution model for fast and accurate global weather forecast. arXiv preprint
+arXiv:2211.02556, 2022.
+[12] Michael B. Chang, Tomer Ullman, Antonio Torralba, and Joshua B. Tenenbaum. A composi-
+tional object-based approach to learning physical dynamics. In International Conference on
+Learning Representations (ICLR), 2017. arXiv:1612.00341.
+[13] Boyuan Chen, Hanxiao Jiang, Shaowei Liu, Saurabh Gupta, Yunzhu Li, Hao Zhao, and Shenlong
+Wang. PhysGen3D: Crafting a miniature interactive world from a single image. In IEEE/CVF
+Conference on Computer Vision and Pattern Recognition (CVPR), 2025. arXiv:2503.20746.
+[14] Chang Chen, Yi-Fu Wu, Jaesik Yoon, and Sungjin Ahn. TransDreamer: Reinforcement learning
+with transformer world models. In Deep Reinforcement Learning Workshop, NeurIPS 2021,
+2022. arXiv:2202.09481.
+[15] Ricky TQ Chen, Yulia Rubanova, Jesse Bettencourt, and David K Duvenaud. Neural ordinary
+differential equations. Advances in neural information processing systems, 31, 2018.
+10
+
+
+[16] Wei Chow, Jiageng Mao, Boyi Li, Daniel Seita, Vitor Guizilini, and Yue Wang. Physbench:
+Benchmarking and enhancing vision-language models for physical world understanding. arXiv
+preprint arXiv:2501.16411, 2025.
+[17] Miles Cranmer, Sam Greydanus, Stephan Hoyer, Peter Battaglia, David Spergel, and Shirley
+Ho. Lagrangian neural networks. In ICLR Workshop on Deep Differential Equations, 2020.
+arXiv:2003.04630.
+[18] Miles Cranmer, Alvaro Sanchez Gonzalez, Peter Battaglia, Rui Xu, Kyle Cranmer, David
+Spergel, and Shirley Ho. Discovering symbolic models from deep learning with inductive
+biases. Advances in neural information processing systems, 33:17429–17442, 2020.
+[19] Fei Deng, Junyeong Park, and Sungjin Ahn. Facing off world model backbones: RNNs,
+transformers, and S4. In Advances in Neural Information Processing Systems (NeurIPS), 2023.
+arXiv:2307.02064.
+[20] Zihan Ding, Amy Zhang, Yuandong Tian, and Qinqing Zheng. Diffusion world model: Fu-
+ture modeling beyond step-by-step rollout for offline reinforcement learning. arXiv preprint
+arXiv:2402.03570, 2024.
+[21] C. Daniel Freeman, Erik Frey, Anton Raichuk, Sertan Girgin, Igor Mordatch, and Olivier
+Bachem. Brax – a differentiable physics engine for large scale rigid body simulation. arXiv
+preprint arXiv:2106.13281, 2021.
+[22] Caelan Reed Garrett, Tomás Lozano-Pérez, and Leslie Pack Kaelbling. Pddlstream: Integrating
+symbolic planners and blackbox samplers via optimistic adaptive planning. In Proceedings of
+the international conference on automated planning and scheduling, volume 30, pages 440–448,
+2020.
+[23] Sam Greydanus, Misko Dzamba, and Jason Yosinski. Hamiltonian neural networks. In Advances
+in Neural Information Processing Systems (NeurIPS), 2019. arXiv:1906.01563.
+[24] Jing Gu, Xian Liu, Yu Zeng, Ashwin Nagarajan, Fangrui Zhu, Daniel Hong, Yue Fan, Qianqi
+Yan, Kaiwen Zhou, Ming-Yu Liu, et al. " phyworldbench": A comprehensive evaluation of
+physical realism in text-to-video models. arXiv preprint arXiv:2507.13428, 2025.
+[25] Xuyang Guo, Jiayan Huo, Zhenmei Shi, Zhao Song, Jiahao Zhang, and Jiale Zhao.
+T2vphysbench: A first-principles benchmark for physical consistency in text-to-video gen-
+eration. arXiv preprint arXiv:2505.00337, 2025.
+[26] Agrim Gupta, Stephen Tian, Yunzhi Zhang, Jiajun Wu, Roberto Martín-Martín, and Fei-Fei
+Li. MaskViT: Masked visual pre-training for video prediction. In International Conference on
+Learning Representations (ICLR), 2023. arXiv:2206.11894.
+[27] David Ha and Jürgen Schmidhuber. Recurrent world models facilitate policy evolution. Ad-
+vances in neural information processing systems, 31, 2018.
+[28] David Ha and Jürgen Schmidhuber. World models. arXiv preprint arXiv:1803.10122, 2(3):440,
+2018.
+[29] Yoav HaCohen, Benny Brazowski, Nisan Chiprut, Yaki Bitterman, Andrew Kvochko, Avishai
+Berkowitz, Daniel Shalem, Daphna Lifschitz, Dudu Moshe, Eitan Porat, et al. Ltx-2: Efficient
+joint audio-visual foundation model. arXiv preprint arXiv:2601.03233, 2026.
+[30] Danijar Hafner, Timothy Lillicrap, Jimmy Ba, and Mohammad Norouzi. Dream to control:
+Learning behaviors by latent imagination. arXiv preprint arXiv:1912.01603, 2019.
+[31] Danijar Hafner, Timothy Lillicrap, Ian Fischer, Ruben Villegas, David Ha, Honglak Lee, and
+James Davidson. Learning latent dynamics for planning from pixels. In International conference
+on machine learning, pages 2555–2565. PMLR, 2019.
+[32] Danijar Hafner, Timothy Lillicrap, Mohammad Norouzi, and Jimmy Ba. Mastering Atari with
+discrete world models. In International Conference on Learning Representations (ICLR), 2021.
+arXiv:2010.02193.
+11
+
+
+[33] Danijar Hafner, Jurgis Pasukonis, Jimmy Ba, and Timothy Lillicrap. Mastering diverse domains
+through world models. arXiv preprint arXiv:2301.04104, 2023.
+[34] Danijar Hafner, Jurgis Pasukonis, Jimmy Ba, and Timothy Lillicrap. Mastering diverse control
+tasks through world models. Nature, 640(8059):647–653, 2025.
+[35] Nicklas Hansen, Hao Su, and Xiaolong Wang. TD-MPC2: Scalable, robust world models for
+continuous control. In International Conference on Learning Representations (ICLR), 2024.
+arXiv:2310.16828.
+[36] Yuanming Hu, Luke Anderson, Tzu-Mao Li, Qi Sun, Nathan Carr, Jonathan Ragan-Kelley, and
+Frédo Durand. DiffTaichi: Differentiable programming for physical simulation. In International
+Conference on Learning Representations (ICLR), 2020. arXiv:1910.00935.
+[37] Siqiao Huang, Jialong Wu, Qixing Zhou, Shangchen Miao, and Mingsheng Long. Vid2World:
+Crafting video diffusion models to interactive world models. arXiv preprint arXiv:2505.14357,
+2025.
+[38] Tianyu Huang, Haoze Zhang, Yihan Zeng, Zhilu Zhang, Hui Li, Wangmeng Zuo, and Rynson
+W. H. Lau. DreamPhysics: Learning physics-based 3d dynamics with video diffusion priors. In
+AAAI Conference on Artificial Intelligence, 2025. arXiv:2406.01476.
+[39] Michael Janner, Yilun Du, Joshua B. Tenenbaum, and Sergey Levine. Planning with diffusion
+for flexible behavior synthesis. In Proceedings of the 39th International Conference on Machine
+Learning (ICML), volume 162 of Proceedings of Machine Learning Research, pages 9902–9915.
+PMLR, 2022. arXiv:2205.09991.
+[40] Krishna Murthy Jatavallabhula, Miles Macklin, Florian Golemo, Vikram Voleti, Linda Petrini,
+Martin Weiss, Breandan Considine, Jerome Parent-Levesque, Kevin Xie, Kenny Erleben, Liam
+Paull, Florian Shkurti, Derek Nowrouzezahrai, and Sanja Fidler. gradSim: Differentiable
+simulation for system identification and visuomotor control. In International Conference on
+Learning Representations (ICLR), 2021. arXiv:2104.02646.
+[41] Leslie Pack Kaelbling and Tomás Lozano-Pérez. Integrated task and motion planning in belief
+space. The International Journal of Robotics Research, 32(9-10):1194–1227, 2013.
+[42] Bingyi Kang, Yang Yue, Rui Lu, Zhijie Lin, Yang Zhao, Kaixin Wang, Gao Huang, and Jiashi
+Feng. How far is video generation from world model: A physical law perspective. arXiv
+preprint arXiv:2411.02385, 2024.
+[43] Bernhard Kerbl, Georgios Kopanas, Thomas Leimkühler, and George Drettakis. 3D Gaussian
+Splatting for real-time radiance field rendering. ACM Transactions on Graphics, 42(4), 2023.
+arXiv:2308.04079.
+[44] Thomas Kipf, Elise van der Pol, and Max Welling. Contrastive learning of structured world mod-
+els. In International Conference on Learning Representations (ICLR), 2020. arXiv:1911.12247.
+[45] Remi Lam, Alvaro Sanchez-Gonzalez, Matthew Willson, Peter Wirnsberger, Meire Fortunato,
+Ferran Alet, Suman Ravuri, Timo Ewalds, Zach Eaton-Rosen, Weihua Hu, Alexander Merose,
+Stephan Hoyer, George Holland, Oriol Vinyals, Jacklynn Stott, Alexander Pritzel, Shakir
+Mohamed, and Peter Battaglia. GraphCast: Learning skillful medium-range global weather
+forecasting. arXiv preprint arXiv:2212.12794, 2022.
+[46] Yunzhu Li, Jiajun Wu, Russ Tedrake, Joshua B. Tenenbaum, and Antonio Torralba. Learning
+particle dynamics for manipulating rigid bodies, deformable objects, and fluids. In International
+Conference on Learning Representations (ICLR), 2019. arXiv:1810.01566.
+[47] Lightricks. Ltx-2 model card. https://huggingface.co/Lightricks/LTX-2, 2026.
+[48] Yu-Ren Liu, Biwei Huang, Zhengmao Zhu, Honglong Tian, Mingming Gong, Yang Yu, and Kun
+Zhang. Learning world models with identifiable factorization. arXiv preprint arXiv:2306.06561,
+2023.
+12
+
+
+[49] Zhuoman Liu, Weicai Ye, Yan Luximon, Pengfei Wan, and Di Zhang. PhysFlow: Unleashing
+the potential of multi-modal foundation models and video diffusion for 4d dynamic physical
+scene simulation. In IEEE/CVF Conference on Computer Vision and Pattern Recognition
+(CVPR), 2025. arXiv:2411.14423.
+[50] Francesco Locatello, Dirk Weissenborn, Thomas Unterthiner, Aravindh Mahendran, Georg
+Heigold, Jakob Uszkoreit, Alexey Dosovitskiy, and Thomas Kipf. Object-centric learning
+with slot attention. In Advances in Neural Information Processing Systems (NeurIPS), 2020.
+arXiv:2006.15055.
+[51] Fanqing Meng, Jiaqi Liao, Xinyu Tan, Wenqi Shao, Quanfeng Lu, Kaipeng Zhang, Yu Cheng,
+Dianqi Li, Yu Qiao, and Ping Luo. Towards world simulator: Crafting physical commonsense-
+based benchmark for video generation. arXiv preprint arXiv:2410.05363, 2024.
+[52] Vincent Micheli, Eloi Alonso, and François Fleuret.
+Transformers are sample-efficient
+world models.
+In International Conference on Learning Representations (ICLR), 2023.
+arXiv:2209.00588.
+[53] Joe J Monaghan. Smoothed particle hydrodynamics. Reports on progress in physics, 68(8):1703–
+1759, 2005.
+[54] Saman Motamed, Laura Culp, Kevin Swersky, Priyank Jaini, and Robert Geirhos. Do gener-
+ative video models understand physical principles? In Proceedings of the IEEE/CVF Winter
+Conference on Applications of Computer Vision, pages 948–958, 2026.
+[55] Felix O’Mahony, Roberto Cipolla, and Ayush Tewari. Vdaworld: World modelling via vlm-
+directed abstraction and simulation. arXiv preprint arXiv:2512.11061, 2025.
+[56] Jaideep Pathak, Shashank Subramanian, Peter Harrington, Sanjeev Raja, Ashesh Chattopadhyay,
+Morteza Mardani, Thorsten Kurth, David Hall, Zongyi Li, Kamyar Azizzadenesheli, Pedram
+Hassanzadeh, Karthik Kashinath, and Animashree Anandkumar. FourCastNet: A global data-
+driven high-resolution weather model using adaptive fourier neural operators. arXiv preprint
+arXiv:2202.11214, 2022.
+[57] Tobias Pfaff, Meire Fortunato, Alvaro Sanchez-Gonzalez, and Peter W. Battaglia. Learn-
+ing mesh-based simulation with graph networks. In International Conference on Learning
+Representations (ICLR), 2021. arXiv:2010.03409.
+[58] Maziar Raissi, Paris Perdikaris, and George E Karniadakis. Physics-informed neural networks:
+A deep learning framework for solving forward and inverse problems involving nonlinear partial
+differential equations. Journal of Computational physics, 378:686–707, 2019.
+[59] Marc Rigter, Tarun Gupta, Agrin Hilmkil, and Chao Ma. AVID: Adapting video diffusion
+models to world models. arXiv preprint arXiv:2410.12822, 2024.
+[60] Alvaro Sanchez-Gonzalez, Jonathan Godwin, Tobias Pfaff, Rex Ying, Jure Leskovec, and
+Peter W. Battaglia. Learning to simulate complex physics with graph networks. In International
+Conference on Machine Learning (ICML), 2020. arXiv:2002.09405.
+[61] Julian Schrittwieser, Ioannis Antonoglou, Thomas Hubert, Karen Simonyan, Laurent Sifre,
+Simon Schmitt, Arthur Guez, Edward Lockhart, Demis Hassabis, Thore Graepel, Timothy
+Lillicrap, and David Silver. Mastering Atari, Go, chess and shogi by planning with a learned
+model. Nature, 588(7839):604–609, 2020. arXiv:1911.08265.
+[62] The Newton Contributors. Newton: GPU-accelerated physics simulation for robotics and
+simulation research, April 2025.
+[63] Tianyi Xie, Zeshun Zong, Yuxing Qiu, Xuan Li, Yutao Feng, Yin Yang, and Chenfanfu Jiang.
+PhysGaussian: Physics-integrated 3d gaussians for generative dynamics. In IEEE/CVF Confer-
+ence on Computer Vision and Pattern Recognition (CVPR), 2024. arXiv:2311.12198.
+[64] Chenyu Zhang, Daniil Cherniavskii, Antonios Tragoudaras, Antonios Vozikis, Thijmen Nijdam,
+Derck WE Prinzhorn, Mark Bodracska, Nicu Sebe, Andrii Zadaianchuk, and Efstratios Gavves.
+Morpheus: Benchmarking physical reasoning of video generative models with real physical
+experiments. arXiv preprint arXiv:2504.02918, 2025.
+13
+
+
+[65] Qin Zhang, Peiyu Jing, Hong-Xing Yu, Fangqiang Ding, Fan Nie, Weimin Wang, Yilun Du,
+James Zou, Jiajun Wu, and Bing Shuai. Physion-eval: Evaluating physical realism in generated
+video via human reasoning. arXiv preprint arXiv:2603.19607, 2026.
+[66] Tianyuan Zhang, Hong-Xing Yu, Rundi Wu, Brandon Y Feng, Changxi Zheng, Noah Snavely,
+Jiajun Wu, and William T Freeman. Physdreamer: Physics-based interaction with 3d objects via
+video generation. In European Conference on Computer Vision, pages 388–406. Springer, 2024.
+[67] Wancong Zhang, Basile Terver, Artem Zholus, Soham Chitnis, Harsh Sutaria, Mido Assran,
+Randall Balestriero, Amir Bar, Adrien Bardes, Yann LeCun, et al. Hierarchical planning with
+latent world models. arXiv preprint arXiv:2604.03208, 2026.
+[68] Zhenhao Zhou and Dan Negrut. ChronoDreamer: Action-conditioned world model as an online
+simulator for robotic planning. arXiv preprint arXiv:2512.18619, 2025.
+14
+
+
+A
+Platforms for Numerical Experimentation
+In this section, we describe the computational tools and platforms used in our experimental pipeline.
+These include foundation models (e.g., vision-language models, video diffusion models) as well as
+simulation environments for controlled evaluation. We prioritize open-source models with competitive
+performance to balance reproducibility and capability. Where applicable, we report model variants,
+prompts and implementation details to facilitate replication of our results.
+A.1
+Physics Engines for Controlled Experiments
+We use simulator-generated rollouts as controlled references for intervention queries. In each rollout,
+the initial scene, material and contact parameters, solver settings, and intervention are specified
+explicitly, and the state is advanced by numerical time integration rather than by a learned transition
+model. Rendered videos are then derived from the simulated state trajectory. These rollouts are not
+necessarily identical to real-world physics, yet they serve as controlled physical references under
+known modeling assumptions.
+We use NVIDIA Newton [62], a Warp-based physics engine, for rigid-body, deformable-body, and
+robot-contact experiments. Newton provides GPU-accelerated simulation with XPBD-based contact
+for rigid bodies and particle-based methods for deformable objects, along with support for articulated
+robot interaction. We instantiate a small set of controlled scenes, most following a ramp interaction:
+a ball descends an incline, transitions to a flat surface, and interacts with a target object (e.g., rigid
+stack, container, or deformable body). Scene geometry, camera, and rendering are held fixed while
+physical parameters—such as density, friction, and restitution—are varied through Newton’s material
+and contact models. Rigid interactions are resolved with the XPBD contact solver, while deformable
+objects use particle-based simulation such as material point method (MPM) with self-contact. We
+additionally include a robot-contact setting in which a Franka Panda end-effector follows a prescribed
+trajectory and interacts with the environment under Newton’s articulated-body and contact simulation.
+We also use Genesis [5], a GPU-accelerated physics simulation platform designed for robotics and
+embodied AI in fluid-coupled experiments. In particular, Genesis supports particle-based fluid
+simulation via smoothed-particle hydrodynamics (SPH) [53], including divergence-free formulations
+(DFSPH) [9], and couples these with rigid-body dynamics through shared collision and boundary
+representations. In our setup, liquids are represented explicitly as SPH particles and evolved jointly
+with rigid bodies under the same simulation loop. Rigid–fluid interaction is handled through mesh-
+derived signed distance fields, enabling consistent coupling between container motion and fluid
+response. We use this capability to construct a small set of controlled fluid–interaction scenarios,
+including container transport and pouring, where object motion may be prescribed but fluid dynamics
+are fully simulated. Similarly, across these experiments, we hold scene geometry, camera, and control
+trajectories fixed, and vary only fluid properties such as viscosity. This isolates fluid parameters as the
+latent factors governing outcomes such as retention, transfer, and spillage, while all state evolution is
+determined by numerical simulation rather than learned dynamics.
+Across both engines, the simulator state defines the reference trajectory, and rendered videos are de-
+rived from this state. Physical parameters are specified or calibrated independently rather than inferred
+end-to-end from visual input, separating simulation from perception and parameter estimation.
+A.2
+Vision Language Model
+We evaluate GPT-5.5 as a vision-language baseline for direct physical outcome prediction from
+static scene observations. We test whether a VLM can infer the likely physical evolution of a scene
+directly from an image and a natural-language query. We repeat each prompt five times and exclude
+blank responses from the qualitative analysis. The model uses “medium” reasoning effort by default.
+Filenames are hidden from the model so that labels such as cup_water.png do not leak physical
+information.
+A.3
+Audio-Visual Foundation Model
+We employ LTX-2 [29] as our primary video generation model. LTX-2 is an open-source diffusion
+transformer (DiT)-based audio-visual foundation model designed to generate temporally consistent
+15
+
+
+Figure 7: Static-image benchmark for VLM physical prediction. Each scene shows a ball rolling
+down a ramp into different interaction regimes: rigid-body collision, single deformable-wall impact,
+double deformable-wall impact, and rigid–fluid interaction with a water-filled cup. The benchmark
+tests whether VLM predictions track the underlying physical response under intervention rather than
+only visual similarity.
+video with synchronized audio within a unified architecture. In this work, we focus primarily on
+video fidelity and temporal accuracy. The model supports multiple conditioning modalities, including
+text-to-video and image-to-video generation. In our experiments, we primarily use text-conditioned
+video generation with keyframe anchoring. The resulting outputs are used as a diffusion-based
+baseline for comparison against physics-driven simulation results.
+For our experiments, we follow the two-stage inference pipeline provided in the official LTX-2
+implementation [47]. The base model consists of approximately 19 billion parameters, with additional
+upscaling and refinement models used in the second stage. To ensure reproducibility, all trials are
+seeded. We additionally anchor the initial frame (frame 0) with full strength to enforce a consistent
+initialization aligned with the reference video.
+As of April 2026, LTX-2 ranks highly among open-source video generation models. According
+to Artificial Analysis, which evaluates models across multiple quality and temporal consistency
+metrics, LTX-2 is ranked first on both the text-to-video and image-to-video leaderboards [2, 3]. This
+performance supports its use as a strong baseline in our comparative evaluation.
+A.4
+Vision-based World Models
+Vision-based world models remain the most common and actively researched subcategory for this
+subject. In this work, we also experiment with the V-JEPA 2 platform [4] from Meta. V-JEPA 2 is a
+publicly available self-supervised video representation model based on the joint-embedding predictive
+architecture. Unlike diffusion-based video generators, V-JEPA [7] does not generate pixels directly;
+instead, it learns predictive representations by modeling masked or future regions in latent space.
+V-JEPA 2 extends this framework with large-scale video pretraining and limited robot interaction
+data, enabling and achieving competitive results in downstream tasks such as video understanding
+and motion planning in robotics.
+In our experiments, V-JEPA 2 is used as a latent predictive world-modeling baseline; in particular,
+we utilize the V-JEPA 2-AC pipeline [4, 67], an action-conditioned dynamics model that predicts
+future latent states given the current state and candidate actions, enabling forward simulation without
+explicit physics modeling. At runtime, control is performed via model predictive control (MPC),
+where sequences of actions are sampled, rolled out through the learned dynamics, and evaluated using
+a task-specific cost defined in latent space, usually the distance to a goal representation. The process
+is purely vision-based and not explicitly physically constrained; we compare the action sequences to
+true physics simulation results across different control scenarios.
+B
+Additional Experimental Results
+In this section, we provide details and additional numerical experiments and results.
+B.1
+VLM prediction under controlled physical variation
+We evaluate GPT-5.5 on static-image physical prediction using four rendered ramp-interaction
+scenes: rigid blocks and ball, a single deformable jelly wall, two deformable jelly walls, and a
+water-filled cup shown in Figure 7. Each scene places a ball near the top of a wooden ramp connected
+to a flat platform, with the target in the ball’s downstream path.
+16
+
+
+Each image is queried under multiple levels of context. The no_context prompt asks the model
+to describe the motion and final resting locations of the objects using only the image and a generic
+instruction. The low_context prompt names the main objects and the fixed ramp-platform geometry
+but does not specify material properties or the full intervention. The high_context prompt specifies
+that the ball is made of aluminum, that it is released from rest, that it rolls down the ramp under
+gravity, and that it collides with the relevant target object. For the cup scene, the high-context prompt
+also states that the cup is filled with water. This design probes whether additional textual context
+changes the model’s physical prediction, especially when the relevant physical variables are latent,
+visually ambiguous, or only partially specified. We additionally evaluate counterfactual prompts
+that modify one physical property of the scene while keeping the visible configuration fixed, including
+material changes, altered release height, increased friction, and increased fluid viscosity.
+For the cup scene, the no-context query asks only: Describe the motion and final resting
+location of the objects in the scene.
+Explain your reasoning. The low-context
+query additionally specifies the ramp, platform, ball, and cup. The high-context query specifies
+that an aluminum ball is released from rest, rolls down the ramp under gravity, and collides with a
+water-filled cup positioned in its path. The counterfactual query modifies the setup further by asking
+how the outcome changes if the ball starts from half the ramp height and the liquid is honey instead
+of water. The other scenes are worded similarly.
+The reference outcomes are: (i) the rigid blocks and red ball scatter; (ii) the single jelly wall topples
+forward because the ball strikes below its center of mass; (iii) the two jelly walls deform but remain
+upright and slide because table friction is low; and (iv) the water-filled cup tips and spills.
+The responses show several recurring patterns.
+1. Low-context prompts sometimes produce incorrect physical interpretations of the scene.
+In several trials, the model predicts no collision because it states that the target is not in the
+ball’s path, particularly in the cup and double-jelly scenes. Other responses infer incorrect scene
+geometry or motion entirely, including predicting that objects slide off the table due to the apparent
+camera angle or assuming that the ball is never released. These responses show that, under weak
+contextual specification, the model can construct a qualitatively incorrect physical scenario before
+detailed reasoning about collision, deformation, or fluid interaction occurs.
+2. High-context prompts isolate the remaining physical prediction errors. When release and
+collision are explicitly specified, many low-context ambiguities disappear and the responses usually
+invoke qualitatively relevant effects including rolling motion, momentum transfer, deformation,
+frictional dissipation, and water sloshing. However, the model still does not consistently or
+precisely predict the realized outcome. In the single-jelly-wall scene, responses often predict
+deformation or sliding but omit the observed forward toppling caused by the low strike point. In the
+two-jelly-wall scene, some responses correctly describe sliding deformation without overturning,
+while others predict collapse or toppling. In the cup scene, the model often states that tipping
+and spilling may occur rather than predicting the observed spill outcome. The remaining errors
+therefore persist even after the intervention itself is explicitly specified.
+3. Counterfactual prompts improve directional reasoning but still produce threshold uncer-
+tainty. The model usually predicts the correct qualitative trend: lower release height reduces
+impact energy, honey damps sloshing, high friction suppresses sliding, and gelatin dissipates more
+energy than rigid blocks. However, the responses still frequently describe tipping, toppling, sliding,
+and spilling as possible outcomes rather than resolving which event occurs. In one response, the
+model also assumes that an aluminum ball has lower mass than the original ball even though the
+original material is unspecified.
+These results separate qualitative explanation from intervention prediction. The VLM can identify
+relevant physical effects, especially when the prompt supplies the intervention. It does not consistently
+predict the realized outcome when that outcome depends on thresholded contact, deformation, or
+rigid–fluid dynamics. A physically viable model must represent the relevant variables, propagate
+them through the selected dynamics, and return the realized outcome or a justified uncertainty set.
+17
+
+
+Figure 8: Controlled ramp-to-tower rigid-body interactions under latent material variation. Each row
+shows a time sequence from one condition in the simulation suite: (a) the density-variation setup
+with a wood tower, (b) the density-variation setup with a steel tower, (c) the restitution setup with
+a high-restitution projectile, and (d) the restitution setup with both a high-restitution projectile and
+steel cubes.
+B.2
+Visual Foundation Models are Not Physically Viable Simulators
+While recent advances in diffusion-based video generation have significantly improved visual fidelity
+and temporal coherence, these models remain fundamentally limited and unfit as physical simulators.
+In particular, conditioning on key frames and using text-based prompt guidance do not sufficiently
+constrain the underlying dynamics to ensure physical consistency over time.
+We illustrate this limitation through two representative examples. In each case, we provide a fixed
+initial state and a carefully specified prompt describing the intended physical process. We use
+physics-based simulation with rendering as a comparative baseline for both examples. To ensure
+a fair comparison, we keep key hyperparameters such as the total number of frames, aspect ratio,
+and resolution to be fixed across all runs. Additionally, following the LTX-2 guidelines, we include
+negative prompts (e.g., unrealistic physics”, extra balls”) to further constrain the diffusion model
+outputs.
+We display the results in Figure 9 and Figure 10. Despite detailed instructions specifying the desired
+physical behavior, the generated videos fail to remain even close to the true dynamics. In Figure 9,
+contact does not yield correct motion for either the ball or the cup, and the fluid behavior is unstable
+and inconsistent. Similarly, in Figure 10, we do not observe physically correct contact between
+18
+
+
+(a) Physical simulation plus rendering.
+(b) Diffusion-based video generation with fixed initial frame and text guidance.
+Figure 9: Comparison between physical simulation and visual diffusion model in a ball and
+cup collision scenario, the simulation captures both rigid body interaction, as well as fluid
+behavior through particle dynamics.
+The diffusion model is prompted with Continue from
+this frame, ball rolling down ramp, accelerating naturally while staying in
+contact with the surface, transfers momentum into the cup filled with water,
+knocks it over, causing water to spill onto the surface.
+(a) Physical simulation plus rendering.
+(b) Diffusion-based video generation with fixed initial frame and text guidance.
+Figure 10: Comparison between physical simulation and visual diffusion model in a ball and two
+jelly blocks collision scenario, the physicaly simulation correctly handles interaction between plastic
+and elastic materials. The diffusion model is prompted with Continue from this frame, ball
+rolling down ramp, accelerating naturally while staying in contact with the
+surface, and transfers momentum into the jelly blocks on impact.
+objects. We also notice that despite being explicit in our instruction, probabilistic models like text
+conditioned diffusion models can often fail to follow he exact prompts.
+Across both examples, the failure modes are systematic rather than incidental. They stem from the
+absence of explicit physical constraints in the generative process. As a result, despite improvements
+in visual fidelity, even state-of-the-art visual foundation models cannot reliably replace even simple
+physics-based simulators in settings where accurate dynamics are required. As noted in [55], direct
+pixel prediction is insufficient and unreliable for the accuracy requirements of world models.
+B.3
+Failure Modes of Vision-Based World Models in Control
+We next evaluate whether a vision-based world model can be used as a control-oriented simulator
+in contact-rich manipulation. Unlike the diffusion models considered in Section B.2, V-JEPA 2
+does not directly synthesize future image frames. Instead, the action-conditioned model predicts
+future latent representations conditioned on the current visual state, robot pose, and candidate action
+sequences. We then use MPC to select the action trajectory whose predicted latent state is closest to
+the goal representation. The selected trajectory is subsequently rendered through the Newton physics
+simulator in order to inspect the physical outcome.
+This setting is more favorable than direct pixel generation because the final visualization is still
+produced by a physics engine. However, it exposes a different and more control-specific failure
+mode. The planner optimizes for visual latent similarity, not for physical feasibility. The model is
+not explicitly constrained by contact mechanics, friction cones, object mass, material density, torque
+limits, or the force histories required to move an object. Consequently, a trajectory that appears
+promising under the learned latent objective may still fail when executed as a physical interaction.
+19
+
+
+(a) Ground-truth physical rollout of a wooden wall.
+(b) V-JEPA2 trajectory rendered in the simulation under high-push setting.
+(c) Ground-truth physical rollout of a concrete wall.
+(d) V-JEPA 2 trajectory rendered in the simulation with the wall treated as concrete.
+Figure 11: Comparison between the ground-truth physical rollout and V-JEPA 2-generated trajectories
+rendered in simulation. The high-push and concrete cases show that the trajectory generator can
+produce visually plausible motion, but does not reason about material-dependent contact dynamics or
+force feasibility.
+(a) Ground-truth physical rollout of low pushing point.
+(b) V-JEPA2 trajectory rendered in the simulation under the low-push setting.
+Figure 12: Comparison between the ground-truth physical rollout and the V-JEPA2-generated
+trajectory rendered in simulation under the low-push setting.
+We evaluate this behavior in two wall-pushing scenarios. The first varies the contact height. A high
+contact point produces a visually salient rotational response, while a low contact point requires more
+precise control to produce the desired interaction. The second varies the wall material while keeping
+the visual structure of the task fixed. This tests whether a vision-based model can select actions that
+remain valid when the same apparent goal is governed by different physical parameters.
+The results are shown in Figure 11 and Figure 12. In the high-push case, the V-JEPA 2 planned
+trajectory captures the coarse behavior of the intended interaction, but it does not reliably reproduce
+the ground-truth physical rollout. This is expected from the structure of the objective: the model
+searches for actions that reduce latent visual discrepancy, not actions that satisfy the true contact
+dynamics of the wall. The rendered rollout therefore reveals whether the visually selected trajectory
+is dynamically meaningful, and in this case the correspondence is incomplete.
+The material variation further exposes this limitation. When the wall is treated as concrete, the task
+changes physically even if the visual scene remains similar. The same end-effector displacement can
+lead to a different outcome because the wall’s response depends on material-dependent quantities such
+as friction and density. Since the V-JEPA 2 planning objective does not explicitly infer or optimize
+over these physical parameters, the selected trajectory does not adapt in a reliably material-aware
+way. The model may identify a visually plausible action direction, but it has no explicit mechanism
+20
+
+
+Figure 13: Viscosity-dependent robot-arm pouring. Each row shows a time sequence for a different
+liquid condition: (a) water-like reference, (b) honey-like reference, (c) synthetic target liquid, and (d)
+the best-match viscosity estimate obtained from candidate simulations.
+for determining whether the corresponding force interaction is feasible. These experiments illustrate
+a broader limitation of vision-based world models for control. In contact-rich manipulation, an action
+is only predictive when conditioned on the relevant physical state of the scene, including geometry,
+contact configuration, friction, mass distribution, and material response. A purely visual latent model
+can learn correlations between observations and actions, but it does not guarantee that the learned
+representation preserves the physical variables required for reliable planning.
+Overall, V-JEPA 2 provides a stronger baseline than direct visual generation because it produces
+action-conditioned latent rollouts rather than hallucinated future frames, enabling a path for down-
+stream planning and control. Nevertheless, the failure mode is conceptually similar to the diffusion
+results: visual plausibility is not equivalent to physical validity. The model can optimize toward a
+goal representation while ignoring whether the proposed interaction is force-feasible, material-aware,
+or robust under execution. A glass barrier that renders a target physically inaccessible may be
+close to invisible visually. With these results, we argue that vision-based predictive world models
+are insufficient, by themselves, for resolving the physical dynamics required by embodied robotic
+decision-making.
+21

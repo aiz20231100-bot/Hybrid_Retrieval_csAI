@@ -1,0 +1,1060 @@
+Experience-Based Heuristic Search: Robust Motion Planning
+with Deep Q-Learning
+Julian Bernhard1, Robert Gieselmann1, Klemens Esterle1 and Alois Knoll2
+©2018 IEEE. Personal use of this material is permitted. Permission from IEEE must be obtained for all other uses, in any current or future media, including reprinting/republishing
+this material for advertising or promotional purposes, creating new collective works, for resale or redistribution to servers or lists, or reuse of any copyrighted component of
+this work in other works
+Abstract— Interaction-aware planning for autonomous driv-
+ing requires an exploration of a combinatorial solution space
+when using conventional search- or optimization-based motion
+planners. With Deep Reinforcement Learning, optimal driving
+strategies for such problems can be derived also for higher-
+dimensional problems. However, these methods guarantee op-
+timality of the resulting policy only in a statistical sense,
+which impedes their usage in safety critical systems, such as
+autonomous vehicles. Thus, we propose the Experience-Based-
+Heuristic-Search algorithm, which overcomes the statistical
+failure rate of a Deep-reinforcement-learning-based planner
+and still beneﬁts computationally from the pre-learned optimal
+policy. Speciﬁcally, we show how experiences in the form
+of a Deep Q-Network can be integrated as heuristic into a
+heuristic search algorithm. We benchmark our algorithm in
+the ﬁeld of path planning in semi-structured valet parking
+scenarios. There, we analyze the accuracy of such estimates and
+demonstrate the computational advantages and robustness of
+our method. Our method may encourage further investigation
+of the applicability of reinforcement-learning-based planning in
+the ﬁeld of self-driving vehicles.
+I. INTRODUCTION
+Motion planners for self-driving vehicles frequently adhere
+to optimization- or search-based paradigms. At each new
+planning run, these methods reexamine the solution space
+to ﬁnd an optimal motion. For higher-dimensional planning
+scenarios, this is computationally demanding. For instance,
+at the strategic level, such approaches commonly evaluate
+only a subset of potential maneuvers and their interaction
+with the trafﬁc scene, restricting their usage to scenarios
+with a reduced number of participants and a limited time
+horizon [1, 2]. In path planning scenarios in unstructured
+environments, heuristic search algorithms, such as the Hybrid
+A∗algorithm, [3] fully reexplore the conﬁguration space on
+every replanning task.
+In contrast, humans rely on their past experiences to evalu-
+ate the safety and suitability of a maneuver. This allows them
+to handle complex planning problems with ease. Inspired by
+this, with Reinforcement Learning (RL), an optimal policy
+is derived by exploiting all past environmental interactions.
+The ongoing success in applying RL using neural networks
+to high-dimensional problems [4, 5] motivated its use for
+deriving driving policies for intersection crossing [6] or
+highway maneuvering [7]. However, approximate RL meth-
+ods guarantee optimality of the learned policy merely in
+1Julian Bernhard, Robert Gieselmann and Klemens Esterle are with for-
+tiss GmbH, An-Institut Technische Universit¨at M¨unchen, Munich, Germany
+2Alois Knoll is with Chair of Robotics, Artiﬁcial Intelligence and Real-
+time Systems, Technische Universit¨at M¨unchen, Munich, Germany
+Pretrained Experiences
+Heuristic Search
+Deep Q-Network
+Q(sMDP, a1, ) · · · Q(sMDP, aN)
+sMDP
+sPlan
+Heuristic
+Costs
+Fig. 1.
+The experience-based-heuristic-search algorithm relies on a
+pretrained Deep Q-Network to guide an incremental search. During node
+expansion, a single forward pass through the DQN, followed by a post-
+processing step, yields the heuristic costs for all expanded child nodes.
+Compared to baseline approaches, we beneﬁt computationally from the
+optimal policy encoded within the network, even when the planning state
+splan and training state sMDP are deﬁned differently.
+a statistical sense, impeding their usage in safety critical
+systems such as autonomous vehicles.
+This motivates our work: The Experience-Based Heuristic
+Search (EBHS) algorithm integrates experiences in the form
+of pretrained Q-values into a heuristic search as depicted
+in Figure 1. We demonstrate that our algorithm beneﬁts
+computationally from the pretrained experiences. Further, it
+overcomes the statistical failure rate of a pure reinforcement-
+learning-based planner due to the added search process.
+Speciﬁcally, we apply Double Deep Q-Networks [5] and
+learning from demonstration [8] to learn the state-action
+values Q(s, a) for two application types in the ﬁeld of
+path planning. The learned Q-functions are integrated into
+a Hybrid A∗planner to replace the commonly used heuristic
+functions.
+The main contributions of this paper are:
+• An adaptation of an heuristic search algorithm to use
+learned experiences in the form of a Q-function as
+heuristic estimate.
+• The evaluation of variants of Deep-Q-learning algo-
+rithms and their parameters to study the accuracy of
+the derived heuristic estimate.
+• A demonstration of the computational advantages when
+using our experience-based planner in semi-structured
+valet parking scenarios.
+• A demonstration of the reliability of such an approach
+compared to pure reinforcement learning based plan-
+ning.
+The structure of this paper is as follows: First, we present
+previous work related to our ﬁeld. Then, we introduce the
+arXiv:2102.03127v1  [cs.RO]  5 Feb 2021
+
+
+EBHS algorithm. Next, we present the results of experience
+learning and, ﬁnally, an application to different planning
+scenarios and a statistical analysis of the robustness of our
+method.
+II. RELATED WORK
+The heuristic function plays an important role in all
+informed search algorithms. Previous work already com-
+bined search-based methods with learned heuristic functions,
+obtained either by supervised or reinforcement learning. A
+combination of Monte Carlo Tree Search (MCTS) with a
+learned policy and value network led to a mayor break-
+through in artiﬁcial intelligence by beating the best human
+players in the game of Go [9]. Paxton et al. [10] adapt this
+approach to discrete task planning for autonomous driving.
+However, as continuous state spaces remain challenging for
+the MCTS algorithm, their approach impedes a generation
+of continuous, dynamic behavior.
+In the ﬁeld of heuristic learning, Li et al. [11] trained a
+neural network with supervised learning to estimate a correc-
+tion factor for a standard heuristic. Yet, their approach cannot
+replace the actual heuristic function. Pareekutty et al. [12]
+use value iteration to iteratively create a quality grid map
+during planning, which guides the node expansion of a RRT
+planner. However, their approach uses a discretized state
+space and does not allow pretraining of the heuristic.
+Using imitation learning, Bhardwaj et al. [13] ﬁrst acquire
+an optimal policy for a distribution of potential planning
+scenarios. This policy is used to guide a best-ﬁrst search
+when planning for a speciﬁc scenario within the distribution.
+Similar to our approach, they encode the optimal policy
+with a Q-function. However, as they directly use the policy,
+instead of calculating a heuristic from the Q-values, their
+algorithm ignores the optimality of the solution.
+We benchmark our algorithm in the ﬁeld of path planning
+in unstructured environments. A common approach in this
+ﬁeld is the Hybrid A∗algorithm extending the standard A∗
+algorithm towards a continuous state representation. It uses
+the maximum of two different heuristic functions [3]: A holo-
+nomic version considering obstacles and a non-holonomic
+version considering the kinematic constraints. We observed
+that this heuristic leads to long planning times in certain
+planning scenarios, since the two sub-heuristics may guide
+towards contradicting states.
+To reduce planning time, the orientation-aware space ex-
+ploration guided heuristic search algorithm creates a uniﬁed
+heuristic function [14]. In a pre-planning step, it performs
+a circle-based state exploration, leading to a decrease in
+planning time compared to the conventional Hybrid A∗
+implementation. Other ways of heuristic deﬁnition are higher
+cost regions dependent on the amount of required additional
+gear shifts [15] or are based on a separation of the con-
+ﬁguration space into visible and non-visible regions [16].
+The above methods are suitable to decrease planning time
+in more complex, maze-like environments. In contrast, we
+investigate, if exploiting an already learned maneuver might
+be more beneﬁcial to reduce planning time in standard
+parking maneuvers. In semi-structured environments with
+lanes given, planning should consider the road geometry.
+Up-to now, no analytical heuristic exists which estimates
+the non-holonomic path onto a curved lane. Instead, with a
+look-ahead parameter, a conﬁguration on the curve is ﬁxed,
+forming a planning problem with a single goal conﬁgura-
+tion [14, 17]. This parameter, however, does not generalize
+well to different situations.
+Compared to existing work, we show how a learned
+Q-function can be used as the only
+heuristic in an
+A∗-algorithm to search for an optimal solution in a con-
+tinuous state space. We learn a non-holonomic heuristic for
+semi-structured environments, disregarding obstacles, and a
+unifying heuristic for standard parking scenarios considering
+both vehicle constraints and obstacles. Further, we show that
+a combination of learning and search-based methods beneﬁts
+from the optimality of the learned policy and the increase in
+robustness due to the additional search. This may pave the
+way to practical applications of machine learning algorithms
+for motion planning algorithms of autonomous vehicles.
+III. PROBLEM DEFINITION
+We want to ﬁnd the sequence of actions leading from
+an environment start state sPlan
+start to one of several possible
+environment goal states Sg = {sPlan
+goal,l}, l ∈{1, . . . , H}.
+The actual end state s∗
+goal fulﬁlls an optimality criterion, e.g.
+giving the path with minimum length.
+The A∗algorithm ﬁnds the minimum cost solution by
+building a search tree rooted at sPlan
+start. By applying the set
+of possible actions A = {ai} , i ∈{1, . . . , N} from the
+current best state, new child states are expanded and the
+tree is iteratively grown until a goal conﬁguration is reached.
+In each expansion step, the state with the lowest total cost
+f(sPlan) = g(sPlan) + h(sPlan) is selected with g(sPlan) being
+the cost from the start state sPlan
+start to the current state sPlan and
+h(sPlan) naming the cost-to-go metric or heuristic function
+from the current state sPlan to the set of goal states Sg.
+A closed list contains already expanded nodes. The search
+process is over either when the open list is empty or the
+number of maximum iterations is reached.
+To ensure fast convergence of the search, the following
+conditions should hold for a heuristic function h(sPlan):
+• Admissibility h(·) ≤hopt(·): h(·) should never overes-
+timate the true cost-to-go hopt(·).
+• Optimality h(·) ≈hopt(·): If h(·) is close to the true
+cost-to-go value, this fastens goal expansion and reduces
+processing time.
+We propose a learning-based mechanism to meet these
+requirements.
+IV. EXPERIENCE-BASED HEURISTIC SEARCH
+We derive how a state-action value Q(sMDP, a) yields a
+heuristic function h(sPlan) in the EBHS algorithm. In the
+following derivation, we set s =
+∧sMDP for better readability.
+
+
+A. Q-Learning
+Reinforcement learning seeks an optimal policy for the
+problem of sequential decision making formulated as Markov
+Decision Process (MDP). One distinguishes between value-
+based and policy-gradient methods. Q-learning belongs to the
+category of model-free, value-based reinforcement learning
+methods [4]. It learns the state-action value function
+Qπ(s, a) = Eπ
+" ∞
+X
+t=0
+γtrt|s0 = s, a0 = a
+#
+,
+(1)
+representing the expected return, taking action a in state s
+and from thereon following policy π. The discount factor
+γ deﬁnes how future rewards rt contribute to the current
+state-action value. The Bellman equation
+Q∗(s, a) = Es′
+h
+r(s, a, s′) + γ max
+a′ Q∗(s′, a′)|s, a
+i
+(2)
+deﬁnes the ﬁx point of the optimal action-value function from
+which the optimal policy a∗= π∗(s) = argmaxa Q∗(s, a)
+is derived.
+B. Q-function Integration
+The MDP and planning state deﬁnitions may differ. A
+problem-dependent transformation sMDP = t(sPlan) links the
+two state deﬁnitions.
+1) Deﬁnition of the Rewards: The reward deﬁnition of
+the MDP shall simplify the heuristic calculation from the
+Q-function. As we will derive in the following, this requires
+r(s, a, s′) =
+(
+Rg,
+if s′ ∈t(Sg)
+0,
+otherwise,
+meaning the only non-zero reward is given for a transition
+onto a goal state. Figure 2 visualizes this sparse reward
+setting.
+2) Preserving the Greedy Policy: For the following rea-
+soning, we assume that g(sk) = 0, meaning during node
+expansion, the search algorithm ignores passed way-costs.
+In this theoretical setting, the order of expanded nodes of
+the EBHS algorithm shall resemble the state sequence of the
+optimal policy π∗.
+We achieve this, by establishing a inversely proportional
+relationship between the heuristic value h(sPlan
+k
+) and the
+Q-function of the parent state Q(sk−1, ai) with the action
+ai leading from sk−1 to sk. Figure 2 shows the corre-
+sponding state transitions. For instance, if ai is optimal in
+state sk−1, meaning ai = argmaxaQ(sk−1, a), the heuristic
+h(sPlan
+k
+) shall take the lowest value among all nodes expanded
+from sk−1.
+sk−1
+ai, r=0
+sk
+a∗
+k, r=0
+sk+1
+a∗
+k+1, r=0
+sk+2
+aN
+ai+1
+sT −1
+a∗
+T −1, r=Rg
+s∗
+goal
+Fig. 2.
+Visualization of the state transitions when following the optimal
+policy a∗
+k = π∗(sk) to the goal. We require a sparse reward setting to
+enable a straightforward calculation of the heuristic function from the Q-
+function.
+Algorithm 1 ExpandNodeEBHS(sPlan
+k−1)
+1: Schildren ←∅
+2: sMDP
+k−1 = t(sPlan
+k−1)
+3: qvalues1,...,N = ForwardEvaluationDQN(sMDP
+k−1)
+4: for ai ∈A, i ∈1, . . . , N
+do
+5:
+sPlan
+child,i = SimulateMotionSegment(sPlan
+k−1, ai)
+6:
+if !colliding(sPlan
+child,i) then
+7:
+f(sPlan
+child,i) = g(sPlan
+child,i) + logγ
+qvaluesi
+Rg
+· ca
+8:
+Schildren ←sPlan
+child,i
+9: Output: Schildren
+3) Calculation of the Heuristic: By combining the reward
+setting in aspect 1) with the Q-function deﬁnition in equation
+1, we get
+Q∗(sk−1, ai) = 0 + γQ∗(sk, a∗
+k)
+= 0 + γ
+
+0 + γQ∗(sk+1, a∗
+k+1)
+
+= 0 + γ
+
+0 + γ
+
+· · · + γ
+
+0 + γ Q∗(sT −1, a∗
+T −1)
+|
+{z
+}
+=Rg
+
+= γL · Rg
+(3)
+where L is the number of steps from state sk to the goal.
+Solving equation 3 for L yields the heuristic estimate
+h(sPlan
+k
+) = L · ca = logγ
+Q∗(sMDP
+k−1, ai)
+Rg
+· ca .
+(4)
+We require a unique cost value ca for all motion segments.
+C. Deep Q-Networks for Heuristic Learning
+To enable planning in a continuous state space, we must
+represent Q(s, a) with a function approximator, such as a
+neural network. Mnih et al. [4] successfully applied Q-
+learning to problems with higher dimensional continuous
+state spaces. To overcome divergence issues when using neu-
+ral networks for Q-function representation, they introduced
+the concepts of a target network and an experience replay
+buffer.
+For integration of an approximated Q-function eQ(s, a) as
+heuristic function, it is important to minimize its difference
+to the true Q-value Q∗(s, a) given in equation 1. Further,
+the training algorithm must be capable of dealing with
+sparse reward settings. Therefore, we evaluate the following
+algorithmic adaptations of DQN:
+• Double Deep Q-learning (DDQN) [5] aims to reduce the
+upward bias inherent to approximated Q-values. This
+bias arises due to the maximum operation within the
+Bellman update.
+• Prioritized experience replay [18] gives increased prior-
+ity to experiences with high temporal-difference (TD)
+error, improving convergence, especially in sparse re-
+ward settings.
+• We apply n-step Deep Q-learning proposed by Mnih
+et al. [19], but in a synchronous version. It reduces
+the upward bias of the Q-value estimate and fastens
+
+
+the propagation of rewards to previously visited states.
+However, convergence is impeded due to higher vari-
+ances of the TD-error estimates.
+• Learning from demonstrations becomes beneﬁcial when
+dealing with high-dimensional state spaces and sparse
+rewards. Thus, we apply Deep Q-learning from Demon-
+strations (DQfD) [8] which allows pretraining from
+an expert policy while still preserving the Bellman
+property.
+Further algorithmic details are found in the respective pub-
+lications.
+We employ the standard neural network architecture for
+DQNs, outputting a vector of Q-values for all actions. We
+beneﬁt computationally from this architecture, as we require
+only a single forward evaluation of the DQN in the node
+expansion step, to retrieve the heuristic costs for all children.
+Algorithm 1 describes the node expansion process of the
+EBHS algorithm.
+V. EXPERIMENT
+We benchmark the EBHS algorithm in two applications
+from the ﬁeld of path planning:
+• Non-holonomic heuristic learning (NHL): As dis-
+cussed in section II, for semi-structured scenarios, no
+suitable non-holonomic heuristic exists for planning
+onto a continuously-curved road segment. Thus, we
+learn a non-holonomic heuristic estimating the optimal
+path onto a quadratic Bezier curve. The slope at a
+speciﬁc point on the curve deﬁnes the desired vehicle
+orientation at this point. Obstacles are considered by the
+EBHS algorithm and not during experience learning.
+• Learning of a uniﬁed heuristic (UHL): We learn
+a uniﬁed heuristic for a standard parking scenario.
+The learned policy considers both non-holonomic con-
+straints and obstacles. The scenario consists of two
+rows of four parking spaces placed opposite each other.
+The start conﬁguration is arbitrarily oriented and placed
+between these rows. The goal is positioned in one
+of the eight parking spaces, and oriented forwards or
+backwards.
+A. Experience Learning
+We show how the experiences in form of a Deep Q-
+function were acquired for the two applications and discuss
+ﬁndings of the training processes.
+1) MDP Deﬁnition: The vehicle kinematics were de-
+scribed by a single track model with discretized steering
+angle κ and a constant speed v for forward and backward
+motions. We used the same motion primitives ai = {κi, v}
+for the RL agent, as used later on by the Hybrid A∗algorithm
+for graph expansion.
+We evaluated two types of representations of the ve-
+hicle conﬁguration: a standard form with a normalized
+orientation cs = (xs, ys, θ/2π), and a trigonometric version
+ct = (xs, ys, sin(θ), cos(θ)). The latter avoids a value jump
+after a full turn, which proved to be more beneﬁcial in the
+0
+50
+Training Steps [×105]
+0
+50
+100
+Success Rate [%]
+(a) NHL
+0
+2
+Training Steps [×105]
+0
+50
+100
+Success Rate [%]
+(b) UHL
+Fig. 3.
+The learning curves for the best performing hyperparameter sets
+for the NHL and UHL setting averaged over three training runs. NHL used
+prioritized DDQN with one-step return. Due to the sparse reward setting a
+long training time was required. In the UHL setting, we employed a DQfD
+algorithm. It initializes the policy from demonstrations, explaining the high
+success rate at the beginning.
+UHL setting. The coordinate values x, y were normalized
+with respect to the workspace boundaries.
+Positive rewards were given when the vehicle reached
+a tolerance region around the goal, negative rewards for
+collisions with the workspace boundary, or in case of the
+UHL setting, when colliding with an occupied parking lot.
+An episode was over either after colliding or when reaching
+the maximum number of allowed actions. Table III in the
+appendix provides the detailed MDP deﬁnitions.
+2) Deep Reinforcement Learning: For the NHL applica-
+tion, we applied prioritized DDQN [18] and experimented
+with different n-step returns [19]. For the UHL application,
+we found that an initialization of the policy from expert
+demonstrations is beneﬁcial to ease exploration of the higher
+dimensional state space. Therefore, we employed prioritized
+DQfD [8] with Hybrid A∗expert demonstrations. For both
+cases, we used ϵ-greedy exploration.
+3) Network Architectures: The Q-function was approxi-
+mated by a fully connected network with u hidden ReLU
+layers. A linear layer for NHL and a tanh layer for UHL
+with size N outputted a state-action value for each of the
+motion primitives. The input layer had the dimensions of
+the MDP state space.
+4) Training and Test Data: The initial states of the MDPs
+were sampled from ﬁxed training data sets at the beginning
+of each episode. To obtain a data set for the NHL setting, we
+ﬁxed the ﬁrst two Bezier curve supporting points in the left
+half of the workspace. Then, we sampled 100 Bezier curves
+by moving the third point on a half circle in the right half of
+the workspace. Each of the 100 Bezier curves was combined
+with 1000 randomly sampled vehicle start conﬁgurations
+resulting in a randomized but ﬁxed training set with 105
+MDP states. For the UHL setting, we separated the training
+data into goal and start vehicle conﬁgurations and combined
+these sets randomly during training. The goal set consisted of
+one forward and one backward vehicle conﬁguration for each
+of the eight parking spaces. To obtain the start conﬁgurations,
+we deﬁned a grid in the conﬁguration space with spacings
+∆x = 0.3 m, ∆y = 0.3 m, ∆θ = 30° and sorted out all col-
+liding conﬁgurations. Combining this two conﬁguration sets,
+
+
+gave a training set with roughly 6 × 104 MDP states. Our
+equal sized test set for UHL consists of all intermediate start
+conﬁgurations in between the training conﬁgurations.
+5) Results:
+A random search over the most relevant
+hyperparameters was performed to improve the success rate
+of the learned policies. The success rate describes how often
+the goal conﬁguration is reached on average over the last
+episodes. Figure 3 shows the success rates over the course
+of training for the best-performing parameters. Table III in
+the appendix summarizes the most relevant parameters used
+in the ﬁnal evaluation.
+B. Studying the Accuracy of Heuristic Estimates
+In a next step, we investigated the effect of certain
+hyperparameters on the accuracy of the heuristic estimate
+for NHL. To simplify notation in the following, we use
+h(sk) = h(sPlan
+k
+).
+According to Anschel et al. [20], the difference between
+the optimal Q-function Q∗(s, a), deﬁned by the Bellman
+equation, and the Q-function eQ(s, a) approximated by a
+neural network can be decomposed into:
+• The target approximation error (TAE): During training,
+we minimize the temporal differences between sub-
+sequent state-action pairs. The TAE is the remaining
+minimization error after training. It arises due to inexact
+optimization of the loss functions, ﬁnite capacity of the
+neural network and insufﬁcient generalization to unseen
+state-action pairs.
+• The overestimation error (OE): Noise during environ-
+ment interaction leads to overestimations of the Q-
+values due to the maximum operation in the Bellman
+equation (Equation 2). Double Deep Q-Networks reduce
+this effect. But, as discussed in [20], a growth in TAE
+variance, a higher number of actions or increasing the
+discount factor heightens this type of error. The variance
+of the TAE is reduced with larger n-step return, as we
+bootstrap further in the future to estimate the temporal
+difference.
+• The optimality difference is the error between standard
+tabular Q-learning and the optimal Q-function Q∗(s, a).
+It is negligible in our evaluation.
+To make different parameter settings comparable in our
+evaluation, we deﬁne a normalized TAE error as
+TAENorm = TAE
+Rg · n.
+We divide by the goal reward, and, as the temporal difference
+error sums up with the n-step return, also by n. For different
+hyperparameters, Table 4c depicts the normalized TAE after
+training, averaged over a mini-batch of training samples, and
+the corresponding ﬁnal success rates. Though, the size of the
+action set and the discount factor inﬂuence the TAE, a change
+of these parameters greatly affected the success rate of the
+learned policy. Thus, these parameters were left out in this
+evaluation. We observe that the success rates resemble each
+other for the different parameter settings, but the TAE varies
+greatly.
+−5
+0
+5
+10
+∆single step [steps]
+0.0
+0.2
+0.4
+0.6
+0.8
+Density f(∆First Step)
+range = 11-20
+−5
+0
+5
+10
+∆single step [steps]
+0.0
+0.2
+0.4
+0.6
+range = 1-10
+n = 3, u = 3 × 300
+n = 1, u = 3 × 300
+n = 1, u = 6 × 300
+Desired Value
+(a) Single Step Difference
+−200
+0
+200
+∆total[%]
+0.000
+0.005
+0.010
+0.015
+0.020
+0.025
+Density f(∆total)
+range = 11-20
+−200
+0
+200
+∆total[%]
+0.000
+0.002
+0.004
+0.006
+0.008
+range = 1-10
+(b) Total Difference
+Parameters
+Success Rate [%]
+Normalized TAE [%]
+n = 3, u = 3 × 300
+97.2
+249.1
+n = 1, u = 3 × 300
+99.0
+6.8
+n = 1, u = 6 × 300
+97.8
+16.4
+(c) Training Results
+Fig. 4.
+Density estimates of the heuristic accuracy metrics for different
+hyperparameters (u: number of layers, n: length of n-step return) and
+remaining steps to the goal (range) in the NHL setting. Below, we give
+the corresponding ﬁnal success rates and TAEs.
+To study the effects of the remaining TAE on the accuracy
+of the heuristic estimates, we deﬁned two evaluation metrics.
+The single step difference
+∆single step = eh(sk) −eh(sk+1)
+expresses how the learned heuristic estimate eh(·) changes
+from a parent state sk to a child state sk+1. The total relative
+difference
+∆total = hopt(sk) −eh(sk)
+hopt(sk)
+compares the true cost-to-go hopt(·) to the learned heuristic
+estimate eh(·). To increase convergence speed of the heuristic
+search algorithm, ∆single step should be slightly lower than the
+cost of a motion segment ca. ∆total should be close to zero.
+We estimate probability densities of this metrics using
+104 training samples, in which the learned policy success-
+fully reached the goal. For each of these samples, we cal-
+culated the true cost-to-go hopt(·) by multiplying the motion
+cost with the true number of required steps, obtained by
+following the learned policy to the goal. The child state for
+calculation of ∆single step was obtained by applying the greedy
+
+
+action from the parent state. Figure 4 compares the density
+estimates of these metrics for the NHL setting for different
+hyperparameters.
+The goal of our evaluation was to clarify why certain
+settings worked better in the ﬁnal evaluation than others.
+For the three analyzed parameter settings, we summarize our
+main observations as follows:
+• n = 3, u = 3 × 300: We obtain accurate peaks at
+the desired value for ∆single step, and, as expected, the
+distribution has small variance. However, ∆total shows
+a large offset. We assume that this is due to the high
+remaining TAE.
+• n = 1, u = 3 × 300: We observe average performance
+for ∆single step, but best performance for ∆total, however,
+with an overall increase in variance.
+• n = 1, u = 6×300: We expected the lowest TAE, how-
+ever, unstable training ampliﬁed the TAE. The densities
+peak near the desired values, but the distributions are
+non-Gaussian. We assume overﬁtting of the Q-function,
+which lead to larger errors at non-frequently visited
+states.
+Considering both evaluation metrics one-step DQN with
+small network capacity performed best. Thus, we selected
+its learned Q-function for NHL in the ﬁnal evaluation.
+We proposed two metrics which served as guidance for
+selecting suitable hyperparameters for experience learning.
+Yet, a profound study in the future should reﬁne our metric
+deﬁnition and evaluate the inﬂuence of the observed vari-
+ances on the performance of the EBHS algorithm.
+C. Final Evaluation of EBHS
+In a ﬁnal evaluation of the EBHS algorithm, we want to
+approach the following questions:
+• How well can the EBHS algorithm beneﬁt computation-
+ally from the pretrained experiences in comparison to
+baseline approaches?
+• Can the EBHS algorithm generalize to scenarios not
+covered by the MDP state deﬁnition?
+• Can the statistical failure rate of a pure reinforcement-
+learning-based approach be overcome with the EBHS
+algorithm?
+1) Implementation Aspects: We use the C++ implemen-
+tation of the Hybrid A* algorithm presented in [14]. We
+interface with a tensorﬂow-based implementation in Python
+to estimate the heuristic costs for one expansion step and
+return them to the planner.
+As baseline heuristic, we employ for the UHL application
+only the Reeds-Shepp heuristic. The additional A∗heuristic
+worsened the performance of the baseline Hybrid A∗in
+our experiment. We disable direct Reeds-Shepp goal expan-
+sion [3], as both EBHS and the Hybrid A∗would beneﬁt
+from it. For the NHL application, no analytical heuristic
+exists for planning onto a quadratic Bezier curve. Thus, we
+approximate it as follows: We sample the goal Bezier curve
+at equidistant points and calculate a Reed Shepp path to each
+of them. Then, we take the minimum-length path as heuristic
+cost.
+0
+100
+200
+300
+Success
+(94.1%)
+Max. Steps
+(4.3%)
+Collision
+(1.6%)
+Total
+Sample Type
+2800
+3000
+3200
+3400
+DQN
+EBHS
+HA*
+Planning Duration [ms]
+Fig. 5.
+Median planning durations with conﬁdence bounds for the UHL
+scenario, estimated from 1000 test samples for each sample category, for a
+pure DQN-based planner, the EBHS algorithm and the Hybrid A∗baseline.
+The EBHS algorithm outperformed the baseline over the total test set and
+even succeeded for samples, in which the DQN-based planner collided or
+reached the maximum number of allowed steps.
+We performed the ﬁnal evaluation on an Intel Core
+i7 @ 3.3 GHz and 16 GB Ram with disabled graphic card
+support to ensure same processing conditions for all of the
+approaches.
+2) Scenario Evaluation: We applied the EBHS algorithm
+and the baseline approaches to two scenarios for the NHL
+and UHL setting. For the NHL application, we selected a
+pullout maneuver and a parallel marking maneuver onto a
+curved road. Note that the obstacles in the NHL scenarios
+are not part of the MDP state space. The UHL setting was
+evaluated on a reverse parking scenario from the training
+data set, and a scenario where we added an obstacle not
+considered by the MDP state deﬁnition.
+For this scenarios, Figure 6 shows the resulting paths and
+expanded nodes. Tables I and II provide numerical results.
+For all depicted scenarios, EBHS required a signiﬁcantly
+lower number of planning iterations and a lower planning
+time, though, one iteration in EBHS is computationally more
+costly due to the forward evaluation of the DQN and the
+Python interfacing. When adding an obstacle not included in
+the MDP state, the EBHS algorithm still beneﬁted from the
+pretrained experiences indicating the generalization capabil-
+ities of our approach. However, EBHS generated a longer
+path in this case. For the future, we plan to investigate
+how to improve optimality of the solution in generalization
+scenarios.
+3) Statistical Evaluation: Figure 3b depicts a success
+rate of 90% at the end of training in the UHL setting.
+Hence, learning of a suitable policy failed for 10% of the
+training data. For these fail samples, the learned policy either
+exceeded the maximum number of steps, due to the learned
+policy getting trapped in local minima, or lead to a collision
+in case of difﬁcult starting positions near the workspace
+boundary. This stochastic failure behavior occurs due to the
+learned policy optimizing the expectation of the return over
+all states visited during training.
+To see, if EBHS can overcome the stochastic failure rate,
+we compared the planning durations of the EBHS algorithm,
+a pure DQN-based planner and the baseline Hybrid A∗
+separately for fail and success test samples. The test data
+showed an equal failure rates as the training data. Figure
+
+
+TABLE I
+PLANNING RESULTS FOR NON-HOLONOMIC HEURISTIC LEARNING
+(NHL)
+Scenario
+Parallel Pullout
+Backwards Pullout
+Planner
+EBHS
+Baseline
+EBHS
+Baseline
+Planning Time [s]
+5.2
+8.1
+3.2
+13.8
+Expanded Nodes
+2096
+3467
+2080
+9115
+Iterations
+503
+1630
+227
+1954
+Path Length
+9.0
+9.0
+12.0
+9.0
+TABLE II
+PLANNING RESULTS FOR UNIFIED HEURISTIC LEARNING (UHL)
+Scenario
+Added Obstacle
+Reverse
+Planner
+EBHS
+Baseline
+EBHS
+Baseline
+Planning Time [s]
+0.2
+3.9
+0.5
+4.5
+Expanded Nodes
+778
+175230
+2567
+205862
+Iterations
+137
+132682
+457
+131602
+Path Length
+26.6
+16.9
+23.9
+24.3
+5 shows the resulting medians with conﬁdence bounds for
+UHL estimated using 1000 samples for each category.
+For the success samples, EBHS and DQN clearly outper-
+formed the Hybrid A∗. Thus, we conclude that the node
+expansion process in the EBHS algorithm mainly follows
+the learned policy and spends only slight computational
+overhead with unnecessary node expansions. In contrast to
+DQN, EBHS always found a solution for the failure samples,
+but with higher planning duration than the Hybrid A*. The
+total median duration over the whole test set outperforms the
+Hybrid A∗by 60%.
+Our evaluation showed that the EBHS algorithm success-
+fully exploits learned experiences to speed up the conver-
+gence of the search process. The search process itself ensures
+robustness against the statistical failure rate of a pure DQN-
+based planner.
+VI. CONCLUSION AND FUTURE WORK
+We presented the EBHS algorithm, which uses experiences
+in the form of a Deep Q-Network as heuristic function
+in a heuristic search, and proposed two metrics to assess
+the accuracy of learned heuristic estimates for different
+hyperparameter settings. We empirically proved that, with an
+additional search, we overcome the statistical failure rate of
+Deep-reinforcement-learning-based planning, but still beneﬁt
+computationally from a pre-learned optimal policy.
+Silver et al. [9] demonstrated the advantages of com-
+bining reinforcement learning with search-based algorithms
+for planning in discrete state spaces. The EBHS algorithm
+represents now a step forward in applying this principle to
+continuous state spaces. Yet, a better understanding of the
+DQN overestimation errors and the accuracy of the learned
+heuristics could further increase the beneﬁts of our method.
+In the future, we plan to further investigate the general-
+ization capabilities of our method, and apply it to strategic
+planning tasks in dynamic environments.
+(a) NHL: Parallel Pullout
+(b) NHL: Backwards Pullout
+(c) UHL: Additional Obstacle
+(d) UHL: Reverse
+EBHS: Result
+EBHS: Expanded Nodes
+Baseline: Result
+Baseline: Expanded Nodes
+Fig. 6.
+Visualization of planned paths and expanded nodes for EBHS and
+baseline planners for the NHL and UHL application. EBHS led to a lower
+number of expanded nodes and faster planning time.
+
+
+TABLE III
+SUMMARY OF MOST RELEVANT HYPERPARAMETERS FOR LEARNING THE EXPERIENCES WITH DEEP Q-NETWORKS.
+Non-holonomic Heuristic Learning (NHL)
+Uniﬁed Heuristic Learning (UHL)
+MDP Deﬁnition
+State Space
+sMDP = (cstart,s, P1, P2, P3) ∈R9 with Bezier
+curve supporting points Pi = (xi, yi)
+sMDP
+=
+ cstart,t, cgoal,t, o1, o2, . . . , o8
+
+∈R16
+with one-hot encoding oi ∈{0, 1} of parking spaces
+Work Space [m]
+0 ≤x ≤30, 0 ≤y ≤30
+0 ≤x ≤20, 0 ≤y ≤20
+Action Space
+κ = ±30◦, ±20◦, ±10◦, 0◦, v = ±5.0 m
+s
+κ = ±17.2◦, ±8.6◦, 0◦, v = ±3.0 m
+s
+Reward
+goal: +1000, collision: −1000
+goal: +1, collision: −1
+Time Step
+0.2 s
+0.2 s
+Discount Factor
+0.95
+0.95
+Transition Model
+deterministic: Single Track Vehicle
+deterministic: Single Track Vehicle
+Deep Reinforcement Learning
+Algorithm
+Prioritized DDQN
+Prioritized DQfD with Hybrid A∗demonstrations
+Length of n-step return
+1
+5
+Hidden ReLU Layers x Units
+3x300
+5x300
+Output Layer Type
+Linear
+Tanh
+REFERENCES
+[1]
+Hubmann, C., Becker, M., et al., “Decision making
+for autonomous driving considering interaction and
+uncertain prediction of surrounding vehicles,” in 2017
+IEEE Intelligent Vehicles Symposium (IV), Jun. 2017,
+pp. 1671–1678.
+[2]
+Kessler, T. and Knoll, A., “Multi vehicle trajectory co-
+ordination for automated parking,” in IEEE Intelligent
+Vehicles Symposium, IEEE, 2017, pp. 661–666.
+[3]
+Dolgov, D., Thrun, S., et al., “Path Planning for
+Autonomous Vehicles in Unknown Semi-structured
+Environments,” The International Journal of Robotics
+Research, vol. 29, no. 5, pp. 485–501, Apr. 2010.
+[4]
+Mnih, V., Kavukcuoglu, K., et al., “Human-level
+control through deep reinforcement learning,” Nature,
+vol. 518, no. 7540, pp. 529–533, Feb. 2015.
+[5]
+Van Hasselt, H., Guez, A., et al., “Deep Reinforcement
+Learning with Double Q-Learning,” in 30th AAAI
+Conference on Artiﬁcial Intelligence, Phoenix, Ari-
+zona: AAAI Press, 2016, pp. 2094–2100.
+[6]
+Isele, D., Rahimi, R., et al., “Navigating Occluded
+Intersections with Autonomous Vehicles using Deep
+Reinforcement Learning,” May 2017.
+[7]
+Li, X., Xu, X., et al., “Reinforcement learning based
+overtaking decision-making for highway autonomous
+driving,” in 2015 Sixth International Conference on
+Intelligent Control and Information Processing, Nov.
+2015, pp. 336–342.
+[8]
+Hester, T., Vecerik, M., et al., “Learning from Demon-
+strations for Real World Reinforcement Learning,”
+arXiv:1704.03732, Apr. 2017. arXiv: 1704.03732.
+[9]
+Silver, D., Huang, A., et al., “Mastering the game
+of Go with deep neural networks and tree search,”
+Nature, vol. 529, no. 7587, pp. 484–489, Jan. 2016.
+[10]
+Paxton, C., Raman, V., et al., “Combining neural
+networks and tree search for task and motion planning
+in challenging environments,” in International Confer-
+ence on Intelligent Robots and Systems, IEEE, Sep.
+2017, pp. 6059–6066.
+[11]
+Li, G., Wang, G., et al., “ANN: A Heuristic Search
+Algorithm Based on Artiﬁcial Neural Networks,” in
+Proceedings of the 2016 International Conference
+on Intelligent Information Processing, Wuhan, China:
+ACM, 2016, 51:1–51:9.
+[12]
+Pareekutty, N., James, F., et al., “RRT-HX: RRT
+With Heuristic Extend Operations for Motion Planning
+in Robotic Systems,” in International Design Engi-
+neering Technical Conferences and Computers and
+Information in Engineering Conference, vol. 5A: 40th
+Mechanisms and Robotics Conference, ASME, Aug.
+2016.
+[13]
+Bhardwaj, M., Choudhury, S., et al., “Learning
+Heuristic Search via Imitation,” in Proceedings of the
+1st Annual Conference on Robot Learning, vol. 78,
+PMLR, Nov. 2017, pp. 271–280.
+[14]
+Chen,
+C.,
+“Motion
+Planning
+for
+Nonholonomic
+Vehicles with Space Exploration Guided Heuris-
+tic
+Search,”
+Dissertation,
+Technische
+Universit¨at
+M¨unchen, M¨unchen, 2016.
+[15]
+Liu, C., Wang, Y., et al., “Boundary layer heuristic for
+search-based nonholonomic path planning in maze-
+like environments,” in 2017 IEEE Intelligent Vehicles
+Symposium (IV), Jun. 2017, pp. 831–836.
+[16]
+Choi, J.-W., “An Efﬁcient Heuristic Estimate for Non-
+holonomic Motion Planning,” in 4th Workshop on
+Planning, Perception and Navigation for Intelligent
+Vehicles, vol. 10, 2012.
+[17]
+Fassbender, D., Heinrich, B. C., et al., “Motion plan-
+ning for autonomous vehicles in highly constrained
+urban environments,” in Intelligent Robots and Sys-
+tems, IEEE, 2016, pp. 4708–4713.
+[18]
+Schaul, T., Quan, J., et al., “Prioritized experience
+replay,” in International Conference on Learning Rep-
+resentations (ICLR), 2016.
+[19]
+Mnih, V., Badia, A. P., et al., “Asynchronous meth-
+ods for deep reinforcement learning,” in International
+Conference on Machine Learning, 2016, pp. 1928–
+1937.
+
+
+[20]
+Anschel, O., Baram, N., et al., “Averaged-DQN:
+Variance Reduction and Stabilization for Deep Rein-
+forcement Learning,” in International Conference on
+Machine Learning, 2017, pp. 176–185.

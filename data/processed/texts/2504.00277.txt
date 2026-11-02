@@ -1,0 +1,1367 @@
+Rack Position Optimization in Large-Scale Heterogeneous Data Centers
+Chang-Lin Chen1, Jiayu Chen1, Tian Lan2, Zhaoxia Zhao3, Hongbo Dong3, and Vaneet Aggarwal1
+1Purdue University
+2George Washington University
+3Meta Platforms, Inc.
+Abstract
+As rapidly growing AI computational demands accelerate
+the need for new hardware installation and maintenance,
+this work explores optimal data center resource manage-
+ment by balancing operational efficiency with fault toler-
+ance through strategic rack positioning considering diverse
+resources and locations. Traditional mixed-integer program-
+ming (MIP) approaches often struggle with scalability, while
+heuristic methods may result in significant sub-optimality.
+To address these issues, this paper presents a novel two-tier
+optimization framework using a high-level deep reinforce-
+ment learning (DRL) model to guide a low-level gradient-
+based heuristic for local search. The high-level DRL agent
+employs Leader Reward for optimal rack type ordering, and
+the low-level heuristic efficiently maps racks to positions,
+minimizing movement counts and ensuring fault-tolerant re-
+source distribution. This approach allows scalability to over
+100,000 positions and 100 rack types. Our method outper-
+formed the gradient-based heuristic by 7% on average and
+the MIP solver by over 30% in objective value. It achieved a
+100% success rate versus MIP’s 97.5% (within a 20-minute
+limit), completing in just 2 minutes compared to MIP’s 1630
+minutes (i.e., almost 4 orders of magnitude improvement).
+Unlike the MIP solver, which showed performance variability
+under time constraints and high penalties, our algorithm con-
+sistently delivered stable, efficient results—an essential fea-
+ture for large-scale data center management.
+1
+Introduction
+In large-scale data centers, efficient rack movement and re-
+source allocation are important for balancing multiple op-
+erational objectives with respect to resource-efficiency, fault
+tolerance, and sustainability goals. Rising data center invest-
+ments by major tech companies (Dynamics 2024; Reuters
+2024) and increasing demands for data center efficiency
+highlight the importance of optimized rack positions, which
+directly impact movement counts, operational efficiency,
+and overall system resilience (Abbas et al. 2021). As data
+centers grow in complexity, continuous hardware updates
+Copyright © 2025, Association for the Advancement of Artificial
+Intelligence.
+This is an extended version of the paper accepted at The In-
+ternational Conference on Automated Planning and Scheduling
+(ICAPS) 2025.
+and resource reallocation are needed to meet evolving ser-
+vice requirements. Optimized rack placement reduces move-
+ment counts, simplifies load balancing, and enhances fault
+tolerance—an increasingly important factor as data centers
+host diverse, high-performance hardware with varied re-
+source needs. Scalable and adaptable optimization solutions
+are thus important to sustain service quality, operational re-
+silience, and environmental efficiency in modern data center
+environments, which is the focus of this paper.
+Previous works have demonstrated the substantial im-
+pact of rack position optimization on data center perfor-
+mance. Seminal research by (Barroso, H¨olzle, and Ran-
+ganathan 2019) established how rack layout designs signif-
+icantly reduce operational energy usage, while (Michelo-
+giannakis et al. 2022) proved through production HPC ex-
+periments that rack-level resource disaggregation markedly
+improves utilization. Thermal management advances were
+made by (Zhang et al. 2023), demonstrating how opti-
+mized rack layouts enhance heat dissipation and energy effi-
+ciency. For heterogeneous environments, (Azimi, Zhan, and
+Reda 2014) developed effective rack-position mapping tech-
+niques for optimal cooling performance. Resource manage-
+ment innovations include (Zhu et al. 2020)’s microsecond-
+scale scheduler and (Jo et al. 2020)’s performance-boosting
+caching layer for rack-scale computing, collectively estab-
+lishing rack positioning as important for both energy and
+resource optimization.
+Composable data centers provide a promising solution by
+disaggregating resources like CPU, memory, and storage,
+enabling dynamic pooling and reallocation based on work-
+load requirements (Li et al. 2017). This architectural ap-
+proach stands in stark contrast to traditional systems that
+synchronize hardware replacement, which often leads to
+inefficiencies and delayed adoption of new technologies.
+The flexibility offered by composable architectures signif-
+icantly enhances resource utilization and operational effi-
+ciency, making them particularly valuable for fast-evolving,
+heterogeneous AI environments. This architectural flexibil-
+ity also removes many traditional constraints on rack posi-
+tioning, enabling more opportunities for optimizing physi-
+cal infrastructure layout. Strategic rack relocation simplifies
+scheduling, balances load distribution, and reduces mainte-
+nance overhead, especially as heterogeneity increases in data
+centers (Barroso, H¨olzle, and Ranganathan 2019; Regaieg
+arXiv:2504.00277v1  [cs.AI]  31 Mar 2025
+
+
+et al. 2021). Furthermore, the ongoing need to install new
+racks to meet growing demand underscores the importance
+of optimizing rack-position mapping at the data center level
+to maintain operational efficiency. Regular maintenance of
+building infrastructure, power devices, and other facilities
+further necessitates the ability to efficiently move and posi-
+tion racks, ensuring minimal disruption during these routine
+activities.
+This paper considers a region of rack-level disaggregated
+data centers consisting of heterogeneous racks and posi-
+tions. To the best of our knowledge, this is the first work
+to optimize rack positioning for fault tolerance, ensuring
+resources from a subset of rack types are well-distributed
+across various scopes. Such fault tolerance empowers the
+hardware layer to provide reliability and availability guaran-
+tees to software services, important for optimal resource us-
+age in large organizations. Consequently, we aim to identify
+a rack-position mapping that optimizes a weighted combi-
+nation of rack movement count and fault tolerance metrics,
+while adhering to multi-layer resource constraints, includ-
+ing energy consumption, demand fulfillment, and placement
+limits. This novel problem is formulated as an integer non-
+linear optimization problem (INLP), for which computation-
+ally efficient approaches are lacking. To solve this problem,
+this paper proposes a two-tier optimization approach, with
+the Leader Reward approach (Wang et al. 2024) guiding
+the higher-level ordering of rack-type subproblems, and a
+gradient-based heuristic algorithm addressing each subprob-
+lem at the lower level, enabling efficient decomposition and
+targeted optimization for each rack type. Leader Reward, de-
+signed for standard combinatorial problems like the travel-
+ing salesman problem (TSP) and capacitated vehicle rout-
+ing problem (CVRP), requires substantial memory due to
+its transformer-based architecture, making it impractical for
+direct application to our large-scale problem. Further, our
+problem does not have similar network/graph structure as
+in TSP/CVRP limiting direct usage of the approach. There-
+fore, we adapt it to our unique problem structure by incorpo-
+rating an additional encoder, problem decomposition, and a
+tailored heuristic. The approach is shown to be scalable and
+outperform the MIP solvers as well as the greedy heuristic
+alone.
+Summary of Contributions: The main contributions in
+this work are summarized as follows:
+1. We introduce a rack movement optimization framework
+tailored for composable, heterogeneous data centers, which
+minimizes combined metrics associated with rack move-
+ment and fault tolerance. The problem is motivated by prac-
+tical needs and can significantly advance datacenter intelli-
+gent management.
+2. We formulate the problem as a computationally challeng-
+ing INLP and address scalability issues by integrating a deep
+reinforcement learning (DRL) algorithm with a gradient-
+based heuristic in a tiered, collaborative architecture. The
+DRL algorithm employs Leader Reward, a technique well-
+suited for combinatorial tasks, to optimally order rack types,
+while the heuristic efficiently assigns specific positions. Ex-
+perimental results demonstrate the heuristic’s competitive-
+ness and speed.
+3. Simulation results demonstrate the proposed framework’s
+superior performance, achieving a 7% improvement over a
+heuristic-only approach. Further, the proposed approach out-
+performs the MIP solver in terms of both the execution time
+and objective value.
+2
+Related Works
+Data center optimization has evolved through diverse meth-
+ods, including ILP, MILP, heuristics, and more recent ad-
+vancements in DRL, each targeting various challenges from
+power management to infrastructure optimization. However,
+rack layout optimization in disaggregated cloud systems re-
+mains largely unexplored.
+Data center optimization methods
+Research on data cen-
+ter optimization spans several approaches. For power opti-
+mization, (Pahlavan, Momtazpour, and Goudarzi 2014) uses
+Integer Linear Programming (ILP) with heuristics to min-
+imize active chassis while maintaining performance, while
+(Ajibola, El-Gorashi, and Elmirghani 2021) applies MILP
+and greedy algorithms for workload placement in compos-
+able architectures. For VM management, (Stefanello et al.
+2019) combines MILP with genetic algorithms across geo-
+distributed data centers, and (Xia et al. 2017) uses hi-
+erarchical decomposition with MIP to address disk anti-
+colocation constraints. For infrastructure management, the
+Radar framework (Guo, Zukerman, and Wang 2023) tack-
+les cooling challenges using MILP and heuristics, while
+(Xue and Zhu 2021) optimizes flow table installation in PDP
+switches using MINLP and k-median algorithms. Recent
+DRL applications include fault tolerance by logical cluster
+formation (Chen et al. 2025), and network-aware resource
+allocation using GNNs (Shabka and Zervas 2023; Liu et al.
+2022). However, optimizing rack layouts for new rack in-
+stallations and maintenance, while accounting for broader
+management requirements such as fault tolerance, cooling,
+and energy efficiency, remains an unexplored area.
+DRL methods for combinatorial problems
+(Kool, van
+Hoof, and Welling 2019) introduced attention-based ar-
+chitectures for neural combinatorial optimization (NCO),
+specifically tackling routing problems like TSP and VRP,
+which eliminated the need for handcrafted heuristics and
+established attention mechanisms as foundational in NCO.
+(Kwon et al. 2020) expanded on this with POMO, a
+multi-optima framework that optimizes across multiple op-
+timal solutions within each instance, significantly enhanc-
+ing convergence speed and solution diversity. (Grinsztajn,
+Furelos-Blanco, and Barrett 2023) then developed Poppy,
+a population-based reinforcement learning approach where
+a set of agents explores diverse solution paths, promot-
+ing thorough exploration and mitigating premature conver-
+gence. (Chalumeau et al. 2023) introduced Compass, which
+employs latent space search to dynamically adapt policies
+in response to problem structure variability, enabling the
+model to handle increasingly complex combinatorial tasks.
+Finally, (Wang et al. 2024) extended POMO by introducing
+a leader reward mechanism that prioritizes solutions near op-
+timal regions, enhancing stability and precision by empha-
+sizing high-quality solutions. Together, these methods illus-
+
+
+trate substantial advancements in NCO through attention-
+driven models, policy diversity, adaptive exploration, and
+enhanced reward structures tailored to complex optimization
+problems.
+Directly applying existing approaches is infeasible for our
+problem due to its large scale and unique structure, which
+differs from standard combinatorial problems like TSP and
+CVRP. To address this, we integrate the Leader Reward ap-
+proach (Wang et al. 2024) with a gradient-based heuristic,
+selecting it over Compass and Poppy for its superior perfor-
+mance and memory efficiency (Chalumeau et al. 2023)—im-
+portant for large-scale applications. Further, our algorithm
+can be directly used for online optimization for dynamic sys-
+tem environments since it captures the dynamic movement
+count.
+3
+System Model
+This paper explores the strategic placement and adjustment
+of racks within data centers to address user needs and sys-
+tem requirements, and ensure fault-tolerant resource alloca-
+tion. Users submit requests for a range of resources, such
+as CPUs, memory, disk storage, GPUs, and more. Conse-
+quently, the placement and position adjustment of racks is
+meticulously determined based on the evolving demands for
+these diverse resource types. Each rack is categorized into a
+specific type according to the combination of resources it of-
+fers. For example, racks equipped with GPUs and memory
+form one category, whereas those outfitted with CPUs and
+disk storage constitute another.
+Within the complex ecosystem of data centers, designated
+spots known as positions define where each rack can be lo-
+cated, with the stipulation that each position can accommo-
+date only one rack. These positions are aggregated into sets
+known as scopes, which are physical clusters such as re-
+gions, individual data centers, suites, and main switchboards
+(MSB). Some of the scopes are organized in a hierarchi-
+cal fashion, where larger entities encompass several smaller
+ones, such as a region containing multiple data centers. The
+primary goal is to minimize system metrics, which include
+rack movement counts and penalties for resource imbalances
+across scopes, while simultaneously responding adaptively
+to user demands. This proactive rack repositioning is de-
+signed to enhance the system’s overall responsiveness and
+operational efficiency.
+Let K be the set of rack types. In this model, we assume
+that any two racks of the same type are fungible, so we do
+not work with individual rack. Let G be a collection of sub-
+sets of K, which we use to define metrics and constraints.
+Each G ∈G may represent racks used for similar purposes,
+such as storage, computation, AI training, or racks used by
+specific product teams. Let P be the set of all possible posi-
+tions for hosting racks (expected to be on the order of 105),
+and let S be a collection of subsets of P. Each s ∈S repre-
+sents a position scope, such as a data center, MSB, or suite.
+In later formulations, we use S to represent a Boolean ma-
+trix where Sij = 1 if position i is included in scope j. Let
+R be a resource matrix in which each row represents a rack
+type (indexed as in K), and each column represents a re-
+source type (e.g., power/cooling consumption, CPU, stor-
+Figure 1: Simplified depiction of a rack movement system
+in heterogeneous data centers. The figure illustrates different
+rack types, labeled A, B, C, D, E, and F, each consisting of
+server nodes rich in specific resource types. The color-coded
+legend at the bottom represents different scopes within the
+datacenters, each with its resource limits. The figure also
+highlights placement requests, which indicate the number of
+racks required to meet resource usage demands. The rack
+movement system satisfies placement requests and service
+level objectives (SLOs) by dynamically moving racks or
+placing new racks within the data centers.
+age) or a Boolean flag (e.g., whether it is an AI rack). De-
+fine X = [xp,k]p ∈P, k ∈K as a Boolean matrix of size
+|P| × |K|, where the element xp, k at row p and column k
+is a binary variable indicating whether rack type k is present
+at position p. Position p is vacant if all entries in row p of X
+are zero, i.e., xp,k = 0 for all k. The placement request for
+rack type k is denoted by dk. To regulate resource overuse,
+a placement limit q is introduced to control the number of
+new racks placed in the system.
+Position Mapping Constraint
+Assuming a position can
+accommodate at most one rack at a time, position-to-rack-
+type mapping, X, should satisfy the following constraint,
+g1,p(X) =
+X
+k∈K
+xp,k ≤1, ∀p ∈P.
+(1)
+Demand Fulfillment
+Moreover, to guarantee that the sup-
+ply of rack types is enough to satisfy the placement request,
+X should satisfy the following constraint,
+g2,k(X) =
+X
+p∈P
+xp,k −dk ≥0, ∀k ∈K.
+(2)
+Placement Limit
+The total number of racks newly placed
+should be less than the placement limit q.
+g3(X) =
+X
+k∈K
+max
+
+0,
+X
+p∈P
+xp,k −
+X
+p∈P
+¯xp,k
+
+−q ≤0, (3)
+where ¯X = [¯xp,k]p ∈P, k ∈K represent the previous rack-
+position mapping. The number of newly placed racks are
+calculated by comparing the number of racks placed at cur-
+rent and previous time slots for all rack types and summing
+all the positive differences.
+We aim to minimize rack movement and optimize re-
+source distribution of all the resource types across various
+scopes.
+
+
+Rack Movement Count
+When a rack moves to another
+position, it makes resources unavailable to the users and in-
+duces penalty of moving racks physically. The movement
+count of rack type k at position p is given as
+o1,p,k(X) = Mk × max(0, ¯xp,k −xp,k),
+(4)
+where Mk is weight of the movement count of rack type k.
+Resource Spread Metrics
+For fault tolerance, resources
+from a subset of rack types should be well-distributed across
+a group of scopes to ensure resource availability and reliabil-
+ity in the event of a failure within any physical scope. Given
+the set of resource spread requirement ri, Gi, ci, where ri is
+a specific resource type, Gi ⊂K is a subset of rack types,
+and ci is a union of mutually-exclusive scopes, the spread
+metrics is given as
+o2,i(X) = τ(S[:, ci]T · X[ci, Gi] · R[Gi, ri]),
+(5)
+where S[:, ci]T · X[ci, Gi] · R[Gi, ri] is the resource utiliza-
+tion of resource type ri derived from rack types in Gi across
+the scopes in ci and τ is a multivariate function to measure
+the spread such as max, standard deviation, etc.
+Scope Resource Consumption Limit
+To meet manage-
+ment requirements, such as limits for CPU allocation,
+energy consumption and bandwidth usage, we introduce
+scope-specific resource constraints for each resource type
+and scope. Let L represent the resource limit matrix of size
+|S| × |R|, where each element L[s, r] denotes the resource
+limit for resource type r in scope s. The resource limit con-
+straint for each scope and resource type pair is then defined
+as:
+o3,s,r(X) = ζ((L −ST · X · R)[s, r]), ∀s ∈S, r ∈R. (6)
+where ζ(·) is a function that returns a positive value for pos-
+itive inputs and zero for non-positive inputs.
+We summarize the notions in Table 5. The following sec-
+tion shows the optimization problem considered and how it
+is optimized.
+4
+Problem Formulation
+This section presents the problem considered in this work.
+The utility function is formulated considering the rack
+movement count and resource spread across scopes as,
+U =
+X
+k∈K
+X
+p∈P
+o1,p,k + β1
+|I|
+X
+i=1
+o2,i + β2
+X
+s∈S,r∈R
+o3,s,r, (7)
+where β1 and β2 are the weights for the resource spread and
+resource limit penalties, respectively.
+In this work, we aim to obtain high-quality solutions
+while considering the constraints of position mapping, de-
+mand fulfillment, and placement limit. We define our opti-
+mization problem and present it as:
+min
+xp,k,∀p∈P,k∈KU(X)
+(8)
+s.t.
+g1,p(X) ≤1, ∀p ∈P,
+(9)
+g2,k(X) ≥0, ∀k ∈K,
+(10)
+g3(X) ≤0,
+(11)
+The above problem is a integer programming problem with
+the number of variables being |P||K| and the number of
+constraints being |P| + |K| + 1. We note that the number of
+variables can go beyond millions for a region of data centers
+with over 100k positions and 100 rack types, limiting using
+commercial solvers directly. To obtain optimal results effi-
+ciently, we design a scalable heuristic approach integrated
+with a DRL-based combinatorial solver. The following sec-
+tion details each component of our proposed algorithm.
+5
+Proposed Algorithm
+In this section, we present our proposed DRL-based ap-
+proach to solving the rack movement optimization problem.
+Given the large scale of datacenters and the interdependen-
+cies between rack types as specified in functions (3), (5),
+and (6), we decompose the original optimization problem
+into subproblems by rack type. Each subproblem focuses on
+rack positioning for a single rack type, thereby reducing the
+number of variables and simplifying the overall complexity.
+The problem formulated in (8) can become a integer nonlin-
+ear programming problem (INLP) depending on the choice
+of functions τ(·) in (5) and ζ(·) in (6). As most existing
+solvers cannot handle such problems efficiently, we develop
+a gradient-based heuristic approach for the subproblems that
+can address any differentiable variant of the problem. Our
+gradient-based heuristic calculates the gradient of a compos-
+ite function combining the objective function and the penalty
+for constraint violations. The algorithm iteratively flips ei-
+ther empty positions or positions occupied by the target rack
+type until the number of racks matches the requested quan-
+tity. The rack-position mappings are updated sequentially by
+applying the gradient-based heuristic to each rack type, one
+at a time, from the first to the last. The ordering of rack type
+optimization significantly impacts the solution quality due to
+varying characteristics of each rack type, including their re-
+source compositions, current system quantities, and demand
+levels. For example, optimizing rack types with lower de-
+mand first provides greater flexibility for subsequent rack
+types to achieve better objective values while satisfying con-
+straints. Therefore, we employ a DRL-based combinatorial
+problem solver to optimize the sequence of suboptimiza-
+tions. The complete algorithm comprises a gradient-based
+heuristic for rack-position mapping and a DRL-based solver
+for sequencing suboptimizations. We detail the subproblems
+in Section 5.1, followed by the gradient-based heuristic and
+DRL-based solver in Sections 5.2 and 5.3, respectively.
+5.1
+Suboptimization
+The original optimization problem in (8) is decomposed into
+subproblems based on rack types:
+min
+xp,k,∀p∈P U(X
+¯K)
+(12)
+s.t.
+g1,p(X
+¯K) ≤1, ∀p ∈P,
+(13)
+g2,k(X
+¯K) ≥0,
+(14)
+g3(X
+¯K) ≤0,
+(15)
+
+
+Figure 2: Our proposed algorithm integrates Leader Reward
+and adaptation components for rack positioning optimiza-
+tion. It comprises two main modules: an adaptation module
+(purple box) containing the problem generator and gradient-
+based heuristic; and a POMO module (green box) featur-
+ing an encoder-decoder architecture. The workflow encom-
+passes initialization (red arrows), training (purple arrows),
+and rollout (green arrows) phases, with data blocks (peach
+boxes) showing the information passed between functions.
+where k /∈¯K denotes the rack type for the current subprob-
+lem, X ¯K represents the rack-position mapping matrix with
+rack types in ¯K determined by previous subproblem solu-
+tions, and constraints g1,p and g3 follow the same structure
+as in (8) but operate on X ¯K.
+5.2
+Gradient Based Heuristic Algorithm
+We propose a gradient-based heuristic algorithm that se-
+quentially solves the subproblem in (12) for each rack type
+to obtain a solution to the original optimization problem in
+(8). The algorithm iteratively updates rack positions by fol-
+lowing the gradient of an augmented objective function:
+f(X
+¯K; k) = U(X
+¯K) + γg3(X
+¯K),
+(16)
+where k denotes the rack type being optimized (correspond-
+ing to the variable column in X ¯K), g3 is the inequality con-
+straint from (12), and γ > 0 is the penalty coefficient for
+constraint violations. For each rack type, the algorithm en-
+forces constraints g1,p,k and g2,k by: (1) using a masking
+mechanism to exclude non-applicable positions (positions
+already assigned to other rack types when additional posi-
+tions are needed, or vacant positions when some need to be
+cleared), and (2) ensuring the required number of racks dk
+for type k. Finally, Γ rounds of adjustments are applied to
+further minimize the objectives. The complete algorithm is
+presented in Algorithm 1.
+5.3
+Proposed Two-Tier Algorithm
+In this section, we introduce our proposed DRL-based ap-
+proach for the rack movement optimization problem. As out-
+lined in Section 4, the problem’s complexity scales with the
+number of positions, rack types, scopes, and resource types,
+making real-time optimization challenging. To address this,
+we decompose the original problem into subproblems by
+Algorithm 1: Proposed heuristic algorithm
+Input: {X, S, R, L, dk, q, {(ci, Gi, ri)}, ¯K, Γ}
+Output: {xp,k, ∀p ∈P}
+1 for k = 1 to |K| do
+2
+allocations ←P
+p∈P xp,k −dk
+3
+iter ←abs(allocations)
+4
+for i = 1 to iter do
+5
+if allocations < 0 then
+6
+Φ ←{p′| P
+k∈K xp,k == 0}
+7
+xp′,k ←1, where
+p′ = argmax∇X ¯
+Kf(X ¯K) · P
+p∈Φ ep
+and ep is an elementary vector
+8
+else
+9
+Φ ←{p′| P
+k∈K xp,k == 1}
+10
+xp′,k ←0, where
+p′ = argmax −∇X ¯
+Kf(X ¯K) · P
+p∈Φ ep
+11
+end
+12
+end
+13
+for i = 1 to Γ do
+14
+Φ ←{p′| P
+k∈K xp,k == 1}
+15
+if Φ! = ϕ (empty set) then
+16
+xp′,k ←0, where
+p′ = argmax −∇X ¯
+Kf(X ¯K) · P
+p∈Φ ep
+17
+xp′,k ←1, where
+p′ = argmax∇X ¯
+Kf(X ¯K) · P
+p∈Φc ep
+18
+end
+19
+end
+20 end
+rack type in Section 5.1 and employ a gradient-based heuris-
+tic to sequentially solve each subproblem in Section 5.2. The
+order of these suboptimizations is important to achieving op-
+timal system performance.
+To determine the optimal sequence for suboptimiza-
+tions, we leverage Leader Reward (Wang et al. 2024), a
+method proven effective for NP-hard combinatorial prob-
+lems such as the TSP and CVRP. We further adapt Leader
+Reward to our context by encoding each rack type’s at-
+tributes—demand, current quantity, resource types, and rack
+groups—into two float values. These values are then con-
+verted into embeddings by the encoder, allowing the decoder
+to learn the optimal sequence for rack type suboptimizations.
+During training, the decoder generates permutations
+of rack types, representing different suboptimization se-
+quences. The new rack-position mapping is then obtained by
+the greedy heuristic in Algorithm 1 given the permutations
+(line 4 in Algorithm 2). Each permutation’s performance is
+evaluated using cumulative rewards, which reflect objective
+in (16) with the new rack-position mapping as input. By
+leveraging multiple trajectories and a shared reward base-
+line, the proposed framework effectively explores the solu-
+tion space, learning an optimal policy for suboptimization
+sequencing.
+In summary, our algorithm combines a gradient-based
+
+
+Table 1: Parameter Setup
+Parameter
+|P|
+|K|
+|R|
+|S1|
+|S2|
+|S3|
+[dmin, dmax]
+[qmin, qmax]
+[Lmax
+1
+, Lmin
+1
+]
+[Lmin
+2
+, Lmax
+2
+]
+[Lmin
+3
+, Lmax
+3
+]
+Value
+1000
+10
+10
+2
+10
+50
+[20, 60]
+[800, 1000]
+[3,6]
+[30,50]
+[90, 110]
+heuristic for rack-position mapping with a DRL-based
+solver to determine the optimal suboptimization order, as
+outlined in Algorithm 2.
+Algorithm 2: Adapted Leader Reward Training
+Input: Number of training epochs T, batch size B,
+problem set P, number of rack types K
+Output: Updated policy network parameter θ
+1 Initialize policy network parameter θ;
+2 for epoch = 1 to T do
+3
+δi ←GENERATEPROBLEMS(P), ∀i ∈
+{1, . . . , B} where
+δi = ( ¯X, d1, ..., dK, q, (a1, b1), ..., (aK, bK))i
+with ¯X: initial rack-position mapping and
+(ak, bk): Inputs for the encoder derived from
+rack type attributes for each k ∈K ;
+4
+τ j
+i , Xj
+i ←
+ROLLOUT+GRADIENTHEURISTIC(j, δi, πθ), ∀i ∈
+{1, . . . , B}, ∀j ∈{1, . . . , K};
+5
+bi ←1
+N
+PN
+j=1 Rew(Xj
+i , δi), ∀i ∈{1, . . . , B};
+6
+∇θJ(θ) ←
+1
+BN
+PB
+i=1
+PN
+j=1(Rew(Xj
+i , δi) −
+bi)∇θ log pθ(τ j
+i );
+7
+θ ←θ + α∇θJ(θ);
+8 end
+6
+Simulation
+In this section, we evaluate the performance of our proposed
+algorithm. We begin with the system setup in Section 6.1,
+clarify the baselines in Section 6.2, and show the perfor-
+mance comparison in Section 6.3.
+6.1
+System Setup
+We simulate the hierarchical data centers by three sets of
+position scopes, S1, S2, and S3, representing data centers,
+suites, and MSBs. Each scope is a subset of P and any
+scope in Si is contained in one of the scopes in Sj for
+(i, j) ∈{(3, 2), (2, 1)}. Scopes within each set are equal in
+their size and exclusive to each other. The union of scopes
+in each set is P and the union of S1, S2, and S3 is S in
+(6). The resource limit matrices for sets S1, S2, and S3 are
+denoted as L1, L2, and L3, respectively. Concatenation of
+L1, L2, and L3 along the row dimensions is equal to L in
+(6). Table 1 delineates the key parameters considered in this
+work. The counts of positions, rack types, resource types
+are symbolized as |P|, |K|, |R|, |S|, d, and, q, respectively.
+Each scope in S1, S2, S3 has 500, 100, 20 positions, re-
+spectively. The demands for each rack types are uniformly
+sampled in the range [dmin, dmax] and placement limit is
+sampled uniformly from the range [qmin, qmax]. Finally, we
+use the standard deviation and softplus functions for τ(·)
+and ζ(·), respectively, in our implementation to measure re-
+source spread and penalize resource limit violations, as for-
+mulated in (5) and (6), making the problem in (8) a INLP.
+This datacenter setup is designed by domain experts among
+the authors, approximating a real-life scenario.
+The matrix R representing the rack-type-to-resource-type
+mapping is shown in Table 2. The previous rack-position
+mapping is generated using the probability distribution in
+Table 3, which has been reviewed and approved by a do-
+main expert among the authors to reflect a realistic scenario.
+This distribution shows that the no-rack category (ϕ) has the
+highest probability at 0.5, meaning that 50% of positions are
+unassigned. Among rack types, rack type 7 has the highest
+probability at 0.204, making it the most likely to be assigned
+when a rack is present, followed by rack types 5 and 9, with
+probabilities of 0.102 and 0.051, respectively. The remain-
+ing rack types have lower probabilities, ranging from 0.009
+to 0.029.
+Our proposed algorithm is trained using a single CPU core
+and a single GPU core on a system with two Milan CPUs @
+2.45GHz and four NVIDIA A100 GPUs.
+Table 2: Summary of the Rack Type Resources
+Resource Type
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+Rack Type 0
+0
+0
+0
+0
+0
+1
+1
+0
+1
+0
+Rack Type 1
+0
+1
+0
+0
+1
+1
+0
+0
+0
+0
+Rack Type 2
+0
+0
+0
+0
+1
+0
+1
+0
+1
+0
+Rack Type 3
+0
+1
+1
+0
+0
+0
+1
+0
+0
+1
+Rack Type 4
+0
+1
+0
+1
+0
+0
+0
+0
+1
+0
+Rack Type 5
+0
+0
+1
+1
+1
+0
+1
+0
+1
+0
+Rack Type 6
+1
+0
+1
+1
+0
+0
+0
+0
+0
+0
+Rack Type 7
+1
+1
+0
+1
+0
+0
+1
+0
+0
+0
+Rack Type 8
+0
+0
+0
+0
+1
+0
+0
+0
+1
+0
+Rack Type 9
+1
+1
+0
+0
+0
+0
+0
+0
+0
+1
+Table 3: Probability Distribution of Rack Types for Each Po-
+sition
+Rack Type
+0
+1
+2
+3
+4
+5
+6
+7
+8
+9
+ϕ
+Probability
+0.033
+0.014
+0.030
+0.010
+0.009
+0.102
+0.029
+0.204
+0.018
+0.051
+0.5
+6.2
+Baseline Algorithms
+This section describes the baseline algorithms. We include
+the MIP solver, which was widely used for operation opti-
+mizations, and the gradient-based heuristic proposed in this
+paper. The descriptions of the baseline algorithms are given
+as follows.
+• MIP solver: We implemented the solver using Gurobi
+v11.0.3 (Gurobi Optimization, LLC 2024). The solver’s
+time limit configuration and performance analysis are
+
+
+(a) Comparison of Objective Value
+(b) Objective Value Statistics
+(c) Comparison of Penalty
+(d) Comparison of Penalty Statistics
+(e) Comparison of Movement Count
+(f) Comparison of Resource Spread
+Figure 3: Comparison of the Proposed Algorithm, gradient Heuristics, and Gurobi across different metrics.
+presented in the Section 6.3. Gurobi was run using 18
+threads on an Intel(R) Core(TM) i9-9980XE CPU @
+3.00GHz. When Gurobi cannot find a solution within the
+specified time limit, we retain the previous rack-type-to-
+position mapping as the solution.
+• Gradient-based heuristics: This is implemented by Py-
+Torch (Paszke et al. 2019) following Algorithm 1 to al-
+locate positions for one rack type at a time. The order of
+rack is predefined.
+6.3
+Main Results
+We compare the performance of our proposed algorithms
+with the baseline algorithms in this section. In Figure 3, we
+compare the baselines and our algorithm on the overall per-
+formance, resulting in movement count, resource limit vio-
+lation penalty, and resource spread metric. We compare the
+execution time of MIP and our proposed algorithm in Table
+4. Finally, we discuss the decision made by Leader Reward
+given attributes of the rack types in Figure 4.
+Figure 3 compares the performance of three algorithms
+— our proposed algorithm, gradient-based heuristics, and
+MIP solver — across 80 problem instances. The compari-
+son is based on four key metrics: movement count, objective
+value, resource limit penalty, and resource spread metric,
+where the objective value is the summation of the other three
+metrics. In Figure 3a, the proposed algorithm and gradient-
+based heuristics show similar performance, with objective
+values ranging between 1000 and 1400. Moreover, the pro-
+posed algorithm outperforms the gradient-based heuristics
+for nearly all of the 80 problem instances and the average
+objective values of the proposed algorithm outperforms the
+gradient-based heuristics by 7%. Comparing with that the re-
+sults for the other two algorithms remain consistent and rela-
+tively smooth across all problem instances, Gurobi presents
+a more erratic behavior. Although it maintains reasonable
+objective values for most instances, there are extreme spikes
+where the objective value exceeds 104, where the solver
+reaches the time limit of 20 minutes and cannot get a so-
+lution. Among the 80 problem instances, the proposed algo-
+rithm outperforms the MIP solver for 46 instances and the
+average objective value of the proposed algorithm outper-
+forms the one for the MIP solver by more than 30%. Figure
+3e, 3c, and 3f show that the MIP solver succeeds in minimiz-
+ing resource spread metrics, but incurs high movement count
+and resource limit penalty. At instances 12 and 63, where
+the MIP solver cannot get a solution in time, the previous
+rack-type-to-position mapping is used as the action and thus
+incurs zero movement count and high penalty and resource
+spread. In conclusion, the proposed algorithm and gradient-
+based heuristic demonstrate minimal variability, highlight-
+ing their robustness in addressing problem instances—an es-
+sential feature for large-scale data center management. In
+contrast, the MIP solver demonstrates significant instability,
+with sharp spikes in all metrics for certain instances. This
+suggests that while the MIP solver may occasionally achieve
+competitive results, it struggles to maintain consistent per-
+
+
+Table 4: Summary of the algorithm capability
+(Algorithm, Time limit (min) )
+(MIP, 1)
+(MIP, 5)
+(MIP, 10)
+(MIP, 20)
+(proposed, N/A)
+Solving percentage (%)
+0
+6.25
+81.25
+97.5
+100
+Running time (min)
+110
+630
+830
+1630
+2
+Training time (min)
+N/A
+N/A
+N/A
+N/A
+600
+Performance U
+38816
+1600
+1563
+1475
+1025
+(a)
+(b)
+(c)
+Figure 4: Top-three reward rankings for Rack Type 1, Rack Type 7, and Rack Type 9 across 80 × 10 problem instances. Each
+figure shows the number of instances where the respective rack type, placed in a specific position within the order, achieved a
+top-three reward ranking (rank 1, rank 2, or rank 3). The x-axis represents the order position of the rack type, while the y-axis
+shows the number of instances. Rack Type 1 performs best when placed in position 3, Rack Type 7 performs optimally in
+position 6, and Rack Type 9 achieves the highest rewards when placed in position 8, indicating preferred order positions for
+each rack type to maximize performance.
+formance, particularly in terms of balancing the components
+of the objective function.
+Table 4 presents a comparative analysis of the MIP solver
+with various time limits (1, 5, 10, and 20 minutes) and
+the proposed algorithm, evaluated across multiple metrics:
+solving percentage, running time, training time, and ob-
+jective value. The proposed algorithm demonstrates supe-
+rior performance in all metrics. It successfully solves 100%
+of the problem instances, outperforming all MIP config-
+urations, even those with extended time limits. In con-
+trast, MIP with shorter time limits (1 and 5 minutes) strug-
+gles, solving 0% and 6.25% of the instances, respectively.
+MIP shows improved performance with longer time lim-
+its—solving 81.25% and 97.5% of instances at 10 and 20
+minutes, respectively—though it still falls short of the pro-
+posed method. Regarding running time, the proposed ap-
+proach is remarkably efficient, requiring just 2 minutes to
+complete all problem instances. By comparison, MIP algo-
+rithms require significantly more time, with running times
+ranging from 110 minutes for the 1-minute time limit to
+1630 minutes for the 20-minute time limit. This stark con-
+trast in computational efficiency highlights the practicality
+of the proposed method. While training time is not applica-
+ble to MIP, the proposed algorithm requires 600 minutes of
+training time. However, this one-time training time is offset
+by its exceptional runtime efficiency. In terms of objective
+value, the proposed algorithm achieves the best performance
+with a score of 1025, outperforming all MIP variants. MIP’s
+performance improves as the time limit increases, with the
+best MIP configuration (20 minutes) yielding a performance
+of 1475. However, even this best-case MIP performance lags
+behind the proposed algorithm. In Appendix D, we provide
+additional results analyzing how the training time scales
+with the number of rack types, further illustrating the effi-
+ciency of our proposed algorithm.
+Fig. 4 illustrate the performance of different rack type or-
+ders for three specific rack types - Rack Type 1, Rack Type
+7, and Rack Type 9 - evaluated across 80 × 10 problem in-
+stances using a Leader Reward agent. As shown in Table 3,
+Rack Type 1, Rack Type 7, and Rack Type 9 are selected
+for the plots because they are either very unlikely or likely
+to be found in the data center positions previously. Each fig-
+ure shows the number of instances where the respective rack
+type, placed in a specific order position, achieved a top-three
+reward ranking (rank 1, rank 2, or rank 3). The objective is
+to identify the optimal position for each rack type within the
+order that maximizes its reward. For Rack Type 1, the opti-
+mal position is found to be position 3, where it achieves the
+highest number of top-three rewards across the problem in-
+stances. Positions beyond 4, however, show a sharp decline
+in performance, indicating that Rack Type 1 is most effec-
+tive when placed early in the sequence, particularly around
+the third position. The performance of Rack Type 7 is clearly
+optimized when it is placed in position 6. Positions 4 and 5
+also perform well, although to a lesser degree, suggesting
+that Rack Type 7 benefits from being placed toward the lat-
+ter half of the order. For Rack Type 9, the ideal position is
+position 8, which consistently delivers the highest number
+
+
+of top-three rewards across the instances. Positions 7 and 9
+also contribute to a significant number of top-three results,
+particularly in rank 2 and rank 3, indicating that Rack Type
+9 performs best when placed at or near the end of the se-
+quence.
+7
+Conclusions
+This work presents a scalable, DRL-based solution for op-
+timizing rack movement in large, heterogeneous data cen-
+ters. Our two-tier approach, combining Leader Reward with
+a greedy heuristic, outperforms traditional MIP solvers and
+heuristics by reducing movement counts, ensuring fault tol-
+erance, and improving execution times. Simulations confirm
+that our method achieves efficient, consistent results across
+varying demands, highlighting its practical application in
+dynamic data center environments.
+8
+Acknowledgment
+C. Chen, J. Chen, T. Lan, and V. Aggarwal acknowledge re-
+search award from Meta Platforms, Inc., and Office of Naval
+Research under grant N00014-23-1-2532.
+References
+Abbas, A.; Huzayyin, A.; Mouneer, T.; and Nada, S. 2021.
+Thermal management and performance enhancement of data
+centers architectures using aligned/staggered in-row cooling
+arrangements.
+Case Studies in Thermal Engineering, 24:
+100884.
+Ajibola, O. O.; El-Gorashi, T. E. H.; and Elmirghani, J.
+M. H. 2021. Energy Efficient Placement of Workloads in
+Composable Data Center Networks. Journal of Lightwave
+Technology, 39(10): 3037–3063.
+Azimi, R.; Zhan, X.; and Reda, S. 2014. Thermal-aware lay-
+out planning for heterogeneous datacenters. In Proceedings
+of the 2014 International Symposium on Low Power Elec-
+tronics and Design, 245–250.
+Barroso, L. A.; H¨olzle, U.; and Ranganathan, P. 2019. The
+datacenter as a computer: Designing warehouse-scale ma-
+chines. Springer Nature.
+Chalumeau, F.; Surana, S.; Bonnet, C.; Grinsztajn, N.; Pre-
+torius, A.; Laterre, A.; and Barrett, T. 2023. Combinato-
+rial optimization with policy adaptation using latent space
+search.
+Advances in Neural Information Processing Sys-
+tems, 36: 7947–7959.
+Chen, C.-L.; Zhou, H.; Chen, J.; Pedramfar, M.; Lan, T.;
+Zhu, Z.; Zhou, C.; Mauri Ruiz, P.; Kumar, N.; Dong, H.; and
+Aggarwal, V. 2025. Learning-Based Two-Tiered Online Op-
+timization of Region-Wide Datacenter Resource Allocation.
+IEEE Transactions on Network and Service Management,
+22(1): 572–581.
+Dynamics, D. C. 2024.
+Meta to “accelerate infrastruc-
+ture investments” for AI, raises capex to $35bn-$40bn,
+https://www.datacenterdynamics.com/en/news/meta-to-
+accelerate-infrastructure-investments-for-ai-raises-capex-
+to-35bn-40bn.
+Grinsztajn,
+N.;
+Furelos-Blanco,
+D.;
+and
+Barrett,
+T.
+D.
+2023.
+Population-Based
+Reinforcement
+Learning
+for
+Combinatorial
+Optimization
+Problems,
+https://openreview.net/forum?id=JRFSLFyYAII.
+Guo, C.; Zukerman, M.; and Wang, T. 2023. Radar: Re-
+liable Resource Scheduling for Composable/Disaggregated
+Data Centers. IEEE Transactions on Industrial Informatics,
+19(8): 8551–8563.
+Gurobi Optimization, LLC. 2024. Gurobi Optimizer Refer-
+ence Manual.
+Jo, C.; Kim, H.; Geng, H.; and Egger, B. 2020. RackMem: A
+Tailored Caching Layer for Rack Scale Computing. In Pro-
+ceedings of the ACM International Conference on Parallel
+Architectures and Compilation Techniques, 467–480.
+Kool, W.; van Hoof, H.; and Welling, M. 2019. Attention,
+Learn to Solve Routing Problems! In International Confer-
+ence on Learning Representations.
+Kwon, Y.-D.; Choo, J.; Kim, B.; Yoon, I.; Gwon, Y.; and
+Min, S. 2020. Pomo: Policy optimization with multiple op-
+tima for reinforcement learning. Advances in Neural Infor-
+mation Processing Systems, 33: 21188–21198.
+Li, C.-S.; Franke, H.; Parris, C.; Abali, B.; Kesavan, M.; and
+Chang, V. 2017. Composable architecture for rack scale big
+data computing. Future Generation Computer Systems, 67:
+180–193.
+Liu, W.-X.; Lu, J.; Cai, J.; Zhu, Y.; Ling, S.; and Chen, Q.
+2022. DRL-PLink: Deep Reinforcement Learning With Pri-
+vate Link Approach for Mix-Flow Scheduling in Software-
+Defined Data-Center Networks. IEEE Transactions on Net-
+work and Service Management, 19(2): 1049–1064.
+Michelogiannakis, G.; Klenk, B.; Cook, B.; Teh, M. Y.;
+Glick, M.; Dennison, L.; Bergman, K.; and Shalf, J. 2022. A
+Case For Intra-rack Resource Disaggregation in HPC. ACM
+Trans. Archit. Code Optim., 19(2).
+Pahlavan, A.; Momtazpour, M.; and Goudarzi, M. 2014.
+Power reduction in HPC data centers: a joint server place-
+ment and chassis consolidation approach. The Journal of
+Supercomputing, 70(2): 845–879.
+Paszke, A.; Gross, S.; Massa, F.; Lerer, A.; Bradbury, J.;
+Chanan, G.; Killeen, T.; Lin, Z.; Gimelshein, N.; Antiga, L.;
+Desmaison, A.; K¨opf, A.; Yang, E.; DeVito, Z.; Raison, M.;
+Tejani, A.; Chilamkurthy, S.; Steiner, B.; Fang, L.; Bai, J.;
+and Chintala, S. 2019. PyTorch: An Imperative Style, High-
+Performance Deep Learning Library. arXiv:1912.01703.
+Regaieg, R.; Koub`aa, M.; Ales, Z.; and Aguili, T. 2021.
+Multi-objective optimization for VM placement in homoge-
+neous and heterogeneous cloud service provider data cen-
+ters. Computing, 103(6): 1255–1279.
+Reuters. 2024. Microsoft, OpenAI plan $100 billion data-
+center project.
+Shabka, Z.; and Zervas, G. 2023. Network-aware compute
+and memory allocation in optically composable data cen-
+ters with deep reinforcement learning and graph neural net-
+works. Journal of Optical Communications and Networking,
+15(2): 133–143.
+
+
+Stefanello, F.; Aggarwal, V.; Buriol, L. S.; and Resende,
+M. G. 2019. Hybrid algorithms for placement of virtual ma-
+chines across geo-separated data centers. Journal of Combi-
+natorial Optimization, 38: 748–793.
+Wang, C.; Cheng, P.; Li, J.; and Sun, W. 2024. Leader Re-
+ward for POMO-Based Neural Combinatorial Optimization.
+arXiv:2405.13947.
+Xia, Y.; Tsugawa, M.; Fortes, J. A. B.; and Chen, S. 2017.
+Large-Scale VM Placement with Disk Anti-Colocation Con-
+straints Using Hierarchical Decomposition and Mixed Inte-
+ger Programming. IEEE Transactions on Parallel and Dis-
+tributed Systems, 28(5): 1361–1374.
+Xue, Y.; and Zhu, Z. 2021. Hybrid Flow Table Installation:
+Optimizing Remote Placements of Flow Tables on Servers
+to Enhance PDP Switches for In-Network Computing. IEEE
+Transactions on Network and Service Management, 18(1):
+429–440.
+Zhang, Y.; Shan, K.; Li, X.; Li, H.; and Wang, S.
+2023. Research and Technologies for next-generation high-
+temperature data centers – State-of-the-arts and future per-
+spectives. Renewable and Sustainable Energy Reviews, 171:
+112991.
+Zhu, H.; Kaffes, K.; Chen, Z.; Liu, Z.; Kozyrakis, C.; Sto-
+ica, I.; and Jin, X. 2020. RackSched: A Microsecond-Scale
+Scheduler for Rack-Scale Computers. In 14th USENIX Sym-
+posium on Operating Systems Design and Implementation
+(OSDI 20), 1225–1240.
+
+
+A
+Notation summary
+Table 5: Summary of Notations
+Notation
+Description
+P
+Set of positions
+K
+Set of rack types
+¯K
+Set of optimized rack types in heuristics
+R
+Set of resource types
+S
+Set of scopes
+G
+Set of subsets of K
+R
+The rack-type-to-resource-type binary matrix
+S
+The position-to-scope binary matrix
+X
+The position-to-rack-type binary matrix
+G
+A subset of K
+L
+The resource limit matrix
+dk
+Placement request for rack type k
+q
+Total placement limit
+Mk
+Movement weight for rack type k
+τ(·)
+Resource spread function
+ζ(·)
+Resource limit violation penalty function
+I
+Set of resource spread requirements
+β1
+Weights for resource spread metric in
+the objective function
+β2
+Weights for resource limit violation in
+the objective function
+γ
+Weights for placement limit violation in
+the augmented objective function in heuristic
+Γ
+Number of rack adjustment in heuristic
+T
+Number of training epochs
+B
+Batch size
+P
+Problem set for training
+B
+Discussion
+This paper presented a novel approach for optimizing rack-
+position mapping in rack-level composable, heterogeneous
+data centers. We formulated the problem as an integer non-
+linear optimization problem, aiming to minimize a weighted
+combination of rack movement counts and resource distribu-
+tion metrics while respecting the resource constraints within
+the data center. To solve this large-scale optimization prob-
+lem, which involves more than 100,000 positions and ap-
+proximately 100 rack types, we proposed a scalable solution
+using a deep reinforcement learning (DRL)-based frame-
+work that incorporates Leader Reward and a gradient-based
+heuristic. Simulation results demonstrate the effectiveness of
+our proposed algorithm in comparison with both a gradient-
+based heuristic and a Mixed Integer Programming (MIP)
+solver. Our method outperformed the gradient-based heuris-
+tic, achieving a 7% improvement in performance on aver-
+age, while also outperforming the MIP solver by over 30%
+in average objective value across 80 problem instances. Fur-
+thermore, the proposed algorithm achieved a 100% problem-
+solving success rate, compared to the MIP solver’s 97.5% at
+its maximum time limit of 1200 seconds, and demonstrated
+significant computational efficiency with a runtime of just 2
+minutes, compared to MIP’s 1630 minutes. In contrast to the
+MIP solver, which exhibited instability and significant vari-
+ability in performance due to time limits and high resource
+penalties, our algorithm provided robust and consistent per-
+formance across all problem instances. The MIP solver’s
+tendency to incur high movement counts and resource penal-
+ties, particularly when unable to complete computations
+within the time limit, underscores the limitations of tradi-
+tional optimization methods for large-scale, heterogeneous
+cloud systems. In conclusion, the proposed DRL-based solu-
+tion offers a highly efficient and scalable approach for man-
+aging rack placement and adjustment in complex data cen-
+ters. It achieves superior performance in terms of solution
+quality, computational efficiency, and consistency compared
+to both traditional MIP solvers and heuristic methods. These
+results suggest that the proposed method is well-suited for
+practical deployment in large-scale cloud systems, where
+rapid changes in hardware and resource demands require ro-
+bust and flexible optimization strategies.
+C
+Convergence of the Proposed Approach
+In this section, we show the convergence in terms of the
+number of epochs required to reach convergence. Figure 5
+displays the training dynamics of the Leader Reward agent
+over 200 epochs, with Figure 5a depicting the evolution of
+objective values and Figure 5b illustrating the changes in
+the loss function. Figure 5 illustrates that while the Leader
+Reward agent experiences considerable fluctuations in both
+scores and losses during the early stages of training, there
+is a noticeable stabilization in performance after approxi-
+mately 50-75 epochs. The moving averages of both scores
+and losses suggest that the agent learns a reasonably effec-
+tive policy early on, which may be sufficient to meet per-
+formance requirements. However, the continued presence of
+variability, particularly in later epochs, indicates that the pol-
+icy has not fully converged, and extended training may be
+necessary to further optimize the agent’s performance and
+ensure more consistent results.
+D
+Scalability of Training Time
+Table 4 in the manuscript demonstrates that the total time
+(training + inference) for our proposed algorithm is signifi-
+cantly lower than Gurobi’s runtime, making it a more prac-
+tical solution. Moreover, as training is conducted offline, it
+does not affect real-time decision-making.
+To further illustrate how training time scales with system
+complexity, we present additional results for different num-
+bers of rack types in the table below.
+Table 6: Scalability of Training Time
+Number of rack types
+10
+15
+20
+30
+35
+Training time (min)
+600
+1200
+1800
+4500
+6000
+
+
+(a)
+(b)
+Figure 5: (a) shows the agent’s scores across epochs, with the blue line representing raw scores and the orange line indicating the
+moving average of the scores over a 25-epoch window. (b) displays the loss values over epochs, where the red line corresponds
+to raw losses, and the green line represents the moving average of losses. Both metrics illustrate the agent’s learning process,
+characterized by high variability during early epochs followed by gradual stabilization in later epochs.

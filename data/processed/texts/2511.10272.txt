@@ -1,0 +1,4692 @@
+Bidirectional Bounded-Suboptimal Heuristic Search with Consistent Heuristics
+Shahaf S. Shperberg1, Natalie Morad1, Lior Siag1, Ariel Felner1, Dor Atzmon2
+1 Faculty of Computer and Information Science, Ben-Gurion University of the Negev, Israel
+2 Department of Computer Science, Bar-Ilan University, Israel
+{shperbsh,felner}@bgu.ac.il, {moradna,siagl}@post.bgu.ac.il, dor.atzmon@biu.ac.il
+Abstract
+Recent advancements in bidirectional heuristic search have
+yielded significant theoretical insights and novel algorithms.
+While most previous work has concentrated on optimal
+search methods, this paper focuses on bounded-suboptimal
+bidirectional search, where a bound on the suboptimality
+of the solution cost is specified. We build upon the state-
+of-the-art optimal bidirectional search algorithm, BAE*, de-
+signed for consistent heuristics, and introduce several variants
+of BAE* specifically tailored for the bounded-suboptimal
+context. Through experimental evaluation, we compare the
+performance of these new variants against other bounded-
+suboptimal bidirectional algorithms as well as the standard
+weighted A* algorithm. Our results demonstrate that each
+algorithm excels under distinct conditions, highlighting the
+strengths and weaknesses of each approach.
+Appendix & Code — https://github.com/SPL-
+BGU/Bounded-Suboptimal-BAE
+1
+Introduction
+In optimal search, the task is to find the least-cost path be-
+tween two vertices, start and goal, in a given graph. Ad-
+missible Unidirectional Heuristic Search (UHS) algorithms
+like A* (Hart, Nilsson, and Raphael 1968), which priori-
+tize nodes by f(n) = g(n) + h(n), return an optimal solu-
+tion (Dechter and Pearl 1985) (of cost C∗) if h is admissible
+(never overestimating).
+In many cases, finding optimal solutions is infeasible due
+to the immense computation required. Bounded-suboptimal
+search (BSS) is a paradigm that trades the quality of the
+solution for faster running time. In BSS, we are given a
+bound W ≥1, and are required to find a solution with
+cost ≤W · C∗. A classical BSS algorithm is Weighted
+A* (WA*) (Pohl 1970), which expands nodes n according
+to f(n) = g(n) + W · h(n). Given an admissible heuris-
+tic, WA* is guaranteed to return a bounded-suboptimal so-
+lution. Other BSS algorithms include Dynamic Potential
+Search (DPS) (Gilon, Felner, and Stern 2016), Explicit Es-
+timation Search (EES) (Thayer and Ruml 2011), XDP and
+XUP (Chen and Sturtevant 2019, 2021), and improved ver-
+sions of these algorithms (Fickert, Gu, and Ruml 2022).
+Copyright © 2026, Association for the Advancement of Artificial
+Intelligence (www.aaai.org). All rights reserved.
+Bidirectional heuristic search (BiHS) is an alternative to
+UHS that progresses simultaneously from start (forward)
+and goal (backward) until the two frontiers meet. Recent
+line of work presented theoretical study and practical ways
+for using BiHS with tremendous achievements (Barker and
+Korf 2015; Holte et al. 2017; Eckerle et al. 2017; Shaham
+et al. 2017; Chen et al. 2017; Shperberg et al. 2019a,b, 2021;
+Alc´azar, Riddle, and Barley 2020; Alc´azar 2021; Siag et al.
+2023b). Yet, while unidirectional BSS was broadly studied,
+bidirectional BSS has received limited attention.
+BAE∗(Sadhukhan 2013) (and the identical DIBBS algo-
+rithm (Sewell and Jacobson 2021)), is a BiHS optimal al-
+gorithm designed for consistent heuristics. BAE∗prioritizes
+nodes in the open lists according to b(n) = g(n) + h(n) +
+d(n) with d(n) representing a lower bound on the heuristic
+error of paths discovered on the opposite search that passes
+through n. BAE∗is considered the state-of-the-art optimal
+BiHS algorithm, with several studies highlighting its superi-
+ority (Alc´azar, Riddle, and Barley 2020; Siag et al. 2023b).
+In this work, we introduce a family of algorithms, called
+WBAE∗, that adapt BAE∗into the BSS paradigm by incor-
+porating the basic idea of WA*, inflating h by W. Mem-
+bers of this family differ in how they treat d. We prove that
+multiplying d by any real number λ ≤W results in a BSS
+solution. Additionally, we discuss two methods that achieve
+tighter lower bounds for WBAE∗(as well as for other algo-
+rithms) and allow earlier termination, albeit sometimes at the
+cost of additional time overhead. We analyze the impact of
+λ and the tighter bounds, offering recommendations on how
+to set λ and choose the most effective termination condition.
+2
+Bidirectional Heuristic Search: Definitions
+In BiHS, the aim is to find a least-cost path, of cost C∗,
+between start and goal in a given graph G. c(x, y) de-
+notes the cost of the cheapest path between x and y, so
+c(start, goal) = C∗. BiHS executes a forward search (F)
+from start and a backward search (B) from goal until the
+two searches meet. BiHS algorithms typically maintain two
+open lists OPENF and OPENB for the forward and backward
+searches, respectively. Each node has a g-value, an h-value,
+and an f-value (gF , hF , fF and gB, hB, fB for the forward
+and backward searches, correspondingly). For a direction D
+(F or B), fD, gD, and hD represent the f-, g-, and h-values
+in that direction. We use xMinD to denote the minimal x
+arXiv:2511.10272v1  [cs.AI]  13 Nov 2025
+
+
+Algorithm 1: BiHS General Framework
+1 U ←∞; LB ←ComputeLowerBound();
+2 while OPENF̸ = ∅∧OPENB̸ = ∅∧U > LB do
+3
+D ←ChooseDirection();
+4
+n ←ChooseNode(D);
+5
+Expand(n, D);
+// Also updates U
+6
+LB ←ComputeLowerBound()
+7 return U
+value in OPEND, e.g., gMinF represents the minimal g-
+value in OPENF. Most BiHS algorithms consider the two
+front-to-end heuristic functions (Kaindl and Kainz 1997)
+hF (s) and hB(s) which respectively estimate c(s, goal) and
+c(start, s) for all s ∈G. hF is forward admissible iff
+hF (s) ≤c(s, goal) for all s in G and is forward consistent
+iff hF (s) ≤c(s, s′)+hF (s′) for all s and s′ in G. Backward
+admissibility and consistency are defined analogously.
+BiHS algorithms differ primarily in their direction and
+node selection strategies, and in their termination criteria.
+A general BiHS framework is presented in Algorithm 1. U
+represents the cost of the incumbent solution and is returned
+if U ≤LB, where LB is a lower bound on the cost of
+the desired solution (either optimal or bounded suboptimal).
+During each expansion cycle, the algorithm chooses a direc-
+tion D, then selects a node to expand from that direction.
+New nodes are matched against the opposite frontier, and if
+a better solution is found, U is updated. Subsequently, LB is
+updated as the content of OPEND has changed. BiHS algo-
+rithms vary in how they choose the direction, select nodes,
+and compute LB. A common direction choosing policy is
+the alternate policy, which chooses to expand from OPENF
+and OPENB in a round-robin fashion. Unless stated other-
+wise, all algorithms in this paper use this policy.
+3
+Background: BiHS Algorithms
+We review several optimal and suboptimal BiHS algorithms.
+3.1
+WA* and Bidirectional WA*
+A key BSS algorithm is weighted A* (WA*) (Pohl 1970),
+which replaces A*’s f(n) = g(n) + h(n) (Hart, Nilsson,
+and Raphael 1968) priority function with fW (n) = g(n) +
+W · h(n), inflating the heuristic by a user-defined W ≥1.
+This guarantees a solution with cost of at most W · C∗.
+BHPA (Pohl 1971), or Bidirectional A* (BiA∗), directly
+generalizes A* to a BiHS algorithm. BiA∗orders nodes in
+OPEND according to fD(n) = gD(n) + hD(n). Perhaps the
+most straightforward BSS algorithm, introduced by K¨oll and
+Kaindl (1993), extends the WA* approach to both search
+frontiers, effectively generalizing BiA∗to BiHS, a variant
+denoted here as Bidirectional WA* (WBiA∗). WBiA∗prior-
+itizes nodes in OPEND according to:
+prWD(n) = gD(n) + W · hD(n)
+WBiA∗terminates once the same state n is found on both
+open lists and the cost of the path from start to goal through
+n is ≤LBW , where
+LBW = max(prW MinF , prW MinB)
+(1)
+In this definition, prW MinF and prW MinB are the min-
+imal prW -values in OPENF and OPENB, respectively. K¨oll
+and Kaindl (1993) did not provide proof for its suboptimal-
+ity. For completeness we provide it in Appendix A.
+3.2
+Meet in the middle (MM) and WMM
+The Meet in the middle (MM) algorithm (Holte et al. 2017)
+is a notable BiHS that ensures that the search frontiers meet
+in the middle (i.e., no node n is expanded with g(n) >
+C∗/2). In MM, nodes n in OPEND are prioritized by:
+prD(n) = max(fD(n), 2gD(n))
+MM expands the node with minimal priority, PrMin,
+among all nodes in OPENF and OPENB.
+Weighted MM.
+Recently, MM was generalized to a BSS
+version called WMM (Atzmon et al. 2023). The main idea is
+to follow the WA* approach and inflate the heuristic by W.
+Several variants were proposed, and the best one prioritizes
+nodes in OPEND using the following formula:
+prD(n) = gD(n) + max (gD(n), W · hD(n))
+WMM is W-restrained, i.e. the forward search never ex-
+pands a node n with gF (n) > W/2 · C∗and the backward
+search never expands a node n with gB(n) > W/2 · C∗.
+3.3
+BS* and its BSS variant
+All previously discussed algorithms assume an admissible
+heuristic. In contrast, BS∗(Kwa 1989) also requires con-
+sistency and improves upon BiA∗by leveraging this prop-
+erty for tighter lower bounds and pruning via “nipping” and
+“trimming.” It uses Pohl’s cardinality criterion (Pohl 1971),
+expanding from the side with fewer open nodes. K¨oll and
+Kaindl (1993) proposed WBS∗, a bounded-suboptimal vari-
+ant of BS∗. Like WBiA∗, it uses fW (n) = g(n) + W · h(n)
+and applies BS∗’s enhancements to fW instead of f.
+3.4
+BAE*
+BAE∗(Sadhukhan 2013) and the equivalent, DIBBS (Sewell
+and Jacobson 2021), are more recent BiHS algorithms that,
+like BS∗, assume heuristic consistency. However, BAE∗and
+DIBBS exploit this consistency more effectively than BS∗,
+leading to improved search performance.
+Let dF (n) = gF (n) −hB(n), the difference between the
+actual forward cost of n (from start) and its heuristic esti-
+mation to start. This indicates the heuristic error for node
+n (as hB(n) is a possibly inaccurate estimation of gF (n)).
+Likewise, dB(m) = gB(m) −hF (m). BAE∗orders nodes
+in OPEND according to:
+bD(n) = gD(n)+hD(n)+(gD(n)−hD(n)) = fD(n)+dD(n)
+where hD is the heuristic in the direction opposite of D.
+bD(n) adds the heuristic error dD(n) to fD(n) to account
+for the underestimation by hD(n). During each expansion
+cycle, BAE∗chooses a search direction D and expands a
+node with minimal bD-value. Additionally, BAE∗terminates
+once the same state n is found on both open lists and the cost
+
+
+of the path from start to goal through n is ≤LBB, where
+LBB is the following lower bound on C∗:
+LBB = (bMinF + bMinB)/2
+(2)
+in which bMinD is the minimal b-value in OPEND.
+Given a consistent heuristic, BAE∗was proven to return
+an optimal solution. b(n) is more informed than other prior-
+ity functions (as it also considers d(n)). BAE∗was shown
+to outperform common unidirectional and bidirectional al-
+gorithms on different domains (Alc´azar, Riddle, and Barley
+2020; Siag et al. 2023a) with improvements reported of up
+to an order of magnitude. Therefore, BAE∗is considered a
+state-of-the-art BiHS algorithm for consistent heuristics. In
+this paper, we develop and study BSS variants of BAE∗.
+Other BSS BiHS algorithms have been proposed. A*-
+connect (Islam, Narayanan, and Likhachev 2016), designed
+for motion planning, extends BiA∗using an additional in-
+admissible heuristic to quickly connect the frontiers. As our
+approach does not rely on such heuristics, A*-connect is not
+a direct competitor. Similarly, R2R (Rice and Tsotras 2012)
+is an additive BSS algorithm with guarantees of C∗+ W,
+whereas we focus on multiplicative bounds (W · C∗), mak-
+ing R2R incomparable in scope.
+4
+Weighted BAE*
+We now introduce WBAE∗, a BSS variant of BAE∗that in-
+tegrates the WA* idea of inflating h by a factor W ≥1 to
+ensure a solution within W · C∗.
+Recall the BAE∗priority function:
+bD(n) = gD(n) + hD(n) + dD(n)
+In WA*, the h-value is scaled by W to guide the search
+while preserving suboptimality bounds—a strategy we re-
+tain. The key challenge is handling the heuristic error dD(n),
+which has not been addressed in BSS settings.
+We define the WBAE∗priority function as:
+bWD(n) = gD(n) + W · hD(n) + λ · dD(n)
+(3)
+Here, λ ≤W controls the impact of the error term. Spe-
+cial cases include: λ = 0, yielding a WBiA∗-like function;
+λ = W, fully incorporating dF (n) into the heuristic; and
+intermediate values, which balance between the two.
+WBAE∗terminates once a state n is found on both open
+lists and the cost of the path from start to goal through n is
+≤LBWB, where:
+LBWB = (bW MinF + bW MinB)/2
+(4)
+and bW MinD is the minimal bWD-value in OPEND.
+Notably, BAE* guarantees optimality only when given
+consistent heuristics, due to the nature of the error-correction
+term dD. Consequently, WBAE* requires heuristic consis-
+tency to ensure bounded suboptimality. Throughout the re-
+mainder of the paper, we therefore assume that the given
+heuristic h is consistent.
+4.1
+Theoretical analysis
+We first show that WBAE∗is bounded-suboptimal. We then
+discuss the role of λ and provide guidelines for selecting
+values for λ. To prove that WBAE∗is bounded-suboptimal,
+we start by proving the following lemma.
+Lemma 1. It holds that bWD(n) ≤W · bD(n) for every
+node n and any λ ≤W.
+Proof. Let n be a node discovered during the search in di-
+rection D. We want to show that bWD(n) ≤W · bD(n). By
+using the definitions of bWD and bD, we get:
+bWD(n) = gD(n) + W · hD(n) + λ · (gD(n) −hD(n))
+and similarly,
+W · bD(n) = W · (gD(n) + hD(n) + (gD(n) −hD(n)))
+Substituting these into the inequality in Lemma 1,
+bWD(n) ≤W · bD(n), we now need to prove that:
+gD(n) + W · hD(n) + λ · (gD(n) −hD(n)) ≤
+W · gD(n) + W · hD(n) + W · (gD(n) −hD(n))
+By eliminating W · hD(n) from both sides and simplify-
+ing, the inequality that we need to prove becomes:
+(W −λ)hD(n) ≤(2W −λ −1)gD(n)
+(5)
+Since W ≥λ and W ≥1 by definition, it follows that
+(2W −λ −1) > 0. Additionally, because the heuristic is
+admissible, we have 0 ≤hD(n) ≤gD(n). Consequently,
+(2W −λ −1)hD(n) ≤(2W −λ −1)gD(n). To prove
+Inequality 5, it is therefore sufficient to demonstrate that:
+(W −λ)hD(n) ≤(2W −λ −1)hD(n)
+(6)
+By simplifying the inequality, we get:
+(1 −W)hD(n) ≤0
+(7)
+For hD(n) = 0, inequality 7 holds trivially. For hD(n) >
+0, the inequality holds when W
+≥1, which holds by
+definition. Therefore, the inequality holds and bWD(n) ≤
+W · bD(n) for all nodes n.
+We proceed by proving the bounded-suboptimality of
+WBAE∗by making use of Lemma 1.
+Theorem 2. WBAE∗is bounded-suboptimal.
+Proof. Previous analysis of BAE* (Sadhukhan 2013) shows
+that when the heuristic function is consistent, it holds that
+bMinF +bMinB
+2
+≤C∗throughout the search. Conse-
+quently, it is sufficient to show that throughout the search,
+bW MinF +bW MinB
+2
+≤W · bMinF +bMinB
+2
+, as this
+would imply that bW MinF +bW MinB
+2
+≤W · C∗.
+Let nf and nb be the nodes with the minimal bF (bMinF )
+and bB (bMinB) values, respectively, at some arbitrary it-
+eration during the search. From Lemma 1, we know that
+bWF (nf) ≤W · bF (nf) and bWB(nb) ≤W · bB(nb). Thus,
+bW MinF +bW MinB
+2
+≤bWF (nf )+bWB (nb)
+2
+≤W · bF (nf )+bB(nb)
+2
+= W · bMinF +bMinB
+2
+≤W · C∗.
+
+
+Since WBAE∗terminates only when a solution is found
+with cost ≤bW MinF +bW MinB
+2
+, it is guaranteed to return
+a solution with a cost ≤W · C∗(BSS) This ensures that
+WBAE∗is a bounded-suboptimal algorithm.
+Finally, we show that similar to WA*, WBAE∗can avoid
+node re-expansions when given consistent heuristics.
+Theorem 3. Given consistent heuristics, WBAE∗finds a
+bounded-suboptimal solution without re-expanding nodes.
+Proof. Due to the priority function of WBAE∗, every node n
+in direction D that undergoes expansion is ensured to have
+been reached through a bounded suboptimal path, specifi-
+cally satisfying, gD(n) ≤W · c(start, n). For a more de-
+tailed proof, refer to Appendix B.
+4.2
+The Role of λ
+In this section, we discuss the role of λ and provide guide-
+lines for selecting an appropriate value for it.
+In heuristic search, algorithms must perform two parallel
+tasks. The first task is finding and refining solutions, which
+corresponds to lowering the upper bound (U). The second
+task is proving the (sub)optimality of solutions, correspond-
+ing to increasing the lower bound (LB). Search algorithms
+can only terminate when U ≤LB, making both tasks es-
+sential. However, the approaches for tackling each task of-
+ten contradict one another. For example, the DVCBS algo-
+rithm (Shperberg et al. 2019b) excels at increasing the lower
+bound but often finds solutions more slowly than other algo-
+rithms, whereas Greedy Best-First Search (GBFS) (Doran
+and Michie 1966)—which prioritizes nodes based solely on
+their h-values—is good at finding solutions, but is not con-
+cerned with proving optimality.
+We next show that while incorporating the heuristic error
+d supports the task of proving solution suboptimality (the
+second task), it can hinder the process of finding a solution
+(the first task). Given two nodes, n1 and n2, in direction D
+with gD(n1)+W ·hD(n1) = gD(n2)+W ·hD(n2), WBAE∗
+with λ > 0 delays the expansion of the node with the higher
+heuristic error d. By definition, d(n) = gD(n)−hD(n). Due
+to admissibility, gD(n) ≥hD(n) ≥0. Thus, for every node
+n, d(n) ≤gD(n). Consequently, nodes with higher g-values
+tend to have higher d values, and their expansion is often
+delayed by WBAE∗. Expanding nodes with high g-values
+is essential for finding solutions. Therefore, WBAE∗is ex-
+pected to be less efficient than WBiA∗in finding solutions.
+Nonetheless, d offers a more accurate estimate of the lower
+bound on solution cost, making a larger λ more effective for
+establishing the (sub)optimality of solutions.
+Due to the trade-off between increasing LB and decreas-
+ing U, different approaches are required based on the spe-
+cific challenge of each task. At one extreme, if the initial
+heuristic yields a sufficiently high lower bound to guaran-
+tee (sub)optimality upon finding a solution, the focus should
+be on finding a solution—favoring a small (or zero) λ, es-
+pecially when valid solutions are rare. Conversely, when
+many (sub)optimal solutions exist but proving their quality
+requires extensive search, the emphasis should be on raising
+𝒖
+𝒗
+𝒈
+𝒔
+𝑔𝐹: 2
+ℎ𝐹: 0
+ℎ𝐵: 0
+𝑔𝐹: 0
+ℎ𝐹: 0
+ℎ𝐵: 0
+𝑔𝐵: 2
+ℎ𝐵: 1.7
+ℎ𝐹: 0
+𝑔𝐵: 0
+ℎ𝐵: 0
+ℎ𝐹: 0
+𝒙
+𝑔𝐹: 3
+ℎ𝐹: 0.6
+ℎ𝐵: 2.5
+3
+2
+2
+1
+State
+Dir.
+W = 1.1
+W = 5
+λ = W
+λ = W −2
+λ = W
+λ = W −2
+u
+F
+4.20
+3.65
+12.0
+2.08
+x
+F
+4.21
+4.07
+8.5
+6.02
+v
+B
+6.07
+5.52
+20.5
+10.58
+Figure 1: An example demonstrating the role of λ
+LB, implying a large λ. In general, we expect the task of in-
+creasing LB to be dominant when: (i) the heuristic is weak,
+significantly underestimating the shortest paths from many
+states, and (ii) W is small, as the effort to prove suboptimal-
+ity increases. Thus, we propose the following hypothesis:
+Hypothesis on the role of λ: Larger values of λ are more
+effective when the heuristic is weak and the suboptimality
+bound W is small. Smaller values of λ are preferable when
+the heuristic is more accurate or when W is large.
+Figure 1 presents a small example illustrating how differ-
+ent values of λ affect node expansions during search. The
+top displays a problem instance with heuristic values and
+edge costs. We consider WBAE∗with W = 1.1 and W = 5,
+and two λ-values, λ = W and λ = W −2; priorities for each
+configuration are given inside the table (excluding nodes s
+and g, which are expanded first regardless).
+All algorithms first expand s and g. Now, consider w =
+1.1. With both values of λ, u is expanded, yielding a solu-
+tion of cost 5. For λ = W, the search can terminate: the
+lowest priority in the backward direction is 6.07, and in the
+forward direction, it is at most the priority of x, which is
+4.21. Hence, the lower bound (6.07 + 4.21)/2 = 5.14 ex-
+ceeds 5. In contrast, with λ = W −2, after u is expanded,
+the minimal forward priority is at most that of x, giving a
+lower bound of (5.52 + 4.07)/2 = 4.795, which is less than
+5, requiring the expansion of x. For w = 5 and λ = W −2,
+u is expanded and the search terminates. With λ = W, x is
+expanded even before u, leading to more node expansions.
+This example supports our hypothesis above. For small
+values of w (w = 1.1) larger values of λ (λ = W) perform
+better than smaller values (λ = W −2). For large values of
+W (W = 5) small values of λ (λ = W −2) perform better
+than larger values (λ = W).
+5
+Obtaining Stronger Lower Bounds
+In this section, we examine two methods to tighten lower
+bounds throughout the search, potentially reducing the effort
+needed by BSS algorithms to return a suboptimal solution.
+5.1
+Alternative Termination Criteria
+As reviewed in the background section, algorithms in the
+WA* family typically terminate based on the minimum val-
+ues of their priority, which multiply the heuristic estimation
+h (but not the cost g) by W. For example, WBiA∗terminates
+when U ≤max(prW MinF , prW MinB), where U is the
+
+
+Algorithm
+ToH
+DAO
+Mazes
+Pancake
+STP
+WA*
+697K
+1,585K
+2,024K
+56K
+524K
+WBiA∗
+601K
+1,466K
+1,694K
+76K
+502K
+WMM
+589K
+845K
+606K
+75K
+400K
+WBS∗
+644K
+1,564K
+1,985K
+67K
+497K
+WBAE∗
+1
+W 2
+607K
+1,447K
+1,603K
+66K
+465K
+WBAE∗
+1
+W
+540K
+1,447K
+1,646K
+66K
+450K
+WBAE∗1
+534K
+1,468K
+1,717K
+65K
+428K
+WBAE∗W
+523K
+1,464K
+1,667K
+61K
+336K
+WBAE∗λ
+478K
+1,454K
+1,709K
+60K
+430K
+Table 1: Expansions/sec for all domains and algorithms, av-
+eraged across all weights W.
+cost of the incumbent solution, and prW MinF , prW MinB
+are the minimal prW -values in the open lists.
+Nonetheless, fMinF and fMinB are still lower bounds
+on C∗, the cost of the shortest path between start and goal.
+Consequently, W · max(fMinF , fMinB) ≤W · C∗, and
+therefore U ≤W · max(fMinF , fMinB) is an alterna-
+tive termination condition that still maintains the bounded-
+suboptimality guarantees. Moreover, let n be the node with
+the minimal f-value in direction D. Thus,
+W · fMinD = W · gD(n) + W · hD(n)
+≥gD(n) + W · hD(n)
+≥prWD(n) ≥prW MinD
+This means that the alternative lower bound (denoted
+ALB) is tighter than the original lower bound, which can
+result in fewer expansions during the search.
+The above ALB was defined based on fMin. Nonethe-
+less, a similar ALB can be defined for all algorithms in the
+WA* family by taking the bounds of their corresponding
+optimal variant and multiplying them by W. For WBAE∗,
+ALB will therefore halt the search when U ≤W · LBB.
+Nevertheless, using ALB incurs extra overhead as it
+maintains both priorities (e.g., prW MinD and fMinD for
+WBiA∗, or bW MinD and bMinD for WBAE∗). This might
+require storing two open lists for each frontier. We analyze
+the improvement resulting from ALB, as well as the compu-
+tational overhead, in our empirical evaluation below.
+5.2
+Utilizing Information on Edge Costs
+Alc´azar, Riddle, and Barley (2020) demonstrated how edge
+cost information can tighten lower bounds on C∗throughout
+the search. They assumed the algorithm knows the greatest
+common denominator (GCD) of all edge costs, ι, and used it
+to redefine BAE∗’s termination condition:
+LBB =
+l
+(bMinF +bMinB)/2
+ι
+m
+· ι
+and showed that this new definition is a lower bound on C∗,
+based on the idea that solutions can only increase in GCD
+increments. Thus, if a lower bound suggests a solution not
+divisible by ι, it can be rounded up to the nearest ι incre-
+ment. For example, if ι = 3 and the lower-bound LB = 14,
+⌈14/3⌉· 3 = 15 can be used as a tighter lower bound. A
+similar approach could apply to A*’s lower bound, but typ-
+ically, fMin = g(n) + h(n) is already divisible by ι since
+g(n) is always divisible by ι, and h(n) is often as well.
+This alteration to the lower bound formula can also be
+applied to the BSS variants of BAE∗as follows:
+LBWB =
+l
+(bW MinF +bW MinB)/2
+ι·W
+m
+· ι · W
+Let nf and nb be the nodes with the minimal b-
+value
+in
+OPENF
+and
+OPENB,
+respectively,
+at
+some
+arbitrary
+iteration
+during
+the
+search.
+This
+formula-
+tion
+of
+LBWB
+still
+yields
+bounded
+solutions,
+since:
+l
+(bW MinF +bW MinB)/2
+ι·W
+m
+· ι · W ≤
+
+(bWF (nf )+bWF (nB))/2
+ι·W
+
+· ι · W
+≤
+l
+(W ·(bF (nf )+bF (nB))/2
+ι·W
+m
+· ι · W
+=
+l
+W ·(bMinF +bMinB)/2
+ι·W
+m
+· ι · W
+=
+l
+(bMinF +bMinB)/2
+ι
+m
+· ι · W ≤C∗· W
+Similar adjustments can be applied to all WA*-family al-
+gorithms. Notably, for W > 1, this revised formulation can
+benefit WBiA∗(and also WA*), as fMin = g(n)+W ·h(n)
+is not guaranteed to be divisible by W. Moreover, unlike
+ALB, which requires maintaining multiple open lists that
+incur additional computational overhead, the GCD improve-
+ment adds no computational cost.
+6
+Empirical Evaluation
+We now present an empirical evaluation comparing BiHS
+BSS algorithms, including our newly introduced WBAE∗.
+This evaluation also tests our hypothesis on the role of λ and
+assesses the impact of the alternative termination conditions.
+All code for reproducing the results—including algorithms,
+domain implementations, and experiment scripts—will be
+available upon acceptance (*anonymized for review*).
+Baselines. We compare all existing BiHS BSS algorithms:
+WBiA∗, WBS∗, WMM, and WBAE∗, as well as WA* as a
+representative UniHS BSS algorithm. For WBAE∗, we eval-
+uate several values of λ ∈{0,
+1
+W 2 , 1
+W , 1, W} to examine its
+impact on performance. Since WBAE∗with λ = 0 uses the
+same priority rule as WBiA∗, we omit it from the results. All
+algorithms break ties in favor of higher g-values.
+In addition, we report results for a tuned λ value, denoted
+λ∗, selected separately for each domain and each W. To de-
+termine λ∗, we used Optuna (Akiba et al. 2019), a hyperpa-
+rameter optimization framework that automates the process
+of finding the best configuration parameters for a model. Op-
+tuna performed 50 trials; in each, it selected a λ value and
+ran WBAE∗on an additional set of 100 domain-specific in-
+stances disjoint from the test set. The value with the best
+overall tuning performance was used for testing. The result-
+ing λ∗values are listed in Appendix F.
+Domains. We experimented on five domains: (1) 100 in-
+stances of the 12-disk 4-peg Towers of Hanoi problem (ToH)
+with (10+2), (8+4), and (6+6) additive Pattern Databases
+(PDBs) (Felner et al. 2004). (2) The standard 100 instances
+of the 15 puzzle problem (STP) (Korf 1985) using the Man-
+hattan distance heuristic. (3) 100 instances of the 18-pancake
+puzzle with the GAP heuristic (Helmert 2010). To explore
+different heuristic strengths, we also used GAP-n heuris-
+tics (for n = 1, 2) where the n smallest pancakes are
+
+
+ToH-12 (10+2)
+ToH-12 (8+4)
+ToH-12 (6+6)
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+279K
+137K
+54K
+4K
+2K
+1K
+417
+433
+441
+2M
+2M
+1M
+486K
+318K
+278K
+26K
+13K
+20K
+3M
+3M
+3M
+2M
+2M
+1M
+1M
+863K
+331K
+WBiA∗
+236K
+106K
+40K
+3K
+1K
+627
+374
+343
+347
+1M
+806K
+558K
+186K
+109K
+39K
+11K
+5K
+4K
+2M
+2M
+1M
+682K
+439K
+266K
+117K
+72K
+43K
+WMM
+337K
+164K
+60K
+3K
+2K
+2K
+5K
+4K
+556
+1M
+863K
+707K
+269K
+157K
+56K
+15K
+10K
+8K
+964K
+1M
+1M
+842K
+600K
+395K
+251K
+121K
+64K
+WBS∗
+179K
+82K
+33K
+3K
+1K
+649
+377
+349
+353
+924K
+656K
+466K
+167K
+94K
+35K
+11K
+6K
+4K
+2M
+1M
+1M
+584K
+390K
+248K
+115K
+76K
+49K
+WBAE∗
+1
+W 2
+48K
+30K
+17K
+5K
+3K
+1K
+394
+353
+343
+189K
+182K
+162K
+105K
+74K
+34K
+12K
+5K
+4K
+382K
+403K
+402K
+358K
+320K
+221K
+119K
+71K
+45K
+WBAE∗
+1
+W
+48K
+28K
+18K
+7K
+4K
+1K
+405
+364
+343
+189K
+162K
+137K
+97K
+76K
+42K
+14K
+6K
+4K
+382K
+362K
+342K
+310K
+284K
+227K
+130K
+77K
+47K
+WBAE∗1
+48K
+28K
+20K
+9K
+6K
+3K
+536
+380
+357
+189K
+148K
+130K
+105K
+92K
+69K
+22K
+9K
+5K
+382K
+333K
+317K
+301K
+292K
+263K
+176K
+111K
+68K
+WBAE∗W
+48K
+29K
+23K
+13K
+11K
+7K
+3K
+2K
+1K
+189K
+143K
+131K
+109K
+102K
+88K
+71K
+56K
+41K
+382K
+318K
+306K
+282K
+273K
+252K
+227K
+202K
+186K
+WBAE∗λ∗
+48K
+28K
+17K
+3K
+2K
+789
+394
+356
+342
+191K
+144K
+132K
+98K
+72K
+32K
+11K
+5K
+4K
+386K
+319K
+309K
+309K
+284K
+223K
+121K
+71K
+45K
+Table 2: Average number of node expansions on the 12-disks ToH domain, with (10 + 2), (8 + 4), and (6 + 6) PDBs
+STP
+Mazes
+DAO
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+16M
+10M
+3M
+320K
+103K
+41K
+12K
+5K
+4K
+99K
+98K
+96K
+92K
+90K
+86K
+76K
+65K
+56K
+5K
+5K
+4K
+4K
+3K
+3K
+2K
+2K
+2K
+WBiA∗
+19M
+4M
+658K
+78K
+50K
+29K
+11K
+5K
+4K
+100K
+99K
+98K
+95K
+92K
+89K
+77K
+66K
+59K
+7K
+6K
+5K
+4K
+4K
+3K
+3K
+3K
+2K
+WMM
+15M
+4M
+861K
+162K
+160K
+270K
+2M
+3M
+47K
+85K
+85K
+85K
+84K
+84K
+84K
+80K
+70K
+60K
+8K
+7K
+6K
+5K
+5K
+4K
+3K
+3K
+2K
+WBS∗
+12M
+3M
+486K
+76K
+49K
+29K
+11K
+5K
+4K
+88K
+87K
+86K
+83K
+82K
+78K
+69K
+60K
+56K
+6K
+5K
+5K
+4K
+4K
+3K
+3K
+3K
+3K
+WBAE∗
+1
+W 2
+3M
+1M
+449K
+143K
+80K
+34K
+12K
+5K
+3K
+81K
+85K
+88K
+90K
+90K
+87K
+77K
+66K
+59K
+7K
+6K
+6K
+5K
+4K
+4K
+3K
+3K
+2K
+WBAE∗
+1
+W
+3M
+1M
+586K
+202K
+139K
+57K
+16K
+6K
+3K
+81K
+83K
+84K
+85K
+84K
+83K
+76K
+66K
+59K
+7K
+6K
+6K
+5K
+4K
+4K
+3K
+3K
+2K
+WBAE∗1
+3M
+1M
+763K
+337K
+250K
+171K
+40K
+11K
+5K
+81K
+80K
+80K
+79K
+78K
+77K
+74K
+69K
+62K
+7K
+6K
+6K
+5K
+5K
+4K
+3K
+3K
+2K
+WBAE∗W
+3M
+1M
+950K
+688K
+617K
+553K
+1M
+831K
+575K
+81K
+80K
+80K
+80K
+79K
+79K
+78K
+77K
+77K
+7K
+6K
+6K
+5K
+5K
+5K
+4K
+4K
+4K
+WBAE∗λ∗
+3M
+1M
+368K
+89K
+60K
+33K
+12K
+5K
+3K
+81K
+80K
+80K
+79K
+78K
+77K
+73K
+66K
+59K
+7K
+6K
+5K
+4K
+4K
+3K
+3K
+3K
+2K
+Table 3: Average number of node expansions on the STP, Mazes, and DAO domains
+excluded from the heuristic computation. We also experi-
+mented on the following Grid-based pathfinding maps from
+the MovingAI repository (Sturtevant 2012) using octile dis-
+tance as a heuristic and 1.5 cost for diagonal edges: (4)
+156 maps from Dragon Age Origins (DAO), each with dif-
+ferent start and goal points (totaling 3149 instances), and
+(5) mazes with varying widths (1200 instances). Heuristic
+values for states were set to the maximum of the heuris-
+tic function’s estimate and 1, the minimum edge cost (com-
+monly referred to as ϵ). Throughout the evaluation, we ex-
+plore various values of W ranging from 1 to 10, specifically
+W ∈{1, 1.1, 1.2, 1.5, 1.7, 2, 3, 5, 10}.
+Runtime. The different priority functions and the GCD en-
+hancement had a small impact on the constant time per
+node. Table 1 presents the average node expansions per sec-
+ond for each algorithm (including the GCD enhancement)
+across various domains. Although there are some variations
+between domains, the overall overhead of node expansions
+is comparable, and the trends observed below in node ex-
+pansions are largely preserved when considering runtime
+as well. Comprehensive runtime results, broken down by
+heuristic and weight, can be found in Appendix C.
+The ALB enhancement adds computational overhead and
+is not always time-efficient. Thus, the initial experiments in-
+clude the GCD improvement but exclude ALB, as this com-
+bination was generally the most efficient. The impact of both
+GCD and ALB—especially on CPU time—is analyzed later.
+ToH Results. Table 2 shows the average number of node
+expansions in the ToH domain using (10+2), (8+4), and
+(6+6) additive PDB heuristics. In ToH, for optimal search
+(W = 1), WBAE∗(effectively BAE∗) significantly outper-
+forms the other algorithms, and in particular, it outperforms
+WA* (effectively A*) by a factor of 6 to 10, depending on
+the heuristic. This demonstrates the importance of using the
+heuristic error d, when available, for proving the optimality
+of solutions. However, in accordance with our hypothesis,
+as W increases, the focus of the search shifts from proving
+optimality to finding a solution. Thus, the heuristic error d
+becomes less important, and can even hinder the search. For
+example, with the (10+2) PDB, λ = W is never the best pol-
+icy for W > 1 among all the examined values. For W = 1.1,
+we observe that λ = 1 and λ =
+1
+W have roughly the same
+performance (28K expansions), but for W = 1.2, a lower
+value of λ =
+1
+W 2 yields the best results. For W ≥1.5, it is
+better to ignore d altogether and use λ = 0 (= WBiA∗).
+For the weaker heuristics, (8+4) and (6+6), the trends are
+similar, although the transition point between the best val-
+ues of λ is different. For example, with the (8+4) heuristic,
+λ = W is best performing up to W = 1.1, while with the
+(6+6) heuristic, λ = W is better up to W = 2. This ob-
+servation is also in agreement with our hypothesis, as we
+see that when the heuristic gets weaker, higher values of λ
+tend to work better. Notably, in this domain, WA* was never
+the best choice, although the advantage of the BiHS algo-
+rithm diminishes as W increases. Moreover, neither WMM
+nor WBS∗emerged as the best algorithms. WBiA∗(simi-
+lar to WBAE∗with λ = 0) outperformed all other variants
+in some configurations with larger values of W, particularly
+when using the stronger heuristic (10+2). However, it strug-
+gled with smaller values of W, especially when combined
+with weaker heuristics (8+4 and 6+6). This pattern aligns
+with our hypothesis: when heuristics are strong and W is
+large, less effort is needed to validate (sub)optimality, di-
+minishing the impact of λ. Notably, the tuned λ values, λ∗,
+achieved the best average performance across weights, often
+matching or outperforming the best fixed λ configurations.
+STP, Mazes, and DAO. Table 3 shows the results for STP,
+Mazes, and DAO. For W = 1, WBAE∗outperforms WA*
+(and all other algorithms) by a factor of 5. However, as W in-
+creases, the importance of d diminishes, and lower λ values
+become more effective. Notably, a small value of λ =
+1
+W 2
+performs well even for small W, due to the relatively strong
+MD heuristic. To test this effect with a weaker heuristic,
+we repeated the experiment using MD-4 (ignoring four cen-
+
+
+GAP
+GAP-1
+GAP-2
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+194
+147
+51
+28
+26
+23
+23
+23
+23
+42K
+25K
+3K
+271
+146
+62
+46
+42
+42
+5M
+5M
+1M
+77K
+21K
+4K
+1K
+1K
+1K
+WBiA∗
+225
+100
+60
+41
+40
+37
+37
+37
+37
+61K
+5K
+893
+59
+49
+43
+42
+42
+42
+8M
+2M
+194K
+5K
+1K
+349
+180
+164
+167
+WMM
+417
+245
+312
+2K
+5K
+19K
+5K
+55
+37
+43K
+4K
+1K
+2K
+4K
+10K
+103K
+665
+54
+3M
+510K
+90K
+12K
+5K
+16K
+134K
+46K
+437
+WBS∗
+203
+106
+62
+41
+40
+37
+37
+37
+37
+33K
+4K
+884
+51
+48
+43
+42
+42
+42
+4M
+1M
+126K
+4K
+527
+254
+175
+164
+167
+WBAE∗
+1
+W 2
+205
+111
+78
+43
+41
+37
+36
+36
+36
+2K
+596
+386
+75
+59
+48
+43
+42
+42
+145K
+48K
+9K
+3K
+1K
+540
+180
+176
+180
+WBAE∗
+1
+W
+205
+114
+80
+46
+42
+37
+36
+36
+36
+2K
+637
+511
+120
+71
+50
+43
+42
+42
+145K
+38K
+8K
+7K
+2K
+818
+176
+176
+180
+WBAE∗1
+205
+116
+80
+48
+43
+38
+36
+36
+36
+2K
+687
+580
+164
+117
+60
+45
+42
+42
+145K
+37K
+11K
+12K
+9K
+2K
+336
+197
+192
+WBAE∗W
+205
+115
+83
+57
+55
+44
+47
+55
+47
+2K
+742
+873
+2K
+1K
+845
+385
+216
+178
+145K
+37K
+17K
+71K
+132K
+393K
+85K
+44K
+26K
+WBAE∗λ∗
+205
+114
+66
+42
+40
+37
+36
+36
+36
+2K
+583
+283
+75
+60
+50
+43
+42
+42
+134K
+35K
+8K
+2K
+1K
+540
+196
+172
+201
+Table 4: Average number of node expansions on 18 Pancakes domain, with GAP to GAP-2 heuristics
+1
+1.1 1.2 1.5 1.7
+2
+3
+5
+10
+Suboptimality Bound (W)
+0.80
+0.85
+0.90
+0.95
+1.00
+Ratio
+(a) GCD Reduction in Expansions
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+Suboptimality Bound (W)
+0.4
+0.6
+0.8
+1.0
+WA *
+WBiA *
+WMM
+WBS *
+WBAE * (1)
+WBAE * (W)
+WBAE * (
+1
+W)
+WBAE *
+(
+1
+W2 )
+(b) ALB Reduction in Expansions
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+Suboptimality Bound (W)
+0
+1
+2
+3
+4
+(c) ALB Reduction in Runtime
+Figure 2: Comparison of the methods for strengthening the lower bound on STP
+tral tiles, like gap-4). Full results are in Appendix E. Here,
+larger λ values performed better; for instance, with MD-4
+and W = 1.2, λ = 1 led to fewer expansions than λ =
+1
+W 2 ,
+supporting our hypothesis.
+For W ≥1.5, WBiA∗—which does not use d—becomes
+the most effective algorithm, until W = 10, where λ =
+1
+W
+and λ =
+1
+W 2 slightly outperform it. We also evaluated the
+heavy STP variant, a non-unit-cost domain where tile move-
+ment cost equals the tile’s label. Results (see Appendix D)
+follow similar trends; however, in this case, WBAE∗main-
+tains a clear advantage over WA* even at large W, reducing
+node expansions by a factor of 5 when W = 10.
+For Mazes and DAO, the performance of all algorithms is
+relatively similar, particularly as W increases. This is likely
+because the state space of these two domains is polynomial,
+which diminishes the differences between approaches, un-
+like in other domains where the state space is exponential.
+Nonetheless, even in Mazes, it is evident that smaller values
+of λ become more effective as W increases. For example,
+when W = 1.1, the larger values λ = W and λ = 1 out-
+perform the smaller values λ =
+1
+W 2 and λ = 0, whereas
+the opposite holds for W = 5 and W = 10. This trend is
+consistent with our hypothesis as well.
+In these domains as well, the tuned values λ∗consistently
+yielded strong performance, often matching or exceeding
+the best fixed λ configurations in terms of average results.
+18-pancake. Table 4 presents the results for the 18-pancake.
+Here, WA* shows superior performance for GAP, where the
+heuristic is highly accurate, as well as for large values of W
+across all heuristics. Nevertheless, the observed trend in the
+choice of λ remains consistent: the best-performing value of
+λ tends to decrease as heuristic accuracy increases and as W
+becomes larger. Specifically, for GAP and GAP-1, smaller
+values such as λ =
+1
+W 2 and λ = 0 perform as well as or
+better than all other λ settings across all values of W. In
+contrast, for GAP-2, a weaker heuristic, larger values, such
+as λ = W and λ = 1, are more effective when W is small.
+Solution Quality. All algorithms produced solutions well
+within bounds. Even for W = 10, average costs never ex-
+ceeded 2.3 · C∗. Full results are available in Appendix C.
+6.1
+Analysis of the Stronger Lower Bounds
+Figures 2a and 2b illustrate the ratio in node expansions
+achieved by GCD and ALB, respectively, relative to a variant
+that does not use them (the 1.0 line). Additionally, the im-
+pact of ALB on the overall runtime is presented in Figure 2c.
+These are representative results for the 15-puzzle (15-STP);
+other domains showed similar trends. Notably, the GCD im-
+provement imposes minimal computational overhead, so the
+reduction in node expansions directly corresponds to a de-
+crease in runtime. Both methods show the most significant
+reduction in nodes for small values of W. For example,
+for W ∈{1.1, 1.2}, GCD expanded approximately 85% of
+the nodes for WBiA∗, WBS∗, and WMM (again, at no ex-
+tra CPU cost). ALB at W = 1.2 achieves a reduction to
+40% nodes for WBiA∗and almost 50% for WBS∗. How-
+ever, the reduction is minor for other algorithms and be-
+comes negligible when W > 3. This trend highlights the
+diminishing complexity of proving solution optimality as W
+increases. Importantly, ALB only improves the overall run-
+time (indicated by being below the 1.0 line in Figure 2c) for
+W ∈{1.1, 1.2} for WBS∗and when W = 1.2 for WBiA∗;
+
+
+in all other scenarios, it adversely affects performance.
+7
+Summary and Conclusions
+We integrated the core concept of Weighted A* (WA*) into
+BAE∗, showing how the choice of λ, which weights the
+heuristic error d, affects performance. We proposed tighter
+lower bound methods and showed that with a well-chosen
+λ, WBAE∗outperforms related algorithms in many cases.
+We also provided practical guidelines for using WBAE∗and
+selecting λ, and conducted experiments with tuned λ values.
+Future work could develop BiHS and BSS algorithms in-
+spired by strategies beyond WA*, such as DPS (Gilon, Fel-
+ner, and Stern 2016), EES (Thayer and Ruml 2011), and XD-
+P/XUP (Chen and Sturtevant 2021). WBAE∗could also be
+extended to use separate λ values for forward and backward
+search, which may be beneficial with asymmetric heuristics.
+Acknowledgements
+The work of Shahaf Shperberg and Ariel Felner was sup-
+ported by the Israel Science Foundation (ISF) grant #909/23.
+This work was also supported by Israel’s Ministry of Innova-
+tion, Science and Technology (MOST) grant #1001706842,
+in collaboration with Israel National Road Safety Author-
+ity and Netivei Israel, awarded to Shahaf Shperberg, and
+by BSF grant #2024614 awarded to Shahaf Shperberg. The
+work of Dor Atzmon was supported by the Israel Science
+Foundation (ISF) grant #1511/25. This work was also sup-
+ported by Israel’s Ministry of Innovation, Science and Tech-
+nology (MOST) grant #6908 (Czech-Israeli cooperative sci-
+entific research) awarded to Dor Atzmon.
+References
+Akiba, T.; Sano, S.; Yanase, T.; Ohta, T.; and Koyama, M.
+2019.
+Optuna: A Next-generation Hyperparameter Opti-
+mization Framework. In KDD, 2623–2631. ACM.
+Alc´azar, V. 2021.
+The Consistent Case in Bidirectional
+Search and a Bucket-to-Bucket Algorithm as a Middle
+Ground between Front-to-End and Front-to-Front.
+In
+ICAPS, 7–15.
+Alc´azar, V.; Riddle, P. J.; and Barley, M. 2020. A Unify-
+ing View on Individual Bounds and Heuristic Inaccuracies
+in Bidirectional Search. In AAAI, 2327–2334.
+Atzmon, D.; Shperberg, S. S.; Sabah, N.; Felner, A.;
+and Sturtevant, N. R. 2023.
+W-restrained Bidirectional
+Bounded-Suboptimal Heuristic Search. In ICAPS, 26–30.
+Barker, J. K.; and Korf, R. E. 2015. Limitations of front-to-
+end bidirectional heuristic search. In AAAI, 1086–1092.
+Chen, J.; Holte, R. C.; Zilles, S.; and Sturtevant, N. R.
+2017.
+Front-to-End Bidirectional Heuristic Search with
+Near-Optimal Node Expansions. In IJCAI, 489–495.
+Chen, J.; and Sturtevant, N. R. 2019. Conditions for Avoid-
+ing Node Re-Expansions in Bounded Suboptimal Search. In
+IJCAI, 1220–1226.
+Chen, J.; and Sturtevant, N. R. 2021. Necessary and Suffi-
+cient Conditions for Avoiding Reopenings in Best First Sub-
+optimal Search with General Bounding Functions. In AAAI,
+3688–3696.
+Dechter, R.; and Pearl, J. 1985.
+Generalized Best-First
+Search Strategies and the Optimality of A*. JACM, 32(3):
+505–536.
+Doran, J. E.; and Michie, D. 1966. Experiments with the
+graph traverser program. In Proceedings of the Royal Soci-
+ety A, volume 294, 235–259.
+Eckerle, J.; Chen, J.; Sturtevant, N. R.; Zilles, S.; and Holte,
+R. C. 2017. Sufficient conditions for node expansion in bidi-
+rectional heuristic search. In ICAPS, 79–87.
+Felner, A.; Korf, R. E.; Meshulam, R.; and Holte, R. C. 2004.
+Compressing Pattern Databases. In AAAI, 638–643.
+Fickert, M.; Gu, T.; and Ruml, W. 2022. New Results in
+Bounded-Suboptimal Search. In AAAI, 10166–10173.
+Gilon, D.; Felner, A.; and Stern, R. 2016. Dynamic Potential
+Search—A New Bounded Suboptimal Search. In SoCS, 36–
+44.
+Hart, P. E.; Nilsson, N. J.; and Raphael, B. 1968. A For-
+mal Basis for the Heuristic Determination of Minimum Cost
+Paths. IEEE Trans. Syst. Sci. Cybern., 4(2): 100–107.
+Helmert, M. 2010.
+Landmark Heuristics for the Pancake
+Problem. In SoCS, 109–110. AAAI Press.
+Holte, R. C.; Felner, A.; Sharon, G.; Sturtevant, N. R.; and
+Chen, J. 2017. MM: A bidirectional search algorithm that
+is guaranteed to meet in the middle. Artif. Intell., 252: 232–
+266.
+Islam, F.; Narayanan, V.; and Likhachev, M. 2016.
+A-
+Connect: Bounded suboptimal bidirectional heuristic search.
+In ICRA, 2752–2758.
+Kaindl, H.; and Kainz, G. 1997.
+Bidirectional Heuristic
+Search Reconsidered. J. Artif. Intell. Res., 7: 283–317.
+Korf, R. E. 1985. Depth-First Iterative-Deepening: An Op-
+timal Admissible Tree Search. Artif. Intell., 27(1): 97–109.
+Kwa, J. B. H. 1989. BS*: An admissible bidirectional staged
+heuristic search algorithm. Artificial Intelligence, 38(1): 95–
+109.
+K¨oll, A. L.; and Kaindl, H. 1993. Bidirectional Best-First
+Search with Bounded Error: Summary of Results. In IJCAI,
+217–223.
+Pohl, I. 1970. Heuristic search viewed as path finding in a
+graph. Artificial Intelligence, 1: 193–204.
+Pohl, I. 1971. Bi-directional search. Machine Intelligence,
+6: 127–140.
+Rice, M. N.; and Tsotras, V. J. 2012.
+Bidirectional A*
+Search with Additive Approximation Bounds. In SoCS, 80–
+87. AAAI Press.
+Sadhukhan, S. K. 2013. Bidirectional heuristic search based
+on error estimate. CSI Journal of Computing, 2(1-2): S1:57–
+S1:64.
+Sewell, E. C.; and Jacobson, S. H. 2021.
+Dynamically
+improved bounds bidirectional search.
+Artif. Intell., 291:
+103405.
+Shaham, E.; Felner, A.; Chen, J.; and Sturtevant, N. R. 2017.
+The Minimal Set of States that Must Be Expanded in a
+Front-to-End Bidirectional Search. In SoCS, 82–90.
+
+
+Shperberg, S. S.; Danishevski, S.; Felner, A.; and Sturte-
+vant, N. R. 2021. Iterative-deepening Bidirectional Heuristic
+Search with Restricted Memory. In ICAPS, 331–339.
+Shperberg, S. S.; Felner, A.; Shimony, S.; Sturtevant, N.; and
+Hayoun, A. 2019a. Improving bidirectional heuristic search
+by bounds propagation. In SoCS, 106–114.
+Shperberg, S. S.; Felner, A.; Sturtevant, N. R.; Shimony,
+S. E.; and Hayoun, A. 2019b.
+Enriching non-parametric
+bidirectional search algorithms. In AAAI, 2379–2386.
+Siag, L.; Shperberg, S. S.; Felner, A.; and Sturtevant, N.
+2023a. Front-to-end bidirectional heuristic search with con-
+sistent heuristics: enumerating and evaluating algorithms
+and bounds. In IJCAI, 5631–5638.
+Siag, L.; Shperberg, S. S.; Felner, A.; and Sturtevant, N. R.
+2023b. Comparing Front-to-Front and Front-to-End Heuris-
+tics in Bidirectional Search. In SoCS, volume 16, 158–162.
+Sturtevant, N. R. 2012. Benchmarks for grid-based pathfind-
+ing.
+Computational Intelligence and AI in Games, 4(2):
+144–148.
+Thayer, J. T.; and Ruml, W. 2011.
+Bounded Suboptimal
+Search: A Direct Approach Using Inadmissible Estimates.
+In IJCAI, 674–679.
+Reproducibility Checklist
+1. General Paper Structure
+1.1. Includes a conceptual outline and/or pseudocode de-
+scription of AI methods introduced (yes/partial/no/NA)
+yes
+1.2. Clearly delineates statements that are opinions, hypoth-
+esis, and speculation from objective facts and results
+(yes/no) yes
+1.3. Provides well-marked pedagogical references for less-
+familiar readers to gain background necessary to repli-
+cate the paper (yes/no) yes
+2. Theoretical Contributions
+2.1. Does
+this
+paper
+make
+theoretical
+contributions?
+(yes/no) yes
+If yes, please address the following points:
+2.2. All assumptions and restrictions are stated clearly
+and formally (yes/partial/no) yes
+2.3. All novel claims are stated formally (e.g., in theorem
+statements) (yes/partial/no) yes
+2.4. Proofs of all novel claims are included (yes/par-
+tial/no) yes
+2.5. Proof sketches or intuitions are given for complex
+and/or novel results (yes/partial/no) yes
+2.6. Appropriate citations to theoretical tools used are
+given (yes/partial/no) yes
+2.7. All theoretical claims are demonstrated empirically
+to hold (yes/partial/no/NA) yes
+2.8. All experimental code used to eliminate or disprove
+claims is included (yes/no/NA) yes
+3. Dataset Usage
+3.1. Does this paper rely on one or more datasets? (yes/no)
+yes
+If yes, please address the following points:
+3.2. A motivation is given for why the experiments
+are conducted on the selected datasets (yes/par-
+tial/no/NA) yes
+3.3. All novel datasets introduced in this paper are in-
+cluded in a data appendix (yes/partial/no/NA) NA
+3.4. All novel datasets introduced in this paper will be
+made publicly available upon publication of the pa-
+per with a license that allows free usage for research
+purposes (yes/partial/no/NA) NA
+
+
+3.5. All datasets drawn from the existing literature (po-
+tentially including authors’ own previously pub-
+lished work) are accompanied by appropriate cita-
+tions (yes/no/NA) yes
+3.6. All datasets drawn from the existing literature
+(potentially
+including
+authors’
+own
+previously
+published work) are publicly available (yes/par-
+tial/no/NA) yes
+3.7. All datasets that are not publicly available are de-
+scribed in detail, with explanation why publicly
+available alternatives are not scientifically satisficing
+(yes/partial/no/NA) NA
+4. Computational Experiments
+4.1. Does this paper include computational experiments?
+(yes/no) yes
+If yes, please address the following points:
+4.2. This paper states the number and range of values
+tried per (hyper-) parameter during development of
+the paper, along with the criterion used for selecting
+the final parameter setting (yes/partial/no/NA) yes
+4.3. Any code required for pre-processing data is in-
+cluded in the appendix (yes/partial/no) no
+4.4. All source code required for conducting and analyz-
+ing the experiments is included in a code appendix
+(yes/partial/no) no
+4.5. All source code required for conducting and ana-
+lyzing the experiments will be made publicly avail-
+able upon publication of the paper with a license
+that allows free usage for research purposes (yes/-
+partial/no) yes
+4.6. All source code implementing new methods have
+comments detailing the implementation, with refer-
+ences to the paper where each step comes from (yes/-
+partial/no) yes
+4.7. If an algorithm depends on randomness, then the
+method used for setting seeds is described in a way
+sufficient to allow replication of results (yes/par-
+tial/no/NA) NA
+4.8. This paper specifies the computing infrastructure
+used for running experiments (hardware and soft-
+ware), including GPU/CPU models; amount of
+memory; operating system; names and versions of
+relevant software libraries and frameworks (yes/par-
+tial/no) yes
+4.9. This paper formally describes evaluation metrics
+used and explains the motivation for choosing these
+metrics (yes/partial/no) yes
+4.10. This paper states the number of algorithm runs used
+to compute each reported result (yes/no) yes
+4.11. Analysis
+of
+experiments
+goes
+beyond
+single-
+dimensional summaries of performance (e.g., aver-
+age; median) to include measures of variation, con-
+fidence, or other distributional information (yes/no)
+no
+4.12. The significance of any improvement or decrease in
+performance is judged using appropriate statistical
+tests (e.g., Wilcoxon signed-rank) (yes/partial/no) no
+4.13. This paper lists all final (hyper-)parameters used
+for each model/algorithm in the paper’s experiments
+(yes/partial/no/NA) yes
+
+
+Supplementary Materials for the “Bidirectional Bounded-Suboptimal Heuristic
+Search with Consistent Heuristics” Paper
+Appendix A: Bounded suboptilmality of WBiA∗
+We prove below that WBiA∗is guaranteed to return bounded suboptimal algorithms. The proof is a direct generalization of the
+proof of WA*.
+Theorem 4. WBiA∗is bounded-suboptimal.
+Proof. We need to prove that when a solution is returned with cost U ≤LBW then it holds that LBW ≤W · C∗. Without loss
+of generality, assume that the max term is prW MinF . Let x be the node for which prWF (x) = prW MinF and let y be the
+node for which fF (y) = gF (y) + hF (y) = fMinF , where fMinF is the minimal f-value in OPENF.
+Given an admissible heuristic, it holds that fF (y) ≤C∗. Note that the open lists are sorted according to prWD so prWF (x) ≤
+prWF (y). As a result, we get:
+U ≤prW MinF
+= gF (x) + W · hF (x)
+≤gF (y) + W · hF (y)
+≤W · gF (y) + W · hF (y)
+= W · fF (y) ≤W · C∗
+Thus, WBiA∗returns solutions that are bounded by W · C∗, making it a BSS algorithm.
+Appendix B: Absence of Node Re-expansion with Consistent Heuristics
+Theorem 3. Given consistent heuristics WBAE∗finds a bounded-suboptimal solution even if never re-expand nodes.
+Proof. To prove this lemma, it suffices to show that every node is expanded with a bounded-suboptimal path. Specifically, we
+need to demonstrate two conditions:
+(i) Whenever a node u is expanded in the forward direction (F), it holds that gF (u) ≤W · c(start, u).
+(ii) Similarly, whenever a node u is expanded in the backward direction (B), it holds that gB(u) ≤W · c(u, goal).
+We will prove condition (i); the proof for condition (ii) is symmetrical.
+Assume, for the sake of contradiction, that WBAE∗expands a node u such that gF (u) > W · c(start, u). Further, assume
+that u is the first node expanded in this manner. Note that u̸ = start, since the start node is expanded with an optimal cost of
+zero.
+Given that u is the first node expanded with an unbounded suboptimal path cost, there must exist another node u′ ∈OPENF
+that lies on the optimal path from start to u, satisfying gF (u′) + c(u′, u) ≤W · c(start, u). Since u′ is on the optimal path,
+we have c(start, u) = c(start, u′) + c(u′, u). Now, because gF (u) > W · c(start, u), it follows that:
+gF (u) > W · c(start, u′) + W · c(u′, u).
+Since gF (u′) ≤W · c(start, u′), we have:
+gF (u) > gF (u′) + W · c(u′, u).
+Additionally, since c(u′, u) ≥0, we know gF (u′) < gF (u).
+Thus, we can evaluate the bF values:
+bWF (u′) = gF (u′) + W · hF (u′) + λ(gF (u′) −hB(u′)).
+Substituting the known inequalities, we get:
+bWF (u′) <gF (u) −W · c(u′, u) + W · hF (u′)
++ λ(gF (u) −W · c(u′, u) −hB(u′)).
+Using the consistency of the heuristics, hF (u′) ≤c(u′, u) + hF (u) and hB(u) ≤c(u′, u) + hB(u′), we obtain:
+bWF (u′) <gF (u) + W · hF (u)
++ λ(gF (u) −hB(u) −(W −1)c(u′, u)).
+Since W ≥1 and c(u′, u) ≥0, this simplifies to:
+bWF (u′) < gF (u) + W · hF (u) + λ(gF (u) −hB(u)) = bWF (u).
+This contradicts the assumption that u is expanded before u′.
+Consequently, every path discovered during the search is guaranteed to be bounded-suboptimal. Since the algorithm termi-
+nates only once a path is found whose cost is greater or equal to the lower bound, it must return a path of cost that does not
+exceed W · C∗.
+
+
+Appendix C: Runetime and Solution Quality Results
+This section includes the full runtime and solution quality results of our experiments. Tables 5-9 report the average runtime for
+each domain and algorithm, whereas tables 10-14 show the quality of solutions found by each algorithm.
+Experiments were conducted on a 92-machine cluster, each equipped with an AMD EPYC 7763 CPU (256 hyperthreads)
+and 1000GB of RAM. Each combination of search algorithm and problem instance was run on a single thread with a 60GB
+memory limit. While runtime measurements may be somewhat noisy due to the distributed setup, all algorithms follow a
+similar operational pattern: computing lower bounds, selecting nodes via a priority function, expanding nodes, and maintaining
+the incumbent solution. These operations incur comparable overhead across algorithms, as confirmed by the code, with the
+exception of WMM, which is inherently slower due to its lower-bound computation that involves iterating over buckets in the
+open list. Therefore, although we report runtime results, we regard node expansions as a more reliable indicator of performance.
+Table 5: Average runtime in seconds on STP domain.
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+59.28
+33.29
+10.36
+0.80
+0.22
+0.08
+0.02
+0.01
+0.01
+WBiA∗
+71.31
+31.22
+2.50
+0.20
+0.12
+0.07
+0.02
+0.01
+0.01
+WMM
+73.55
+14.94
+3.06
+0.46
+0.51
+0.82
+9.33
+11.33
+0.12
+WBS∗
+45.54
+9.52
+1.39
+0.21
+0.14
+0.08
+0.02
+0.01
+0.01
+WBAE∗
+1
+W 2
+12.45
+3.69
+1.55
+0.43
+0.20
+0.07
+0.03
+0.01
+0.01
+WBAE∗
+1
+W
+12.35
+4.07
+2.14
+0.65
+0.41
+0.14
+0.03
+0.01
+0.01
+WBAE∗1
+11.56
+4.17
+2.92
+1.19
+0.85
+0.53
+0.09
+0.02
+0.01
+WBAE∗W
+13.06
+4.36
+3.75
+2.75
+2.36
+2.16
+4.16
+3.57
+2.12
+WBAE∗λ∗
+14.88
+5.00
+1.56
+0.40
+0.16
+0.13
+0.02
+0.01
+0.01
+Table 6: Average runtime in milliseconds on DAO domain.
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+2.80
+2.66
+2.62
+2.12
+1.90
+1.67
+1.41
+1.25
+1.14
+WBiA∗
+4.10
+3.66
+3.19
+2.76
+2.52
+2.21
+1.88
+1.67
+1.50
+WMM
+504.99
+447.72
+190.39
+116.72
+78.09
+91.19
+13.76
+3.82
+3.22
+WBS∗
+3.08
+2.85
+2.60
+2.13
+1.97
+1.72
+1.56
+1.44
+1.37
+WBAE∗
+1
+W 2
+3.96
+3.81
+3.59
+2.89
+2.52
+2.31
+1.97
+1.72
+1.54
+WBAE∗
+1
+W
+4.22
+4.17
+3.72
+3.10
+2.78
+2.20
+1.85
+1.60
+1.42
+WBAE∗1
+3.84
+3.85
+3.67
+3.17
+2.92
+2.60
+2.10
+1.78
+1.56
+WBAE∗W
+3.86
+3.94
+3.94
+3.46
+3.38
+3.15
+2.89
+2.80
+2.65
+WBAE∗λ∗
+3.90
+3.20
+3.18
+2.76
+2.19
+1.96
+1.71
+1.68
+1.41
+Table 7: Average runtime in milliseconds on Mazes domain.
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+47.45
+49.59
+49.21
+47.04
+46.71
+44.47
+39.89
+34.59
+29.87
+WBiA∗
+63.31
+66.27
+66.99
+60.98
+60.10
+55.65
+49.30
+43.74
+38.75
+WMM
+1,649
+2,334
+3,033
+7,683
+12,302
+17,147
+19,502
+10,452
+289.27
+WBS∗
+45.08
+48.83
+49.01
+47.04
+46.36
+39.38
+35.81
+32.03
+30.08
+WBAE∗
+1
+W 2
+55.25
+58.88
+60.95
+63.45
+62.79
+60.86
+54.83
+46.69
+41.52
+WBAE∗
+1
+W
+46.81
+50.20
+58.42
+59.96
+59.81
+58.58
+54.18
+47.63
+41.87
+WBAE∗1
+48.52
+50.10
+49.30
+48.43
+52.39
+50.15
+47.84
+45.79
+42.34
+WBAE∗W
+49.87
+50.95
+51.62
+53.20
+54.12
+52.22
+51.83
+52.75
+55.47
+WBAE∗λ∗
+46.24
+49.82
+83.40
+51.24
+51.02
+50.33
+42.78
+41.27
+40.73
+
+
+Table 8: Average runtime in milliseconds on 18 Pancake domain, with GAP to GAP-2 heuristics.
+GAP
+GAP-1
+GAP-2
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+3.57
+2.75
+0.91
+0.56
+0.54
+0.46
+0.52
+0.50
+0.50
+1,013
+602
+63.21
+4.27
+2.20
+0.92
+0.69
+0.64
+0.64
+167,115
+145,095
+30,996
+1,688
+411
+68.98
+20.45
+17.06
+16.74
+WBiA∗
+2.58
+1.39
+0.87
+0.65
+0.62
+0.58
+0.58
+0.64
+0.60
+715
+57.04
+10.50
+0.71
+0.59
+0.52
+0.51
+0.51
+0.51
+134,641
+30,062
+3,708
+70.74
+17.86
+4.71
+2.34
+2.14
+2.20
+WMM
+5.14
+3.23
+4.22
+25.38
+81.93
+394
+99.29
+0.79
+0.58
+671
+55.45
+15.59
+26.90
+63.75
+174.57
+2,204
+9.83
+0.65
+67,578
+11,739
+1,782
+155
+74.26
+279
+9,574
+963
+5.72
+WBS∗
+2.85
+1.83
+1.11
+0.79
+0.76
+0.73
+0.73
+0.72
+0.72
+316
+36.19
+8.58
+0.77
+0.73
+0.66
+0.65
+0.64
+0.64
+59,861
+16,464
+1,735
+47.65
+8.66
+4.14
+2.82
+2.64
+2.73
+WBAE∗
+1
+W 2
+2.73
+1.72
+1.27
+0.73
+0.71
+0.64
+0.63
+0.63
+0.63
+29.11
+8.92
+5.97
+1.06
+0.82
+0.67
+0.59
+0.58
+0.58
+2,681
+913
+143
+51.55
+24.20
+8.48
+2.64
+2.62
+2.70
+WBAE∗
+1
+W
+2.71
+1.74
+1.30
+0.76
+0.72
+0.63
+0.63
+0.62
+0.63
+29.59
+9.61
+8.53
+1.77
+1.01
+0.68
+0.59
+0.57
+0.57
+2,688
+725
+140
+145
+35.25
+13.31
+2.59
+2.58
+2.67
+WBAE∗1
+2.73
+1.80
+1.31
+0.81
+0.74
+0.67
+0.64
+0.63
+0.64
+29.31
+10.67
+9.62
+2.49
+1.74
+0.86
+0.62
+0.58
+0.58
+2,760
+739
+199
+268
+196
+36.53
+5.28
+2.96
+2.87
+WBAE∗W
+2.72
+1.77
+1.35
+0.95
+0.91
+0.74
+0.79
+0.93
+0.78
+30.65
+11.68
+15.56
+34.36
+24.15
+15.48
+6.11
+3.38
+2.67
+3,379
+918
+409
+1,716
+3,229
+11,604
+2,023
+1,038
+586
+WBAE∗λ∗
+2.90
+1.75
+1.03
+0.80
+0.67
+0.61
+0.59
+0.63
+0.61
+26.95
+10.18
+4.31
+1.33
+0.96
+0.82
+0.84
+0.79
+0.69
+2,776
+877
+123
+45.63
+17.26
+8.64
+3.00
+2.84
+3.09
+Table 9: Average runtime in milliseconds on 12-disks ToH domain, with (10 + 2), (8 + 4), (6 + 6) PDBS.
+ToH-12 (10+2)
+ToH-12 (8+4)
+ToH-12 (6+6)
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+518
+245
+86.28
+5.33
+2.78
+1.58
+0.54
+0.56
+0.57
+4,658
+3,641
+2,429
+995
+628
+521
+30.38
+13.16
+19.09
+8,136
+7,641
+6,502
+3,405
+2,994
+2,350
+2,128
+1,182
+326
+WBiA∗
+534
+226
+72.69
+3.65
+2.07
+0.95
+0.59
+0.55
+0.59
+3,343
+2,346
+1,533
+424
+227
+63.35
+15.24
+7.29
+5.16
+6,025
+4,604
+3,547
+1,864
+1,108
+527
+142
+81
+47.50
+WMM
+793
+358
+112
+5.16
+3.30
+2.28
+6.52
+5.40
+0.84
+2,406
+2,122
+1,712
+611
+342
+94.53
+22.37
+12.66
+10.44
+2,142
+2,428
+2,526
+2,110
+1,473
+885
+508
+202
+93.06
+WBS∗
+334
+137
+45.52
+3.41
+1.86
+0.92
+0.55
+0.51
+0.56
+2,327
+1,670
+1,142
+337
+172
+49.96
+15.36
+7.74
+5.70
+4,227
+3,422
+2,736
+1,391
+902
+491
+193
+114
+64.83
+WBAE∗
+1
+W 2
+75.68
+47.66
+27.01
+8.85
+4.01
+1.80
+0.66
+0.60
+0.68
+365
+398
+328
+201
+130
+55.03
+18.42
+7.94
+5.84
+812
+966
+947
+833
+723
+453
+206
+110
+64
+WBAE∗
+1
+W
+94.91
+53.87
+32.47
+11.75
+6.23
+2.60
+0.69
+0.64
+0.63
+494
+444
+368
+239
+180
+85.51
+23.97
+9.28
+5.84
+1,051
+1,076
+1,015
+870
+809
+583
+289
+147
+74.67
+WBAE∗1
+97.12
+53.70
+37.08
+16.73
+10.70
+4.94
+0.93
+0.69
+0.66
+434
+371
+325
+255
+221
+152
+41.28
+14.22
+6.74
+950
+921
+885
+822
+799
+682
+413
+233
+119
+WBAE∗W
+92.77
+52.04
+39.71
+22.73
+18.72
+11.94
+5.44
+2.72
+1.98
+485
+351
+321
+260
+241
+203
+159
+123
+81.30
+1,059
+864
+838
+763
+743
+663
+584
+510
+400
+WBAE∗λ∗
+129
+48.39
+30.67
+7.31
+2.84
+1.64
+0.86
+0.76
+0.77
+611
+281
+264
+214
+142
+124
+19.16
+9.71
+6.67
+1,120
+1,751
+1,147
+704
+997
+769
+250
+145
+124
+Table 10: Average solution quality on STP domain.
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+1.000
+1.001
+1.011
+1.063
+1.103
+1.199
+1.468
+1.848
+2.242
+WBiA∗
+1.000
+1.002
+1.015
+1.100
+1.140
+1.221
+1.468
+1.806
+2.165
+WMM
+1.000
+1.002
+1.017
+1.106
+1.182
+1.298
+1.616
+1.489
+1.892
+WBS∗
+1.000
+1.003
+1.021
+1.102
+1.140
+1.223
+1.469
+1.806
+2.165
+WBAE∗
+1
+W 2
+1.000
+1.005
+1.020
+1.064
+1.091
+1.153
+1.393
+1.714
+2.027
+WBAE∗
+1
+W
+1.000
+1.006
+1.017
+1.051
+1.069
+1.122
+1.325
+1.668
+2.039
+WBAE∗1
+1.000
+1.006
+1.015
+1.032
+1.042
+1.070
+1.210
+1.425
+1.787
+WBAE∗W
+1.000
+1.009
+1.014
+1.017
+1.023
+1.030
+1.067
+1.106
+1.139
+WBAE∗λ∗
+1.000
+1.003
+1.017
+1.098
+1.132
+1.181
+1.419
+1.714
+2.035
+Table 11: Average solution quality on DAO domain.
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+1.000
+1.006
+1.012
+1.025
+1.026
+1.034
+1.044
+1.065
+1.077
+WBiA∗
+1.000
+1.013
+1.025
+1.045
+1.047
+1.055
+1.067
+1.089
+1.102
+WMM
+1.000
+1.019
+1.038
+1.071
+1.075
+1.090
+1.094
+1.109
+1.114
+WBS∗
+1.000
+1.024
+1.037
+1.054
+1.056
+1.071
+1.083
+1.108
+1.124
+WBAE∗
+1
+W 2
+1.000
+1.009
+1.017
+1.034
+1.045
+1.054
+1.070
+1.092
+1.108
+WBAE∗
+1
+W
+1.000
+1.009
+1.017
+1.032
+1.037
+1.050
+1.069
+1.091
+1.107
+WBAE∗1
+1.000
+1.010
+1.017
+1.030
+1.034
+1.042
+1.061
+1.079
+1.095
+WBAE∗W
+1.000
+1.010
+1.016
+1.028
+1.031
+1.039
+1.044
+1.050
+1.055
+WBAE∗λ
+1.000
+1.011
+1.022
+1.043
+1.049
+1.056
+1.070
+1.092
+1.108
+Table 12: Average solution quality on Mazes domain.
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+1.000
+1.002
+1.006
+1.013
+1.013
+1.020
+1.030
+1.064
+1.082
+WBiA∗
+1.000
+1.002
+1.006
+1.016
+1.017
+1.024
+1.036
+1.070
+1.089
+WMM
+1.000
+1.001
+1.005
+1.013
+1.014
+1.019
+1.031
+1.065
+1.088
+WBS∗
+1.000
+1.003
+1.008
+1.018
+1.019
+1.027
+1.039
+1.074
+1.093
+WBAE∗
+1
+W 2
+1.000
+1.000
+1.001
+1.009
+1.013
+1.019
+1.034
+1.068
+1.091
+WBAE∗
+1
+W
+1.000
+1.000
+1.001
+1.008
+1.010
+1.015
+1.032
+1.065
+1.091
+WBAE∗1
+1.000
+1.001
+1.001
+1.007
+1.009
+1.011
+1.023
+1.043
+1.069
+WBAE∗W
+1.000
+1.001
+1.001
+1.007
+1.008
+1.009
+1.011
+1.015
+1.018
+WBAE∗λ∗
+1.000
+1.001
+1.001
+1.008
+1.009
+1.011
+1.025
+1.052
+1.091
+
+
+Table 13: Average solution quality on 18 Pancakes domain, with GAP to GAP-2 heuristics.
+GAP
+GAP-1
+GAP-2
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+1.000
+1.014
+1.043
+1.098
+1.105
+1.141
+1.150
+1.150
+1.150
+1.000
+1.002
+1.020
+1.082
+1.094
+1.150
+1.185
+1.199
+1.199
+1.000
+1.002
+1.011
+1.058
+1.081
+1.126
+1.171
+1.208
+1.218
+WBiA∗
+1.000
+1.017
+1.039
+1.073
+1.077
+1.103
+1.103
+1.103
+1.103
+1.000
+1.002
+1.029
+1.082
+1.093
+1.134
+1.145
+1.146
+1.146
+1.000
+1.002
+1.011
+1.071
+1.093
+1.134
+1.178
+1.202
+1.198
+WMM
+1.000
+1.019
+1.073
+1.222
+1.252
+1.297
+1.108
+1.104
+1.103
+1.000
+1.000
+1.023
+1.145
+1.205
+1.338
+1.198
+1.131
+1.141
+1.000
+1.001
+1.013
+1.088
+1.159
+1.285
+1.454
+1.162
+1.169
+WBS∗
+1.000
+1.017
+1.040
+1.075
+1.077
+1.103
+1.103
+1.103
+1.103
+1.000
+1.002
+1.031
+1.087
+1.095
+1.138
+1.145
+1.146
+1.146
+1.000
+1.002
+1.012
+1.097
+1.120
+1.161
+1.182
+1.202
+1.198
+WBAE∗
+1
+W 2
+1.000
+1.017
+1.036
+1.064
+1.067
+1.087
+1.094
+1.095
+1.095
+1.000
+1.005
+1.024
+1.075
+1.090
+1.121
+1.142
+1.152
+1.152
+1.000
+1.002
+1.015
+1.070
+1.093
+1.132
+1.171
+1.193
+1.199
+WBAE∗
+1
+W
+1.000
+1.017
+1.039
+1.060
+1.066
+1.087
+1.094
+1.095
+1.095
+1.000
+1.006
+1.025
+1.066
+1.084
+1.116
+1.142
+1.152
+1.152
+1.000
+1.003
+1.017
+1.069
+1.080
+1.122
+1.170
+1.193
+1.199
+WBAE∗1
+1.000
+1.017
+1.039
+1.063
+1.067
+1.087
+1.094
+1.099
+1.099
+1.000
+1.007
+1.026
+1.065
+1.079
+1.114
+1.143
+1.150
+1.154
+1.000
+1.004
+1.019
+1.073
+1.077
+1.107
+1.150
+1.183
+1.205
+WBAE∗W
+1.000
+1.017
+1.039
+1.059
+1.062
+1.082
+1.090
+1.095
+1.097
+1.000
+1.012
+1.037
+1.094
+1.106
+1.126
+1.158
+1.173
+1.180
+1.000
+1.009
+1.026
+1.063
+1.084
+1.101
+1.134
+1.156
+1.172
+WBAE∗λ∗
+1.000
+1.017
+1.037
+1.065
+1.071
+1.087
+1.094
+1.098
+1.099
+1.000
+1.005
+1.026
+1.075
+1.091
+1.116
+1.142
+1.152
+1.152
+1.000
+1.008
+1.017
+1.069
+1.094
+1.132
+1.163
+1.188
+1.184
+Table 14: Average solution quality on 12-disks ToH domain, with (10 + 2), (8 + 4), and (6 + 6) PDBs.
+ToH-12 (10+2)
+ToH-12 (8+4)
+ToH-12 (6+6)
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+1.000
+1.000
+1.001
+1.025
+1.044
+1.247
+1.444
+1.503
+1.508
+1.000
+1.000
+1.000
+1.014
+1.045
+1.165
+1.285
+1.501
+1.954
+1.000
+1.000
+1.001
+1.010
+1.014
+1.074
+1.249
+1.510
+1.881
+WBiA∗
+1.000
+1.000
+1.002
+1.051
+1.106
+1.248
+1.431
+1.542
+1.560
+1.000
+1.000
+1.001
+1.027
+1.075
+1.159
+1.378
+1.711
+2.057
+1.000
+1.000
+1.005
+1.039
+1.063
+1.129
+1.365
+1.611
+2.017
+WMM
+1.000
+1.000
+1.001
+1.032
+1.078
+1.235
+1.438
+1.551
+1.543
+1.000
+1.000
+1.000
+1.020
+1.055
+1.161
+1.352
+1.653
+2.043
+1.000
+1.000
+1.001
+1.031
+1.055
+1.134
+1.362
+1.532
+1.937
+WBS∗
+1.000
+1.000
+1.003
+1.050
+1.102
+1.246
+1.435
+1.544
+1.563
+1.000
+1.000
+1.002
+1.041
+1.082
+1.164
+1.375
+1.725
+2.061
+1.000
+1.001
+1.008
+1.048
+1.072
+1.140
+1.380
+1.623
+2.033
+WBAE∗
+1
+W 2
+1.000
+1.004
+1.005
+1.027
+1.050
+1.135
+1.333
+1.508
+1.527
+1.000
+1.000
+1.004
+1.032
+1.073
+1.150
+1.309
+1.664
+2.027
+1.000
+1.001
+1.003
+1.031
+1.063
+1.126
+1.334
+1.570
+1.984
+WBAE∗
+1
+W
+1.000
+1.004
+1.007
+1.019
+1.035
+1.090
+1.298
+1.516
+1.527
+1.000
+1.001
+1.005
+1.033
+1.069
+1.144
+1.283
+1.586
+2.025
+1.000
+1.001
+1.005
+1.031
+1.064
+1.131
+1.284
+1.532
+1.940
+WBAE∗1
+1.000
+1.004
+1.008
+1.015
+1.022
+1.049
+1.191
+1.379
+1.565
+1.000
+1.002
+1.006
+1.017
+1.028
+1.067
+1.196
+1.331
+1.755
+1.000
+1.003
+1.004
+1.012
+1.021
+1.050
+1.173
+1.345
+1.601
+WBAE∗W
+1.000
+1.004
+1.008
+1.010
+1.013
+1.022
+1.044
+1.078
+1.105
+1.000
+1.003
+1.004
+1.005
+1.007
+1.013
+1.022
+1.037
+1.072
+1.000
+1.002
+1.002
+1.003
+1.004
+1.004
+1.008
+1.015
+1.018
+WBAE∗λ∗
+1.000
+1.004
+1.005
+1.039
+1.087
+1.189
+1.333
+1.474
+1.527
+1.000
+1.003
+1.006
+1.033
+1.076
+1.143
+1.318
+1.664
+2.026
+1.000
+1.002
+1.002
+1.030
+1.064
+1.132
+1.330
+1.576
+1.834
+
+
+Appendix D: Heavy Sliding Tile Puzzle
+Following are tables for node expansions, solution quality, and runtime for heavy STP, i.e., where the cost of moving a tile is its
+number. The heuristic is heavy Manhattan Distance, which is the same as regular MD, but accounts for the different weighting
+of moves.
+Table 15: Average number of node expansions on Heavy STP domain.
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+25M
+8M
+3M
+336K
+212K
+115K
+58K
+53K
+45K
+WBiA∗
+41M
+6M
+1M
+174K
+112K
+73K
+35K
+15K
+9K
+WMM
+39M
+7M
+2M
+566K
+689K
+1M
+N/A
+13M
+159K
+WBS∗
+25M
+4M
+964K
+179K
+108K
+74K
+36K
+16K
+9K
+WBAE∗
+1
+W 2
+5M
+2M
+836K
+286K
+149K
+88K
+42K
+17K
+9K
+WBAE∗
+1
+W
+5M
+2M
+899K
+421K
+232K
+118K
+46K
+19K
+10K
+WBAE∗1
+5M
+2M
+973K
+622K
+463K
+331K
+81K
+43K
+15K
+WBAE∗W
+5M
+2M
+1M
+949K
+984K
+1M
+1M
+2M
+2M
+WBAE∗λ∗
+5M
+2M
+740K
+213K
+123K
+72K
+36K
+19K
+9K
+Table 16: Average solution quality on Heavy STP domain.
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+1.000
+1.007
+1.020
+1.095
+1.157
+1.259
+1.532
+1.878
+2.305
+WBiA∗
+1.000
+1.006
+1.024
+1.106
+1.164
+1.261
+1.517
+1.892
+2.299
+WMM
+1.000
+1.008
+1.031
+1.126
+1.205
+1.335
+N/A
+1.463
+1.901
+WBS∗
+1.000
+1.008
+1.029
+1.107
+1.166
+1.266
+1.517
+1.890
+2.300
+WBAE∗
+1
+W 2
+1.000
+1.006
+1.026
+1.086
+1.118
+1.201
+1.479
+1.868
+2.294
+WBAE∗
+1
+W
+1.000
+1.008
+1.025
+1.064
+1.099
+1.164
+1.404
+1.775
+2.241
+WBAE∗1
+1.000
+1.009
+1.019
+1.048
+1.064
+1.092
+1.258
+1.535
+1.910
+WBAE∗W
+1.000
+1.010
+1.022
+1.037
+1.044
+1.057
+1.093
+1.149
+1.202
+WBAE∗λ∗
+1.000
+1.008
+1.024
+1.094
+1.160
+1.256
+1.512
+1.811
+2.300
+Table 17: Average runtime in seconds on Heavy STP domain.
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+243
+46.40
+8.98
+0.91
+0.59
+0.26
+0.12
+0.11
+0.09
+WBiA∗
+200
+31.97
+4.33
+0.50
+0.31
+0.19
+0.08
+0.03
+0.02
+WMM
+5,977
+831
+317
+18.57
+13.68
+22.94
+N/A
+104
+0.57
+WBS∗
+95.62
+15.02
+3.04
+0.60
+0.37
+0.23
+0.09
+0.03
+0.02
+WBAE∗
+1
+W 2
+47.23
+6.68
+3.37
+0.95
+0.45
+0.24
+0.10
+0.03
+0.02
+WBAE∗
+1
+W
+21.29
+7.01
+3.85
+1.52
+1.15
+0.33
+0.12
+0.04
+0.02
+WBAE∗1
+57.58
+6.54
+3.95
+2.35
+1.81
+1.32
+0.23
+0.11
+0.03
+WBAE∗W
+54.78
+7.36
+4.57
+3.87
+4.03
+5.23
+5.49
+9.04
+11.14
+WBAE∗λ∗
+22.24
+5.37
+3.10
+0.81
+0.31
+0.17
+0.07
+0.04
+0.02
+
+
+Appendix E: Sliding Tile Puzzle with MD-4
+Following are tables for node expansions, solution quality, and runtime for STP which utilizes Manhattan Distance without the
+4 center tiles (MD-4).
+Table 18: Average solution quality on STP domain with MD-4.
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+N/A
+N/A
+N/A
+12M
+3M
+617K
+46K
+10K
+2K
+WBiA∗
+N/A
+N/A
+N/A
+5M
+743K
+263K
+44K
+14K
+4K
+WMM
+N/A
+N/A
+N/A
+3M
+1M
+621K
+4M
+N/A
+2M
+WBS∗
+N/A
+N/A
+N/A
+3M
+676K
+252K
+45K
+14K
+4K
+WBAE∗
+1
+W 2
+9M
+5M
+3M
+796K
+493K
+322K
+66K
+16K
+4K
+WBAE∗
+1
+W
+9M
+4M
+3M
+1M
+678K
+575K
+121K
+22K
+5K
+WBAE∗1
+9M
+4M
+3M
+2M
+1M
+849K
+334K
+62K
+13K
+WBAE∗W
+9M
+4M
+3M
+2M
+2M
+2M
+3M
+4M
+4M
+WBAE∗λ∗
+N/A
+N/A
+3M
+776K
+536K
+342K
+52K
+15K
+5K
+Table 19: Average solution quality on STP domain with MD.
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+N/A
+N/A
+N/A
+1.014
+1.038
+1.101
+1.325
+1.639
+2.017
+WBiA∗
+N/A
+N/A
+N/A
+1.014
+1.046
+1.116
+1.348
+1.674
+2.019
+WMM
+N/A
+N/A
+N/A
+1.015
+1.053
+1.142
+1.456
+N/A
+1.593
+WBS∗
+N/A
+N/A
+N/A
+1.017
+1.048
+1.122
+1.349
+1.674
+2.015
+WBAE∗
+1
+W 2
+1.000
+1.000
+1.000
+1.028
+1.049
+1.092
+1.291
+1.625
+2.005
+WBAE∗
+1
+W
+1.000
+1.000
+1.004
+1.023
+1.041
+1.073
+1.230
+1.565
+1.983
+WBAE∗1
+1.000
+1.001
+1.007
+1.015
+1.023
+1.041
+1.120
+1.331
+1.664
+WBAE∗W
+1.000
+1.003
+1.006
+1.008
+1.009
+1.015
+1.030
+1.046
+1.064
+WBAE∗λ∗
+N/A
+N/A
+1.005
+1.030
+1.048
+1.104
+1.311
+1.624
+2.001
+Table 20: Average runtime in seconds on STP domain with MD-4 (in seconds).
+Algorithm
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+WA*
+N/A
+N/A
+N/A
+131.24
+9.56
+1.64
+0.10
+0.02
+0.01
+WBiA∗
+N/A
+N/A
+N/A
+19.50
+2.57
+0.80
+0.11
+0.03
+0.01
+WMM
+N/A
+N/A
+N/A
+12.14
+3.59
+1.91
+13.24
+N/A
+6.41
+WBS∗
+N/A
+N/A
+N/A
+11.68
+2.28
+0.78
+0.13
+0.03
+0.01
+WBAE∗
+1
+W 2
+40.25
+25.40
+16.95
+3.17
+1.69
+1.07
+0.18
+0.04
+0.01
+WBAE∗
+1
+W
+45.19
+20.58
+14.42
+4.12
+2.52
+2.05
+0.36
+0.05
+0.01
+WBAE∗1
+46.08
+17.47
+15.16
+6.45
+5.18
+3.13
+1.14
+0.17
+0.03
+WBAE∗W
+45.30
+17.59
+17.69
+10.43
+9.55
+9.03
+11.93
+16.06
+17.68
+WBAE∗λ∗
+N/A
+N/A
+9.91
+2.78
+1.89
+1.17
+0.11
+0.03
+0.01
+
+
+Appendix F: Tuned values of λ
+In this section, we report the tuned λ values, denoted λ∗, obtained after 50 trials of optimization. These values do not necessarily
+yield the optimal results, but reflect the best performance found within the trial budget. Table 21 lists the tuned λ values used in
+WBAE∗λ∗for each domain and heuristic. In some cases, λ∗may appear unexpectedly high or low, typically in domains where
+performance is relatively insensitive to W. For example, in Pancake with GAP-2 and W = 10, the tuned value λ∗= 2.03 is
+relatively high. However, Table 4 shows that this choice led to 201 node expansions, compared to 180 for both λ =
+1
+W = 0.1
+and λ =
+1
+W 2 = 0.01, indicating that λ∗was slightly suboptimal, though the performance differences are minor. Despite such
+anomalies, we observe an overall trend: λ∗tends to decrease as W increases and as the heuristic becomes weaker.
+Table 21: Tuned λ values used in WBAE∗λ∗
+Domain
+Heuristic
+1
+1.1
+1.2
+1.5
+1.7
+2
+3
+5
+10
+STP
+MD
+0.9366
+0.7220
+0.3949
+0.0296
+0.0311
+0.1401
+0.0332
+0.0296
+0.0772
+STP
+Heavy MD
+0.9877
+0.9211
+0.4815
+0.1564
+0.0097
+0.0085
+0.0409
+0.1280
+0.0186
+STP
+MD-4
+N/A
+N/A
+0.8489
+0.4945
+0.4360
+0.0816
+0.0254
+0.0224
+0.0616
+Mazes
+Octile
+0.9995
+0.9930
+0.9827
+0.9513
+0.9312
+0.8953
+0.7732
+0.4026
+0.0008
+DAO
+Octile
+0.0005
+0.0019
+0.0005
+0.0004
+0.0002
+0.0018
+0.0004
+0.0029
+0.0012
+Pancake
+GAP
+0.2025
+0.6162
+0.0233
+0.0376
+0.1567
+0.2550
+0.1521
+1.3286
+1.5546
+Pancake
+GAP-1
+0.9797
+0.8970
+0.5836
+0.4962
+0.3863
+0.4918
+0.3210
+0.2358
+0.0564
+Pancake
+GAP-2
+0.8535
+1.0954
+0.7973
+0.3249
+0.1887
+0.2383
+0.4148
+0.3229
+2.0255
+TOH
+PDB (10+2)
+0.9933
+0.9992
+0.6956
+0.0390
+0.0412
+0.0611
+0.1104
+0.2707
+0.1908
+TOH
+PDB (8+4)
+0.9906
+1.0982
+0.9314
+0.6608
+0.3981
+0.1650
+0.0345
+0.0156
+0.0397
+TOH
+PDB (6+6)
+0.9878
+1.0969
+1.1849
+0.6977
+0.5985
+0.3313
+0.1547
+0.0355
+0.3135

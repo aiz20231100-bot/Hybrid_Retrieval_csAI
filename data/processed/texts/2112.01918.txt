@@ -1,0 +1,1191 @@
+Heuristic Search Planning with Deep Neural Networks using Imitation, Attention
+and Curriculum Learning
+Leah Chrestien, Tom´aˇs Pevn´y, Anton´ın Komenda, Stefan Edelkamp
+Department of Computer Science, Faculty of Electrical Engineering
+Czech Technical University in Prague
+chreslea@fel.cvut.cz, pevnytom@fel.cvut.cz, antonin.komenda@fel.cvut.cz, stefan.edelkamp@fel.cvut.cz
+Abstract
+Learning a well-informed heuristic function for hard task
+planning domains is an elusive problem. Although there are
+known neural network architectures to represent such heuris-
+tic knowledge, it is not obvious what concrete information is
+learned and whether techniques aimed at understanding the
+structure help in improving the quality of the heuristics.
+This paper presents a network model to learn a heuristic capa-
+ble of relating distant parts of the state space via optimal plan
+imitation using the attention mechanism, which drastically
+improves the learning of a good heuristic function. To counter
+the limitation of the method in the creation of problems of
+increasing difﬁculty, we demonstrate the use of curriculum
+learning, where newly solved problem instances are added to
+the training set, which, in turn, helps to solve problems of
+higher complexities and far exceeds the performances of all
+existing baselines including classical planning heuristics. We
+demonstrate its effectiveness for grid-type PDDL domains.
+Introduction
+Classical Planning has always relied on strong heuris-
+tic functions to approximate distances to the nearest goal
+(Bonet and Geffner 2001). Generally speaking, the quality
+of heuristics is measured by how well it performs when used
+inside a planner, i.e., it depends on the quality of the solu-
+tion and the time taken to generate it. A major drawback of
+classical planning is the need to formulate problems by ex-
+tensively capturing information from the environment. Re-
+cent years observe a progress in using visual representations
+to capture the speciﬁcs of a problem (Asai and Fukunaga
+2017). Yet, there is still a big gap between the length of
+optimal plans and the plans found by planners using learnt
+heuristic functions.
+A signiﬁcant amount of importance is given to developing
+deep networks that are able to learn strong heuristics (Ernan-
+des and Gori 2004) and policies (Torrey et al. 2006). This is
+particularly common in Reinforcement Learning which uses
+positive and negative feedback to learn the correct sequence
+of next actions. In learning for planning, there is no such pro-
+vision; instead, it relies heavily on either hand-coded logical
+problem representations (Yoon, Fern, and Givan 2012) or
+deep convolution neural networks (Groshev et al. 2017) that
+imitate an expert. While there exists successful approaches
+in training neural networks to learn heuristic estimates of
+various problem domains (Arfaee, Zilles, and Holte 2011;
+Virseda, Borrajo, and Alc´azar 2013; Groshev et al. 2017),
+designing a meaningful neural network architecture to ex-
+tract the relevant information from the data set is still an
+open-ended problem.
+This work extends the work by Schaal (1999) and Gro-
+shev et al. (2017) by addressing limitations of convolutional
+neural network and by using imitation and curriculum learn-
+ing to train from plans of more difﬁcult problem instances
+for hard planning domains. Speciﬁcally, we propose to use
+self-attention and position encoding (Vaswani et al. 2017),
+as we believe a strong heuristic function needs to relate ”dis-
+tant” parts of the state space.
+In our default experimental settings, neural networks
+(NNs) realizing heuristic functions are trained on plans of
+small problem instances created by classical planners. While
+this allows us to generalize across more difﬁcult instances
+(some of which are still solvable by classical planners) such
+that we can measure distances to optimal plan lengths, they
+do not achieve the best results for two reasons. First, even
+though the generalization of A*-NN is surprisingly good as
+will be seen below, there is still a scope of large-scale im-
+provement on previously unseen, larger and more complex
+environments. Second, classical domain independent plan-
+ners can solve only small problem instances anyway, which
+means that obtaining plans from large ones is difﬁcult. We
+demonstrate that this problem can be partially mitigated by
+curriculum learning, where the NN is retrained / ﬁne-tuned
+using plans from problems it has previously solved.
+The proposed approach is compared to state-of-the-art
+domain-independent planners, namely SymBA*(Torralba
+et al. 2014), Lama (Richter and Westphal 2010), and Mer-
+cury (Katz and Hoffmann 2014) and to currently best com-
+bination of A* and CNNs (Groshev et al. 2017) on three grid
+domains: (1) Sokoban where each maze consists of walls,
+empty spaces, boxes, targets and an agent; the goal is to push
+the boxes to target locations; the boxes can only be pushed
+and not pulled in the game; (2) Maze-with-Teleports where
+the goal for an agent is to reach the goal position via in-
+terconnected teleports; (3) Floor-Tile where the tiles in a
+given maze are to be colored alternatively by agents (in our
+case, two agents) that are assigned a particular color each.
+At no stage can an agent step on a tile that has been colored.
+The approach is domain-independent and only requires the
+arXiv:2112.01918v1  [cs.AI]  3 Dec 2021
+
+
+selection of propositions in the PDDL ﬁle for spanning the
+underlying grid and the objects moving on it. It uses either
+policy or heuristic value heads.
+We have chosen these domains because (1) all can be eas-
+ily translated into an image based representation on which
+we can apply the convolution operation;1 (2) Sokoban is
+PSPACE-complete (Culberson 1999) and known to be a
+challenging problem in Deep Learning for Planning (Fern,
+Khardon, and Tadepalli 2011); therefore, an improvement
+in Sokoban’s policy and heuristic learning implies success
+in other two dimensional planning domains; (3) Maze-with-
+Teleports have non-local actions as the maze agent is being
+teleported to different parts of the maze via teleports; (4)
+Floor-Tile is NP-Complete and allows easy generation of
+mazes of increasing difﬁculty, which makes it a great choice
+of domain for improving the learnt heuristics via curriculum
+learning (Bengio et al. 2009).
+The paper is organised as follows. We ﬁrst discussed ex-
+isting relevant research that has been carried out in deep
+learning for planning, especially in image based games.
+Next, we explore the formal basics of classical planning.
+Then, we highlight the shortcomings of a prior state of the
+art and propose a solution that addresses some of these
+shortcomings. Here, we introduce the basics of the attention
+mechanism from NLP and explain the role of positional en-
+coding in learning distances. Then, the proposed networks
+are compared to other state of the art methods that attempt
+to solve Sokoban, Floor-Tile and Maze-with-Teleports. Fi-
+nally, we conclude with an overall synopsis of our work and
+lay the ground for future work.
+Related Work
+The implementation of neural networks (NN) in learning
+policies and heuristics for deducing strategic positions or
+moves in various game domains has been studied exten-
+sively in the past. In Chess (Thrun 1994), NNs have been
+used to evaluate chess board functions from the outcome of
+various games. A combination of supervised learning and re-
+inforcement learning has been implemented in games such
+as Go (Silver et al. 2017), which uses value networks to eval-
+uate board positions and policy networks that choose succes-
+sive actions. In Backgammon (Tesauro 2002), temporal dif-
+ference learning was employed to train networks from mil-
+lions of gameplay. Even single agent games such as Sokoban
+(Racani`ere et al. 2017) and Rubik’s cube (Agostinelli et al.
+2019) use NNs to solve the respective puzzles. The relative
+success of NNs in reinforcement learning has led researchers
+to believe that a similar success may be achieved in learning
+heuristic functions for various classical planning domains.
+Fern, Khardon, and Tadepalli (2011) presented the earliest
+known work that combines planning and learning and con-
+cludes that the performance of NNs is promising in learn-
+ing heuristic functions. The work of (Virseda, Borrajo, and
+Alc´azar 2013) attempts to combine classical planning and
+deep learning by modifying costs and learning an improved
+1If the domain can be described by graph, we can replace image
+convolution by graph-convolution, though we do expect the exper-
+imental results on these domains to exhibit very different behavior.
+heuristic function that generates good quality plans. Arfaee,
+Zilles, and Holte (2011) generated strong heuristics by re-
+peatedly training on a set of weak heuristics by the boot-
+strapping procedure which are then used inside a classical
+planner. Neural search policies (Gomoluch et al. 2020) rely
+on parameter learning to generate heuristics during the ac-
+tual search process. The learning procedure in (Srivastava,
+Immerman, and Zilberstein 2011) leads to generalizations
+of classical plans by identifying landmark actions that may
+be repeatedly applied during learning. Delphi applies deep
+learning on performance proﬁle graphs to choose the cost-
+optimal planner in a portfolio (Sievers et al. 2019)
+Asai and Fukunaga (2017) used classical planning to gen-
+erate data and designs in an architecture that returns a vi-
+sualised plan execution. In (Groshev et al. 2017)’s work,
+the training samples were generated by classical planning,
+and imitation learning (Schaal 1999) was performed on this
+data set for policy and heuristic learning. Unlike Fikes and
+Nilsson (1971) and Shavlik (1989) that used hand-coded do-
+mains to represent problems, Asai and Fukunaga (2017) and
+Groshev et al. (2017) learned useful information from the
+input data through image-based state descriptions.
+Our approach signiﬁcantly differs from prior work in
+planning and learning: (1) we do not require any pre-
+designed model of the problem domain or the state transi-
+tion system; instead our model learns primarily from opti-
+mal plans; (2) our model uses attention mechanism with po-
+sitional encoding designed to learn distances in the heuristic
+network; this generates near optimal solutions for complex
+problem instances where other techniques often fail.
+Classical Planning
+We construct our problem domains in a classical setting, i.e.
+fully observable and deterministic.
+In classical planning, a STRIPS (Fikes and Nilsson 1971)
+planning task is deﬁned by a tuple Π = ⟨F, A, I, G⟩. F de-
+notes a set of facts which can hold in the environment (for
+instance, in Sokoban, a particular box at a particular position
+is a fact). A state s of the environment is deﬁned as a set of
+facts holding in that particular s, i.e. s ⊆F. The set of all
+states is, therefore, deﬁned as all possible subsets of F as
+S = 2F . I ∈S is the initial state of the problem and G ⊆F
+is a goal condition comprising facts which has to hold in a
+goal state. An action a, if applicable and applied, transforms
+a state s into a successor state s′ denoted as a(s) = s′ (if
+the action is not applicable, we assume it returns a distinct
+failure value a(s) = ⊥). All actions of the problem are con-
+tained in the action set A, i.e. a ∈A. The sets S and A deﬁne
+the state-action transition system.
+Let π = (a1, a2, . . . , al), we call π a plan of length l
+solving a planning task Π iff al(. . . a2(a1(I)) . . .) ⊇G. We
+assume a unit cost for all actions, therefore the plan length
+and plan cost are equal. Moreover, let πs denote a plan from
+a state s, not I. An optimal solution (plan) is deﬁned as a
+minimal length solution of a problem Π and is denoted as
+π∗together with its length l∗= |π∗|.
+A heuristic function h is deﬁned as h : S →R≥0 and
+provides an approximation of the optimal plan length from
+
+
+a state s to a goal state sg ⊇G, formally h(s) ≈l∗, where
+l∗= |π∗
+s|.
+In our experiments, we choose domains encoded in PDDL
+(Fox and Long 2003), where a planning problem is com-
+pactly represented in a lifted form based on predicates and
+operators. This representation is grounded into a STRIPS
+planning task Π, which is subsequently solved by the plan-
+ner using a heuristic search navigating in the state-action
+transition system graph and resulting in a solution plan π.
+Planner’s Architecture
+To learn a heuristic function for a planning domain that es-
+timates the cost-to-go in a current state is one of the holy
+grails in AI (Edelkamp and Schr¨odl 2012; Mostow and
+Prieditis 1989).
+In our approach we combine a domain-independent plan-
+ner with a trained neural networks heuristic for its improved
+guidance during the overall search. This way we are bridging
+symbolic and sub-symbolic reasoning, given that neural net-
+works are data-driven, and task planning requires symbolic
+reasoning in some form of logical calculus.
+To bridge this gap, we highlight that any (deterministic)
+plan is a sequence of actions, but also on states. Given the
+initial state I, each partial plan π = (a1, a2, . . . , ak), k < l
+induces a sequence of states (s0 = I, s1, s2, . . . , sk) with
+sk = ak(. . . a2(a1(I)). Extracting the state sequence was
+not difﬁcult to program, on could also use off-the-shelf tools
+like VAL (Howey, Long, and Fox 2004).
+That a state is propositional is not a limitation to the ap-
+proach. We might also uses ﬁnite-domain variables as in
+SAS+ (B¨ackstr¨om and Nebel 1995), or include real-valued
+variables for metric planning (Fox and Long 2003).
+Any encoded state is an input for the network. In our set-
+ting we use a one-hot bitvector encoding of the propositions.
+The output of the network is the heuristic value called value
+head, in some cases, together with a distribution of action to
+take, called policy head. We prefer optimal plans for select-
+ing training instances for the neural network, which might
+be generated by any optimal planner. More precisely, given
+the plans in the training set, with imitation learning we gen-
+erate pairs (si, δ(si)), where δ is cost of an optimal plan
+from si to the goal. For the sake of simplicity, δ(si) is the
+distance l −i of the state si to the goal sl in the optimal
+plan (s0 = I, s1, s2, . . . , si, . . . , sl). Evaluating the network
+for a given state, directly serves as estimator in our heuris-
+tic search planner. With curriculum learning we also include
+newly found close-to-optimal plans to retran the NN learner.
+In some cases we will also take pairs of (si−1, ai) to
+train the network for its policy head. Since our aim is close-
+to-optimal plans, as the search algorithm for exploring the
+planning state space, we employed A* (Hart, Nilsson, and
+Raphael 1968). For training the network we run the known
+backpropagation algorithm on input batches together with
+stochastic gradient decent (Bottou and Bousquet 2007) to
+minimize the network error, that is computed with a sim-
+ple loss function applied to the predicted and real value.
+Once trained, the heuristic estimate can be extracted very
+efﬁciently for each state from the value head. In some cases
+action selection can be based on the policy head.
+As we use optimal plans, we train the perfect heuristic
+estimate, but even for considerably good plans, a goal esti-
+mate can be deﬁned on other plans that have been generate.
+All options that have been suggested also work for solutions
+of simpliﬁed planning task, such as abstraction, relaxation
+can be used to generate a set of plans from which we can
+extract distances. While we assume to be able to identify the
+propositions that generate an underlying grid, we emphasize
+that the above architecture is general and could be applied
+to any state/action pairs extracted from the selection of good
+or optimal plans. We take a rather generic network model,
+but with key ingredients of position attention convolution,
+trained with imitation and curriculum learning.
+Learning the Heuristic
+This section describes the proposed neural network for plan-
+ning in maze-like PDDL domains. But before, we introduce
+the notation and brieﬂy discuss the state-of-the-art along
+with the proposed modiﬁcation. In the end, we discuss the
+concrete architecture we used for all the benchmark domains
+(Sokoban, Floor-Tile and Maze-with-Teleports). We extract
+the grid layout automatically, but for the time being, we as-
+sume to have the grid dimensions h and w available to deﬁne
+the network.
+Formal notations for the proposed neural networks
+The input to the neural network is denoted as⃗x ∈Rh,w,d0,
+where h and w is the height and width of the maze respec-
+tively, and d0 varies with the number of channels as ex-
+plained above. Intermediate outputs are denoted by⃗zi =
+Li(⃗zi−1), where L is some neural network layer (convolu-
+tion C, attention A, or position encoding E) and for the sake
+of convenience, we set⃗z0 =⃗x. All⃗z· are three dimensional
+tensors, i.e.⃗zi ∈Rh,w,di. Notice that all intermediate out-
+puts⃗zi have the same width and height as the maze (ensured
+by padding), while the third dimension which is the number
+of output ﬁlter(s) differs. Value⃗zi
+u,v denotes a vector cre-
+ated from⃗zi as (⃗zi
+u,v,1,⃗zi
+u,v,2, . . . ,⃗zi
+u,v,di). Below, this vec-
+tor will be called a hidden vector at position (u, v) and can
+be seen as some description of the properties of this position.
+The proposed neural network
+The best published NN implementing a heuristic function
+for Sokoban was proposed in (Groshev et al. 2017). The net-
+work’s shape resembled letter Y, as it has two heads, and it
+contains only convolution layers. The ﬁrst seven convolution
+layers were shared (we call them pre-conv layer abbreviat-
+ing preprocessing-convolution). Then, the network splits to
+yield two sets of outputs: (i) the estimate of the heuristic
+function and (ii) the policy. After the split, each path to the
+output contained seven convolution layers followed by two
+dense layers. Although the heuristic function should be sufﬁ-
+cient for planning purposes, (Groshev et al. 2017) states that
+training the network to estimate the policy helps in comput-
+ing a better heuristic function.
+Our criticism of the architecture is that convolution is
+strictly a local operator. This means that the hidden vec-
+tor zi+1
+u,v,· is calculated from hidden vectors {zi
+u′,v′,·|u′ ∈
+
+
+s
+sg
++
+P1
+P2
+P3
+Σ
+Σ
+Σ
+Pn
+C1 A1
+block1
+E1
+C1 A1
+block1
+E1
+C2 A2
+block2
+E2
+C2 A2
+block2
+E2
+C3 A3
+block3
+E3
+C4 A4
+block4
+E4
+C3 A3
+block3
+E3
+C4 A4
+block4
+E4
+1*1 win
+FC1
+FC2-A
+1*1 win
+FC1
+FC2-H
+Figure 1: The structure of our neural network. A current state s and a goal state sg are fed into a variable number of pre-
+processing convolution (pre-conv) layers, P1..Pn. All convolution ﬁlters in the pre-conv layers are of the same shape 3 × 3
+with 64 ﬁlters. Then the network splits into two branches and each branch has four blocks, each block containing a convolution
+layer (C) followed by a multi head attention operation (A) and a positional encoding layer (E). There are 180 ﬁlters in each of
+these convolution layers in the blocks. At all stages, the original dimension of the input is preserved. The output from block 4
+is ﬂattened by applying a 1 × 1 window around the agent’s location before being passed onto the fully connected layers (FC1)
+and the action prediction output (FC2-A) with 8 actions (move: up, down, left, right and push: up, down, left, right) and a single
+output for heuristic prediction (FC2-H). For the sake of picture clarity, skip connections are not shown in the neural network.
+{u −1, u, u + 1}, v′ ∈{v −1, v, v + 1}}, where we as-
+sume convolution to have dimension 3 × 3 as in (Groshev
+et al. 2017). This limits the neural network in synthesizing
+information from two distant parts of the maze. Yet, we be-
+lieve that any good heuristic requires such features, since
+Sokoban, Floor-Tile and Maze-with-Teleports are non-local
+problems.
+Convolution, Attention, and Position Encoding
+Therefore, we turn our attention to self-attention mecha-
+nism, (Vaswani et al. 2017) ﬁrst introduced in NLP, as it
+allows to relate distant parts of input together. The output
+of self-attention from zi is calculated in the following man-
+ner. At ﬁrst, the output from previous layer zi is divided into
+three tensors of the same height, width, and depth, i.e.⃗
+k = zi
+·,·,j
+j ∈
+
+1, . . . , di
+3
+⃗
+q = zi
+·,·,j
+j ∈
+di
+3 + 1, . . . , 2di
+3
+⃗
+v = zi
+·,·,j
+j ∈
+2di
+3 + 1, . . . , di
+
+then, the output zi+1 at position (u, v) is calculated as⃗
+zi+1
+u,v =
+h,w
+X
+r=1,s=1
+exp(⃗qu,v ·⃗kr,s)
+Ph,w
+r′=1,s′=1 exp(⃗qu,v ·⃗kr′,s′)
+· vr,s
+(1)
+Self attention, therefore, makes a hidden vector zj+1
+u,v de-
+pendent on all hidden vectors {zj
+r,s|r ∈{1, . . . , h}, s ∈
+{1, . . . , w}}, which is aligned with our intention. The self-
+attention also preserves the size of the maze. A multi-head
+variant of self-attention means that zi is split along the third
+dimension in multiple⃗ks,⃗qs, and⃗vs. The weighted sum is
+performed independent of each triple (k, q, z) and the result-
+ing tensors are concatenated along the third dimension. We
+refer the reader for further details to (Vaswani et al. 2017).
+While self-attention captures information from different
+parts of the maze, it does not have a sense of a distance.
+This implies that it cannot distinguish close and far neigh-
+borhoods. To address this issue, we add positional encoding,
+which augments the tensor zi ∈Rh,w,di with another ten-
+sor⃗e ∈Rw,h,de containing outputs of harmonic functions
+along the third dimension. Harmonic functions were chosen,
+because of their linear composability properties (Vaswani
+et al. 2017). 2 Because our mazes are two dimensional, the
+distances are split up into row and column distances where
+p, q ∈[0, di/4) assigns positions with sine values at even
+indexes and cosine values at odd indexes. The positional en-
+coding tensor⃗e ∈Rw,h,de has elements equal to⃗
+eu,v,2p = sin (θ(p)u)⃗
+eu,v,2p+1 = cos (θ(p)u)⃗
+eu,v,2q+ de
+2 = sin (θ(q)v)⃗
+eu,v,2q+1+ de
+2 = cos (θ(q)v) ,
+where θ(p) =
+1
+10000
+4p
+de . On appending this tensor to the input
+zi along the third dimension, we get
+zi+1
+u,v,· = [zi
+u,v,·, eu,v,·].
+2The composability of harmonic functions is based on
+the following property cos(θ1 + θ2)
+=
+cos(θ1) cos(θ2) −
+sin(θ1) sin(θ2) = (cos(θ1), sin(θ1)) · (sin(θ1), sin(θ2)), where
+· denotes the inner product of two vectors, which appears in Equa-
+tion (1) in inner product of⃗quv and⃗krs.
+
+
+With respect to the above, we propose using blocks com-
+bining Convolution, Attention, and Position encoding, in
+this order (we call them CoAt blocks), as a part of our NN ar-
+chitecture. The CoAt blocks can therefore relate hidden vec-
+tors from a local neighborhood through convolution, from a
+distant part of the maze through attention, and calculate dis-
+tances between them through position encoding, as has been
+explained in (Tsai et al. 2019). Since CoAt blocks preserve
+the size of the maze,3 they are ”scale-free” in the sense that
+they can be used on a maze of any size. Yet, we need to pro-
+vide an output of a ﬁxed dimension to estimate the heuristic
+function and the policy. The outputs of the last CoAt blocks
+are ﬂattened by a 1 × 1 window, centered around the agent’s
+location and fed to a fully-connected layer and an output
+head (see Figure 1). For example, assuming zL to be the
+very last layer, and agent is on position u, v, the vector zu,v,·
+is of constant dimension equal to the number of ﬁlters and is
+used as an input to the fully-connected layers providing the
+desired outputs (heuristic values, policy).
+Next, we describe the implementation of CoAt blocks in
+the network architectures we used for all the domains. The
+network is shown in Figure 1 and its structure is similar to
+that of (Groshev et al. 2017). It uses preprocessing convo-
+lution layers P1, . . . , Pn, n = 7, (further called pre-conv)
+containing 64 ﬁlters where each convolution ﬁlter is of the
+shape 3 × 3; after the network splits into two heads, it uses
+four CoAt blocks in each head instead of seven convolution
+layers used in (Groshev et al. 2017). The convolution layers
+in the CoAt blocks contain 180 ﬁlters of size 3 × 3 each.
+The attention block uses two attention heads. Each head is
+ﬁnished by two fully-connected layers with reduction to a
+ﬁxed dimension as described above.
+The input to the network is the current state of the game
+and a goal state, s and sg, respectively. Each state is repre-
+sented by a tensor of dimensions equal to width and height
+(ﬁxed to 10 × 10 for Sokoban, to 15 × 15 for Maze-with-
+Teleorts, and to 4 × 4 for Floor-Tile) of the maze × objects.
+The objects stands for one-hot encoding of the object states
+on a grid position (e.g., for Sokoban, we have wall, empty,
+box, agent and box target, for Maze-with-Teleport agent,
+wall, ﬂoor, goal and teleports 1-4, and for Floor-Tile agent1,
+agent2, black and white), which we could derive automati-
+cally from the grounded representation. An important design
+detail is that all convolutions are padded, which means that
+the output has the same dimension as the input, and they fea-
+ture skip-connections4 alleviating a possible vanishing gra-
+dient (He et al. 2016).
+We have implemented two different versions of the net-
+work according to their heads: dual-head with estimating
+policy and heuristic value and single-head with just estimat-
+ing heuristic value.. In Maze-with-Teleports and Sokoban
+the dual-head representation performed best, while the best
+network for Floor-tile uses just a single head estimating
+heuristic value (which means there is no separate head es-
+timating policy). The presence of two agents would make it
+3Convolution layers are appropriately padded to preserve sizes.
+4A layer c augmented by a skip connection calculates the output
+as x + c(x) instead of the usual x.
+difﬁcult to design a policy network in a domain-independent
+setting and would result in a much larger network, which is
+inconvenient, time-consuming and computationally expen-
+sive. The other implementation details of the Floor-Tile net-
+work are the same as the heuristic networks of Sokoban and
+Maze-with-Teleports (see Figure 1).
+Imitation and Curriculum Learning
+Imitation learning (Pomerleau 1989) is a framework for
+learning a behavior policy from demonstrations. We present
+demonstrations in the form of optimal state-action plans,
+with each pair indicating the action to take at the state be-
+ing visited. Generally, imitation learning is useful when it
+is easier for an expert to demonstrate the desired behaviour
+rather than to specify a reward function which would gener-
+ate the same behaviour or to directly learn the policy
+A curriculum refers to an interactive system of instruction
+and learning with speciﬁc goals, contents, strategies, mea-
+surement, and resources. The desired outcome of curriculum
+is a successful transfer and/or development of knowledge,
+skills, and attitudes. In the context of AI, curriculum learn-
+ing is a way of training a machine learning model where
+more difﬁcult aspects of a problem are gradually introduced
+in such a way that the model is always optimally challenged.
+Curriculum learning (Elman 1993) describes a type of
+learning in which we ﬁrst start out with only easy exam-
+ples of a task and then gradually increase the task difﬁculty.
+Humans have been learning according to this principle ever
+since, but in the common learning setting, we use neural net-
+works and instead let them train on the whole data set.
+Curriculum learning strategies have been successfully
+employed in different areas of machine learning, for a wider
+range of tasks (Bengio et al. 2009). However, the necessity
+of ﬁnding a way to rank the samples from easy to hard, as
+well as the right pacing function for introducing more difﬁ-
+cult data can limit the usage of the curriculum approaches.
+In order to extend the training set without providing any
+additional plans that the neural network would not be able
+to solve, we turn our attention to a form of curriculum learn-
+ing for neural networks. This approach that partially circum-
+vents this problem by re-training from unseen test samples
+of increasing complexity.
+In our case, curriculum learning is used to develop scale-
+free heuristic values for a wider selection of AI planning
+problems. Speciﬁcally, in our experiments we have quickly
+reached the capability of planners at larger sizes. To further
+improve our heuristic function to scale to bigger problems,
+we re-train our network by extending the training set to in-
+clude harder problem instances.
+We ﬁrst train the heuristic network on a training set con-
+taining easy problem instances quickly solvable by an op-
+timal, then use this NN as a heuristic function inside A*,
+and then extend the training set by more difﬁcult problem
+instance the NN has solved and retrain the NN. Thus, we
+perform a bootstrap, where the NN is gradually trained on
+more difﬁcult problem instances.
+This way, curriculum learning plays an important role in
+improving the performance of the heuristic network on not
+
+
+just the trained dimensions but also on higher dimensions
+by extrapolation. For curriculum learning, the learning rate
+is reduced in successive training iterations.
+Experimental Results
+This section brieﬂy describes the details of training and
+presents the experimental results on the compared PDDL
+benchmark domains: Sokoban, Maze-with-Teleports, and
+Floor-Tile. A* algorithms with learnt heuristic functions re-
+alized by the proposed convolution-attention-position net-
+works (further denoted as A*-CoAt) are compared to A*
+with learned heuristic function realized by convolutional
+networks as proposed in (Groshev et al. 2017) (denoted
+as A*-CNN), and to the state of the art planners LAMA
+(Richter and Westphal 2010), SymBA* (Torralba et al.
+2014), and Mercury (Katz and Hoffmann 2014). We em-
+phasize that A*-CNN and A*-CoAt uses vanilla A* search
+algorithm (Hart, Nilsson, and Raphael 1968) without any
+additional tweaks. In case of Sokoban, we also compare
+our planner to a solution based on Reinforcement Learn-
+ing (Racani`ere et al. 2017).
+On all the compared domains, we analyse the strength of
+our learnt heuristic and generalization property by solving
+grid mazes of increasing complexities, approximated by the
+number of boxes in Sokoban, grids of higher dimensions in
+Floor-Tile and Maze-with-Teleports, and rotated mazes in
+Maze-with-Teleports.
+Training
+Sokoban:
+The policy-heuristic network we wish to learn
+accepts a state of a game, s as an input and returns the next
+action, a, and a heuristic value, h(s), as an output. The train-
+ing set Xtrn = {(si, ai, |π∗(si)|)}n
+i=1. therefore consists of
+n ≈106 of these triples, i.e. Xtrn = {(si, ai, |π∗(si)|)}n
+i=1.
+The triples in the training set were created by randomly
+generating 40000 Sokoban instances using gym-sokoban
+(Schrader 2018). Each instance has dimension 10×10 and it
+always contains only 3 boxes (and an agent). SymBA* (Tor-
+ralba et al. 2014), a planner that generates optimal solutions
+was used to generate optimal plans π∗for each of these n
+Sokoban instances. In each plan trajectory, the distance from
+a current state to the goal state is learned as the heuristic
+value, h(si). Thus, the collection of all state-action-heuristic
+triples form the training set Xtrn.
+The Sokoban mazes in the training set were created with
+only three boxes. This means that in the testing set, when
+we are solving instances with more boxes, we are evaluat-
+ing its extrapolation to more complex unseen environments,
+which cannot be solved by naive memorisation. However,
+our limited training set (containing 3 boxes) hinders the full
+potential of the neural network. With curriculum learning,
+we ﬁne-tune the neural network using a training set contain-
+ing Sokoban mazes of dimensions 10 × 10 with 3,4 5 6 and
+7 boxes that have been already solved by the A*-NN with
+the corresponding architecture. This, therefore improves the
+heuristic function without the need to train the network from
+scratch and, more importantly, without the need to use other
+planners to create new plans.
+Maze-with-Teleports:
+The policy and heuristic network
+returns an action a, and a heuristic value, h(s) as outputs.
+The training set Xtrnconsists of ≈10000 maze problems of
+dimension 15 × 15. The mazes in Xtrnwere generated us-
+ing a maze creator5 with slight modiﬁcations. Random walls
+were broken and a total of 4 pairs of teleports that connect
+different parts of the maze were created inside each training
+sample. As in the case of Sokoban, SymBA* (Torralba et al.
+2014) was used to generate optimal solutions for the prob-
+lems in the training set. The mazes for training were gen-
+erated such that the initial position of the agent was in the
+upper-left corner and the goal was in the lower-right corner.
+Later,in our evaluations, we rotate each maze to investigate
+whether the heuristic function is rotation independent.
+Floor-Tile:
+The Floor-Tile heuristic network accepts a
+state of a game, s as an input and returns a heuristic value,
+h(s) as an output. The training set initially consists of ≈
+10000 Floor-Tile instances of dimension 4×4 with 2 agents.
+In our version of Floor-Tile, we assign white to the ﬁrst agent
+and black to the second agent. The colors assigned to the
+agents are ﬁxed and cannot be ﬂipped at any stage of the
+game. SymBA* (Torralba et al. 2014) was used to generate
+optimal solutions for the Floor-Tile domain.
+Since it is easy to generate Floor-Tile instances of increas-
+ing complexity (by increasing the size and varying the initial
+positions of the two agents), we experiment again with cur-
+riculum learning (Bengio et al. 2009) to develop scale-free
+heuristic values. Speciﬁcally, in our experiments we have
+quickly reached the capability of planners at size 6×5 (more
+on this below). To further improve our heuristic function to
+scale to bigger problems, we re-train our network by extend-
+ing the training set to include harder problem instances (of
+size 4 × 4, 5 × 5, 6 × 5 and 6 × 6) the heuristic network has
+already solved.
+All neural networks were trained by the Adam optimiser
+(Kingma and Ba 2014) with a default learning rate of 0.001
+for optimisation. In Sokoban and Maze-with-Teleports, the
+categorical cross entropy loss function was used to minimise
+the loss in the action prediction network and the mean abso-
+lute error loss was the loss function in the heuristic network.
+In Floor-Tile, the mean absolute loss was used in the heuris-
+tic network. For curriculum learning, domain, the learning
+rate was reduced to ≈1 × 10−4 in successive training it-
+erations. Our experiments were conducted in Keras-2.4.3
+framework with Tensorﬂow-2.3.1 as the backend. We used a
+NVIDIA Tesla GPU model V100-SXM2-32GB for training
+the neural networks.
+Comparison to prior State-of-the-Art
+Sokoban:
+The evaluation set consists of 2000 mazes of
+dimensions 10 × 10 with 3, 4, 5, 6 or 7 boxes (recall that
+the training set contain mazes with only 3 boxes). Unless
+said otherwise, the quality of heuristics is measured by the
+relative number of solved mazes, which is also known as
+coverage. Table 1 shows the coverage of compared plan-
+ners, where all planners were given 10 minutes to solve each
+5https://github.com/ravenkls/Maze-Generator-and-Solver
+
+
+normal
+curr.
+#b
+SBA* Mrcy LAMA
+CNN CoAt
+CoAt
+3
+1
+1
+1
+0.92
+0.94
+0.95
+4
+1
+1
+1
+0.87
+0.91
+0.93
+5
+0.95
+0.75
+0.89
+0.83
+0.89
+0.91
+6
+0.69
+0.60
+0.65
+0.69
+0.76
+0.85
+7
+0.45
+0.24
+0.32
+0.58
+0.63
+0.80
+Table 1: Fraction of solved Sokoban mazes (coverage,
+higher is better) of SymBA* (SBA*), Mercury (Mrcy),
+LAMA, A*-CNN (caption CNN) and the proposed A*-
+CoAt (caption CoAt). A*-CNN and A*-CoAt (with caption
+normal) use networks trained on mazes with three bozes;
+A*-CoAt (with caption curr.) used curriculum learning.
+#b
+SBA*
+Mrcy
+CNN
+CoAt
+3
+21.40
+21.70
+24.20
+22.20
+4
+34.00
+34.33
+40.53
+36.00
+5
+38.82
+42.83
+45.52
+39.11
+6
+41.11
+-
+51.00
+42.11
+7
+-
+-
+54.33
+44.17
+Table 2: Average plan length of SymBA*, Mercury, A* -
+CNN (Groshev et al. 2017) (denoted as CNN) and that with
+the A*-CoAt. For clarity, we do not show results of LAMA,
+as it is performs exactly like SymBA* for 3 and 4 boxes.
+Column captioned #b indicates the number of boxes in dif-
+ferent categories.
+Sokoban instance. We see that the classical planners solved
+all test mazes with three and four boxes but as the num-
+ber of boxes increase, the A*-NN starts to have an edge.
+On problem instances with six and seven boxes, A*-CoAt
+achieved the best performance, even though it was trained
+only on mazes with three boxes. The same table shows, that
+A*-CoAt offers better coverage than A*-CNN, and we can
+also observe that curriculum learning (see column captioned
+curr.) signiﬁcantly improves the coverage.
+We attribute SymBA*’s poor performance to its feature
+of always returning optimal plans while we are content with
+sub-optimal plans. LAMA had even lower success in solv-
+ing more complicated mazes than SymBA*, despite having
+the option to output sub-optimal plans. To conclude, with an
+increase in the complexity of the mazes, the neural networks
+outshine the classical planners which makes them a useful
+alternative in the Sokoban domain.
+The average plan length, shown in Table 2, reveals that
+the heuristic learnt by the CoAt network is strong, as the av-
+erage length of the plans is close to that of SymBA* which
+always returns optimal solutions. We conclude that the pro-
+posed CoAt network delivers a strong heuristic outside its
+training, much better than that of the CNN (Groshev et al.
+2017) network and the planners (for mazes with more than
+6 boxes).
+CoAt network is also on par with Deep Mind’s imple-
+mentation of Reinforcement Learning (DM-RL) in solving
+Sokoban (Racani`ere et al. 2017). Instead of re-implementing
+DM-RL by ourselves, we report the results on their test set6
+containing 10×10 Sokoban mazes with 4 boxes. While DM-
+RL had a coverage of 90%, our A*-CoAt (trained on mazes
+with three boxes) has a coverage 87%, and our A*-CoAt
+with curriculum learning has a coverage of 98.29% 7. Taking
+into account that DM-RL’s training set contained 1010 state-
+action pairs from mazes with 4 boxes, A*-CoAt achieves
+higher coverage using several orders of magnitude smaller
+training set.
+Maze-with-Teleports:
+The evaluation set contains a total
+of 2100 training samples of dimensions 15 × 15, 20 × 20,
+30×30, 40×40, 50×50, 55×55 and 60×60. Each maze in
+the evaluation set contains 4 pairs of teleports that connects
+different parts of the maze. From Table 3, we see that the
+performance of A*-CNN and A*-CoAt (initially trained on
+15 × 15 mazes) is the same as SymBA*8 for dimensions up
+to 40 × 40 and is consistently better for problem instances
+of size 50 × 50, 55 × 55 and 60 × 60.
+All ”No Rotation” mazes were created such that the
+agents start in the top left corner and the goal is in the bot-
+tom right corner. This allows us to study to which extent the
+learnt heuristic is rotation-independent (domain independent
+planners are rotation invariant by default). The same Table
+therefore reports fraction of solved mazes that have been ro-
+tated by 90◦, 180◦and 270◦. The results clearly show that
+the proposed heuristic function featuring CoAt blocks gener-
+alizes better than the one utilizing only convolutions, as the
+solved rotated instances of A*-CoAt network are compara-
+ble to the non-rotated case. Rotating mazes have no effect
+on SymBA* (the complexity is solely dependent on the grid
+size) and the coverage rate stays unaffected.
+From the results in Table 3, it can be concluded that
+the CoAt blocks (1) improve detection of non-local ac-
+tions (teleports) compared to state-of-the-art planners such
+as SymBA*; (2) learn ‘useful’ information from the mazes
+which makes the network robust to rotations; (3) learn to
+approximate distances inside the mazes which results in a
+scale-free heuristic function.
+Floor-Tile:
+The evaluation set consists of 400 problem in-
+stances of sizes 5 × 5, 6 × 5, 6 × 6 and 7 × 7. Similarly to
+Sokoban, we ﬁrst trained the CNN and CoAt NNs on small
+problem instances of size 4 × 4 (see columns denoted as
+”normal”) and extrapolated it to instances of higher dimen-
+sions outside of the training set. Table 4 shows the cover-
+age of SymBA* and the heuristics learnt by the NNs inside
+A* for different problem instances. The results are similar
+to those we have observed in Sokoban. On smaller problem
+instances, the classical planner SymBA* is better; on larger
+problem instances, the NNs are better. The test set deliber-
+ately includes problem instances of size 6 × 5 to demon-
+strate the exact break point up to which SymBA* is able to
+generate solutions. Beyond grid size 6 × 5, all state of the
+6Available at https://github.com/deepmind/boxoban-levels.
+7https://github.com/deepmind/boxoban-
+levels/blob/master/unﬁltered/test/000.txt
+8The planners and NNs were given 10 minutes to solve each
+maze instance.
+
+
+No Rotation
+90◦rotation
+180◦rotation
+270◦rotation
+size
+SBA*
+CNN
+CoAt
+CNN
+CoAt
+CNN
+CoAt
+CNN
+CoAt
+15 × 15
+1
+1
+1
+1
+1
+1
+1
+1
+1
+20 × 20
+1
+1
+1
+1
+1
+1
+1
+1
+1
+30 × 30
+1
+1
+1
+1
+1
+1
+1
+1
+1
+40 × 40
+1
+1
+1
+1
+1
+1
+1
+1
+1
+50 × 50
+0.92
+0.94
+1
+0.91
+1
+0.92
+1
+0.91
+1
+55 × 55
+0.55
+0.78
+0.89
+0.71
+0.85
+0.70
+0.87
+0.69
+0.87
+60 × 60
+-
+0.73
+0.76
+0.68
+0.75
+0.66
+0.74
+0.68
+0.75
+Table 3: Fraction of solved mazes with teleports (coverage) of SymBA*, A* algorithm with convolution network (Groshev et al.
+2017) (denoted as CNN) and that with the proposed Convolution-Position-Attention (CoAt) network. Only non-rotated mazes
+(No Rotation) of size 15 × 15 were used to train the heuristic function. On mazes rotated by 90◦, 189◦, 270◦, the heuristic
+function has to extrapolate outside its training set.
+normal
+curr.
+size
+SBA*
+CNN
+CoAt
+CoAt
+4 × 4
+1
+0.92
+0.96
+0.96
+5 × 5
+1
+0.89
+0.93
+0.93
+6 × 5
+1
+0.78
+0.88
+0.91
+6 × 6
+-
+0.54
+0.71
+0.89
+7 × 7
+-
+-
+0.29
+0.76
+Table 4: Fraction of solved Floor-Tile problem instances
+(coverage) of SymBA*, A*-CNN, and the proposed A*-
+CoAt. Fractions in columns captioned “normal” / “curr.” are
+of A* with heuristic functions trained on problem instances
+of size 4×4 / by curriculum training respectively (see details
+in the text).
+art planners fail and the solutions are generated only by the
+NNs. The heuristics generated by the A*-CoAt network can
+be extrapolated to solve 71% of the tiling problems of size
+6 × 6. On further increasing the grid dimension, the cover-
+age of the A*-CoAt decreases to 29% and even lower while
+A*-CNN is unable to generate solutions. The rightmost col-
+umn (see column captioned “curr”) in Table 4 shows an im-
+provement in coverage for dimensions 6 × 6 and 7 × 7 on
+implementing curriculum learning.
+Conclusion and Future Work
+We showed that learning a strong heuristic function for
+PDDL domains with underlying grid structure is possible
+without the need for any speciﬁc domain knowledge. In fact,
+the architecture of the learning approach is general to any
+PDDL-type planning problem, and the learning can be ex-
+ecuted on any vector of propositions, or ﬁnite-domain vari-
+ables as states forming the input to the neural network. Iden-
+tifying some structure in advance is advantageous.
+While the heuristic function can generate sub-optimal
+plans, our experiments suggest that the plan quality is not
+far from the optimum. Moreover, while we have gener-
+ated training data from a classical planner on small prob-
+lem sizes, the proposed architecture is able to generalize and
+successfully solve more difﬁcult problem instances, where it
+surpasses classical domain-independent planners, while im-
+proving on previously known state-of-the-art.
+Our experiments further suggest that the learnt heuristic
+can further improve, if it is retrained / ﬁne-tuned on problem
+instances it has previously solved. This form of curriculum
+learning aids the heuristic function in solving mainly large
+and more complex problem instances that are otherwise not
+solvable by domain independent planners within 10 minutes.
+As future work, our next goal would be to better under-
+stand if the learnt heuristic function is similar to something
+that is already known, or something so novel that it can fur-
+ther enrich the ﬁeld; i.e., what kind of underlying problem
+structure we can learn by which network type best, possibly
+in form of studying generic types (Long and Fox 2000).
+Our experiments with curriculum learning suggest that the
+neural network might boot-strap itself by ﬁrst learning on
+simple trivial examples and gradually solving more difﬁcult
+ones by adding them to the training set. This raises two ques-
+tions, mainly regarding the limit of this process and if the
+gains obtained by using larger networks will vanish.
+We believe that an improvement in the heuristic function
+is tied to the generation of problem instances that inherently
+possess the right level of difﬁculty, by which we mean that
+they have to be just on the edge of solvability, such that
+the plan can be created and added to the training set. We
+are fully aware that the problem instance generation itself is
+a hard problem, but we cannot imagine the above solution
+to be better than specialized domain-dependent Sokoban
+solvers without such a generator (unless the collection of
+all Sokoban mazes posses this property). We also question
+the average estimation error minimized during learning of
+the heuristic function. It might put too much emphasis on
+simple problem instances that are already abundant in the
+training set while neglecting the difﬁcult ones. We wish to
+answer some of the above question in the future in an en-
+deavour to generate strong, scale-free heuristics.
+
+
+References
+Agostinelli, F.; McAleer, S.; Shmakov, A.; and Baldi, P. 2019.
+Solving the Rubik’s cube with deep reinforcement learning and
+search. Nature Machine Intelligence, 1(8): 356–363.
+Arfaee, S. J.; Zilles, S.; and Holte, R. C. 2011. Learning heuristic
+functions for large state spaces. Artiﬁcial Intelligence, 175(16-17):
+2075–2098.
+Asai, M.; and Fukunaga, A. 2017. Classical planning in deep la-
+tent space: Bridging the subsymbolic-symbolic boundary. arXiv
+preprint arXiv:1705.00154.
+B¨ackstr¨om, C.; and Nebel, B. 1995. Complexity Results for SAS+
+Planning. Comput. Intell., 11: 625–656.
+Bengio, Y.; Louradour, J.; Collobert, R.; and Weston, J. 2009. Cur-
+riculum learning. In Proceedings of the 26th annual international
+conference on machine learning, 41–48.
+Bonet, B.; and Geffner, H. 2001. Planning as heuristic search. Ar-
+tiﬁcial Intelligence. 2001 Jun; 129 (1-2): 5-33.
+Bottou, L.; and Bousquet, O. 2007. The Tradeoffs of Large Scale
+Learning. In Platt, J. C.; Koller, D.; Singer, Y.; and Roweis, S. T.,
+eds., NIPS, 161–168.
+Culberson, J. 1999. Sokoban is PSPACE-complete. Proceedings
+of the International Conference on Fun with Algorithms, 65–76.
+Edelkamp, S.; and Schr¨odl, S. 2012. Heuristic Search - Theory and
+Applications. Academic Press.
+Elman, J. L. 1993. Learning and development in neural networks:
+the importance of starting small. Cognition, 48(1): 71–99.
+Ernandes, M.; and Gori, M. 2004.
+Likely-admissible and sub-
+symbolic heuristics. In Proceedings of the 16th European Con-
+ference on Artiﬁcial Intelligence, 613–617. Citeseer.
+Fern, A.; Khardon, R.; and Tadepalli, P. 2011. The ﬁrst learning
+track of the international planning competition. Machine Learning,
+84: 81–107.
+Fikes, R. E.; and Nilsson, N. J. 1971. STRIPS: A new approach to
+the application of theorem proving to problem solving. Artiﬁcial
+intelligence, 2(3-4): 189–208.
+Fox, M.; and Long, D. 2003. PDDL2. 1: An extension to PDDL
+for expressing temporal planning domains.
+Journal of artiﬁcial
+intelligence research, 20: 61–124.
+Gomoluch, P.; Alrajeh, D.; Russo, A.; and Bucchiarone, A. 2020.
+Learning Neural Search Policies for Classical Planning. In Pro-
+ceedings of the International Conference on Automated Planning
+and Scheduling, volume 30, 522–530.
+Groshev, E.; Goldstein, M.; Tamar, A.; Srivastava, S.; and Abbeel,
+P. 2017. Learning generalized reactive policies using deep neural
+networks. arXiv preprint arXiv:1708.07280.
+Hart, P. E.; Nilsson, N. J.; and Raphael, B. 1968. A formal ba-
+sis for the heuristic determination of minimum cost paths. IEEE
+transactions on Systems Science and Cybernetics, 4(2): 100–107.
+He, K.; Zhang, X.; Ren, S.; and Sun, J. 2016. Deep residual learn-
+ing for image recognition. In Proceedings of the IEEE conference
+on computer vision and pattern recognition, 770–778.
+Howey, R.; Long, D.; and Fox, M. 2004. VAL: Automatic Plan
+Validation, Continuous Effects and Mixed Initiative Planning Us-
+ing PDDL. In ICTAI, 294–301. IEEE Computer Society.
+Katz, M.; and Hoffmann, J. 2014. Mercury planner: Pushing the
+limits of partial delete relaxation. IPC 2014 planner abstracts, 43–
+47.
+Kingma, D. P.; and Ba, J. 2014. Adam: A method for stochastic
+optimization. arXiv preprint arXiv:1412.6980.
+Long, D.; and Fox, M. 2000.
+Automatic Synthesis and Use of
+Generic Types in Planning. In AAAI, 196–205. AAAI Press.
+Mostow, J.; and Prieditis, A. 1989. Discovering Admissible Heuris-
+tics by Abstracting and Optimizing: A Transformational Approach.
+In IJCAI.
+Pomerleau, D. A. 1989. Alvinn: An autonomous land vehicle in
+a neural network. In Advances in neural information processing
+systems, 305–313.
+Racani`ere, S.; Weber, T.; Reichert, D.; Buesing, L.; Guez, A.;
+Jimenez Rezende, D.; Puigdom`enech Badia, A.; Vinyals, O.;
+Heess, N.; Li, Y.; et al. 2017. Imagination-augmented agents for
+deep reinforcement learning. Advances in neural information pro-
+cessing systems, 30: 5690–5701.
+Richter, S.; and Westphal, M. 2010. The LAMA planner: Guiding
+cost-based anytime planning with landmarks. Journal of Artiﬁcial
+Intelligence Research, 39: 127–177.
+Schaal, S. 1999. Is imitation learning the route to humanoid robots?
+Trends in cognitive sciences, 3(6): 233–242.
+Schrader, M.-P. B. 2018.
+gym-sokoban.
+https://github.com/
+mpSchrader/gym-sokoban.
+Shavlik, J. W. 1989.
+Acquiring Recursive Concepts with
+Explanation-Based Learning. In IJCAI, 688–693. Citeseer.
+Sievers, S.; Katz, M.; Sohrabi, S.; Samulowitz, H.; and Ferber, P.
+2019. Deep Learning for Cost-Optimal Planning: Task-Dependent
+Planner Selection. In AAAI, 7715–7723. AAAI Press.
+Silver, D.; Schrittwieser, J.; Simonyan, K.; Antonoglou, I.; Huang,
+A.; Guez, A.; Hubert, T.; Baker, L.; Lai, M.; Bolton, A.; et al.
+2017. Mastering the game of go without human knowledge. nature,
+550(7676): 354–359.
+Srivastava, S.; Immerman, N.; and Zilberstein, S. 2011. A new
+representation and associated algorithms for generalized planning.
+Artiﬁcial Intelligence, 175(2): 615–647.
+Tesauro, G. 2002. Programming backgammon using self-teaching
+neural nets. Artiﬁcial Intelligence, 134(1-2): 181–199.
+Thrun, S. 1994. Learning to play the game of chess. Advances in
+neural information processing systems, 7: 1069–1076.
+Torralba, A.; Alc´azar, V.; Borrajo, D.; Kissmann, P.; and Edelkamp,
+S. 2014. SymBA*: A symbolic bidirectional A* planner. In Inter-
+national Planning Competition, 105–108.
+Torrey, L.; Shavlik, J.; Walker, T.; and Maclin, R. 2006. Skill ac-
+quisition via transfer learning and advice taking. In European Con-
+ference on Machine Learning, 425–436. Springer.
+Tsai, Y.-H. H.; Bai, S.; Yamada, M.; Morency, L.-P.; and Salakhut-
+dinov, R. 2019. Transformer Dissection: An Uniﬁed Understanding
+for Transformer’s Attention via the Lens of Kernel. arXiv preprint
+arXiv:1908.11775.
+Vaswani, A.; Shazeer, N.; Parmar, N.; Uszkoreit, J.; Jones, L.;
+Gomez, A. N.; Kaiser, Ł.; and Polosukhin, I. 2017. Attention is
+all you need. Advances in neural information processing systems,
+30: 5998–6008.
+Virseda, J.; Borrajo, D.; and Alc´azar, V. 2013. Learning heuristic
+functions for cost-based planning. Planning and Learning, 6.
+Yoon, S. W.; Fern, A.; and Givan, R. 2012. Inductive policy selec-
+tion for ﬁrst-order MDPs. arXiv preprint arXiv:1301.0614.

@@ -1,0 +1,1999 @@
+Imitating Cost-Constrained Behaviors in Reinforcement Learning
+Qian Shao1, Pradeep Varakantham1, Shih-Fen Cheng1
+1School of Computing and Information Systems
+Singapore Management University
+{qianshao.2020@phdcs., pradeepv@, sfcheng@}smu.edu.sg
+Abstract
+Complex planning and scheduling problems have long been
+solved using various optimization or heuristic approaches. In
+recent years, imitation learning that aims to learn from ex-
+pert demonstrations has been proposed as a viable alterna-
+tive to solving these problems. Generally speaking, imitation
+learning is designed to learn either the reward (or prefer-
+ence) model or directly the behavioral policy by observing
+the behavior of an expert. Existing work in imitation learn-
+ing and inverse reinforcement learning has focused on imi-
+tation primarily in unconstrained settings (e.g., no limit on
+fuel consumed by the vehicle). However, in many real-world
+domains, the behavior of an expert is governed not only by
+reward (or preference) but also by constraints. For instance,
+decisions on self-driving delivery vehicles are dependent not
+only on the route preferences/rewards (depending on past de-
+mand data) but also on the fuel in the vehicle and the time
+available. In such problems, imitation learning is challeng-
+ing as decisions are not only dictated by the reward model
+but are also dependent on a cost-constrained model. In this
+paper, we provide multiple methods that match expert distri-
+butions in the presence of trajectory cost constraints through
+(a) Lagrangian-based method; (b) Meta-gradients to find a
+good trade-off between expected return and minimizing con-
+straint violation; and (c) Cost-violation-based alternating gra-
+dient. We empirically show that leading imitation learning
+approaches imitate cost-constrained behaviors poorly and our
+meta-gradient-based approach achieves the best performance.
+Introduction
+Complex planning and scheduling problems have long been
+studied in the literature using a wide variety of optimization
+algorithms and heuristics. One generic way to think about
+the process of solving these complex problems is to first
+define a set of states, where a state represents the minimal
+amount of information required to describe a planning or
+scheduling instance; then for each state, compute the rec-
+ommended action by optimizing certain well-defined perfor-
+mance measure. A comprehensive list of (state, action rec-
+ommendation) tuples is then called the policy for the solved
+problem and can be used in practice easily by looking up the
+encountered states.
+Copyright © 2024, Association for the Advancement of Artificial
+Intelligence (www.aaai.org). All rights reserved.
+An alternative paradigm to the above classical approach is
+to directly “learn” from an expert. More specifically, with a
+few expert-demonstrated traces of actions, try to generalize
+and derive actionable policies. Such an approach is gener-
+ally called “imitation learning”, which aims to replicate ex-
+pert behaviors by directly observing human demonstrations,
+eliminating the need for designing explicit reward signals
+as in reinforcement learning (RL) (Abbeel and Ng 2004).
+This idea has been successfully applied in domains such
+as robotics (Fang et al. 2019), autonomous vehicles (Kue-
+fler et al. 2017), and game AI (Hussein et al. 2017). Typi-
+cally, this is achieved through techniques such as behavioral
+cloning (Bain and Sammut 1995), inverse RL (Ng, Russell
+et al. 2000), and generative inverse reinforcement learning
+(GAIL) (Ho and Ermon 2016).
+The previous research in the fields of imitation learning
+and inverse reinforcement learning has primarily concen-
+trated on mimicking human behaviors in unconstrained envi-
+ronments, such as mimicking driving a vehicle without any
+limitations on fuel consumption by the vehicle. However, in
+many practical planning and scheduling scenarios, experts
+consider not only rewards or preferences but also limitations
+or constraints. For example, the decisions made by a self-
+driving delivery vehicle are not only based on route prefer-
+ences or rewards, which are derived from past demand data
+but also on the amount of fuel/power available in the vehi-
+cle. As another example, when an agent is being trained to
+drive a car on a race track, the expert demonstrations that the
+agent is mimicking involve high-speed driving and precision
+maneuvering, which are critical for success in a race. How-
+ever, it is also essential for the agent to adhere to safety con-
+straints, such as staying within the track’s boundaries and
+avoiding collisions with other vehicles. These safety con-
+straints differ from the reward function, which may focus
+on achieving a fast lap time or winning the race. Therefore,
+the agent must strike a balance between the goal of imitat-
+ing the expert demonstrations and the need to adhere to the
+safety constraints in order to successfully complete the task.
+In scenarios where the decision-making process is influ-
+enced by both a reward model and a cost constraint model,
+the implementation of imitation learning becomes signifi-
+cantly more complex. This is because the decisions made
+are not solely based on the reward model, but also take into
+consideration the limitations imposed by the cost constraint
+arXiv:2403.17456v3  [cs.LG]  23 May 2024
+
+
+model. To that end, we provide a new imitation learning
+problem in cost-constrained environments.
+Our work is closely related to Malik et al. (2021) and
+Cheng et al. (2023). In Malik et al. (2021), cost constraints
+have to be learned from expert trajectories in scenarios
+where the reward function is already specified. On the other
+hand, in Cheng et al. (2023), both safety constraint (maxi-
+mum cost limit) and cost signals are known and provided,
+while the reward signal remains undisclosed.
+The major differences between our proposed work and the
+above two past studies are that we assume cost signals (from
+sensors) from the environment are known and provided, but
+the safety constraint (maximum cost limit) is not given. In
+other words, we assume that we have the necessary sensors
+to monitor cost signals (e.g., battery level and temperature of
+an EV), yet we do not know the constraints on these sensor
+values (e.g., safety ranges on battery level and temperature).
+In terms of the solution approach, our work is similar to
+Cheng et al. (2023) in that we also utilize the combination of
+the Lagrangian-base method and the GAIL framework (Ho
+and Ermon 2016). However, since we do not assume knowl-
+edge of the safety constraint, we cannot include the maxi-
+mum cost limit in our objective function during training.
+The major challenges we plan to address with this paper
+are approaches that could execute imitation learning while
+ensuring cost threshold constraint, which is revealed only
+via the observations of expert trajectories. Our key contribu-
+tions are summarized as follows:
+• First, we formulate the cost-constrained imitation learn-
+ing problem which represents the challenge of imitation
+learning in cost-constrained environments (where cost
+signals are known).
+• We
+propose
+three
+methods
+to
+address
+the
+cost-
+constrained imitation learning problems. First, we design
+a Lagrangian-based method utilizing a three-way gradi-
+ent update to solve the cost-constrained imitation learn-
+ing problem. We then provide a meta-gradient approach
+that is able to tune the Lagrangian penalties of the first
+approach to significantly improve the performance. Fi-
+nally, we use a cost-violation-based alternating gradient
+approach which has a different gradient update depend-
+ing on the current solution feasibility.
+• To further validate the effectiveness of our proposed
+method, we conducted extensive evaluations in Safety
+Gym environments (Ray, Achiam, and Amodei 2019)
+and MuJoCo environments (Todorov, Erez, and Tassa
+2012). Our numerical evaluations show that the ensemble
+of our three proposed approaches can effectively imitate
+expert behavior while satisfying cost constraints.
+Background and Related Work
+In this section, we describe the two problem models of rele-
+vance in this paper, namely Constrained MDPs and Imitation
+Learning. We also briefly review related work.
+Constrained Markov Decision Process
+Reinforcement Learning problems are characterized by an
+underlying Markov Decision Process (MDP), which is de-
+fined by the tuple (S, A, R, P). Where S represents the set
+of states, A represents the set of actions. The reward func-
+tion, R : S × A 7→R, provides a quantitative measure of
+how well the system is performing based on the current state
+and action. The transition function, P : S ×A ×S 7→[0, 1],
+defines the probability of transitioning from one state to an-
+other, given the current state and action taken. Specifically,
+the probability of transitioning from state s to s′, given that
+action a is taken, is represented by P(s′|s, a). A feasible set
+of policies, denoted as Π, contains all possible policies that
+can be implemented in the system. The objective of MDP is
+to find an optimal policy, π ∈Π, by maximizing the reward-
+based objective function, which is defined as follows:
+max
+π∈Π Eπ[
+∞
+X
+t=0
+γtr(st, at)].
+(1)
+In this work, we examine the scenario in which agents
+aim to optimize their rewards while adhering to policy-based
+cost constraints. This leads to an extension of the traditional
+MDP framework referred to as the Constrained Markov De-
+cision Process (CMDP) (Altman 1999). The objective in a
+CMDP problem is succinctly formulated as:
+max
+π∈Π
+Eπ[P∞
+t=0 γtr(st, at)]
+(2)
+s.t.
+Eπ[P∞
+t=0 γtd(st, at)] ≤d0,
+where d(s, a) is the cost associated with taking action a in
+state s and is independent of the reward function, r(s, a).
+d0 is the expected cost threshold for any selected policy.
+There have been numerous approaches proposed for solv-
+ing Constrained MDPs (Satija, Amortila, and Pineau 2020;
+Pathmanathan and Varakantham 2023; Hoang, Mai, and
+Varakantham 2024), when the reward and transition models
+are not known a priori.
+Imitation Learning
+Methods of Reinforcement Learning require clearly defined
+and observable reward signals, which provide the agent
+with feedback on their performance. However, in many real-
+world scenarios, defining these rewards can be very chal-
+lenging. Imitation learning, on the other hand, offers a more
+realistic approach by allowing agents to learn behavior in
+an environment through observing expert demonstrations,
+without the need for accessing a defined reward signal.
+An effective method for addressing imitation learning
+challenges is Behavior Cloning (BC) (Bain and Sammut
+1995). This approach utilizes the states and actions of a
+demonstrator as training data, allowing the agent to replicate
+the expert’s policy (Pomerleau 1991). One of the advantages
+of this method is that it does not require the agent to actively
+interact with the environment, instead, it operates as a form
+of supervised learning, similar to classification or regression.
+Despite its simplicity, BC is known to suffer from a signif-
+icant drawback: the compounding error caused by covariate
+shift (Ross, Gordon, and Bagnell 2011). This occurs when
+minor errors accumulate over time, ultimately resulting in a
+significantly different state distribution.
+
+
+Another approach, Inverse Reinforcement Learning (IRL)
+(Ng, Russell et al. 2000) aims to identify the underlying re-
+ward function that explains the observed behavior of an ex-
+pert. Once the reward function is determined, a standard Re-
+inforcement Learning algorithm can be used to obtain the
+optimal policy. The reward function is typically defined as
+a linear (Ng, Russell et al. 2000; Abbeel and Ng 2004) or
+convex (Syed, Bowling, and Schapire 2008) combination of
+the state features, and the learned policy is assumed to have
+the maximum entropy (Ziebart et al. 2008) or maximum
+causal entropy (Ziebart, Bagnell, and Dey 2010). However,
+many IRL methods are computationally expensive and may
+produce multiple possible formulations for the true reward
+function. To address these challenges, Generative Adversar-
+ial Imitation Learning (GAIL) (Ho and Ermon 2016) was
+proposed. GAIL directly learns a policy by using a discrimi-
+nator to distinguish between expert and learned actions, with
+the output of the discriminator serving as the reward signal.
+A more recent method, known as Inverse soft-Q Learning
+(IQ-Learn) (Garg et al. 2021), takes a different approach
+by learning a single Q-function that implicitly represents
+both the reward and policy, thereby avoiding the need for
+adversarial training. With their state-of-the-art performance
+in various applications, we designate GAIL and IQ-learn as
+baselines for our algorithms.
+We now describe the imitation learning problem and
+GAIL approach here as it serves as the basis for our method.
+The learner’s goal is to find a policy, denoted as π, that per-
+forms at least as well as an expert policy, denoted as πE, with
+respect to an unknown reward function, denoted as r(s, a).
+For a given policy π ∈Π, we define its occupancy measure,
+denoted as ρπ ∈Γ, as (Puterman 2014)
+ρπ(s, a) = π(a|s)
+∞
+X
+t=0
+γtP(st = s|π)
+The occupancy measure represents the distribution of state-
+action pairs that an agent encounters when navigating the
+environment with the specified policy π. It is important to
+note that there is a one-to-one correspondence between the
+set of policies, Π, and the set of occupancy measures, Γ.
+Therefore, an imitation learning problem can be equivalently
+formulated as a matching learning problem between the oc-
+cupancy measure of the learner’s policy, ρπ, and the occu-
+pancy measure of the expert’s policy, ρπE. In general, the
+objective can be succinctly represented as the task of finding
+a policy that closely matches the occupancy measure of the
+expert’s policy, which is represented as:
+min
+π −H(π) + ψ∗(ρπ −ρπE),
+(3)
+where H(π) ≜Eπ[−log π(a|s)] is the causal entropy of
+the policy π, which is defined as the expected value of the
+negative logarithm of the probability of choosing an action
+a given a state s, under the distribution of the policy π.
+Additionally, the distance measure between the state-action
+distribution of the policy π, represented by ρπ, and the ex-
+pert’s state-action distribution, represented by ρπE, is repre-
+sented by the symbol ψ∗. Specifically, the distance measure
+(Jensen-Shannon divergence) employed by the GAIL frame-
+work is defined as follows:
+ψ∗(ρπ−ρπE) = max
+D Eπ[log D(s, a)]+EπE[log(1−D(s, a))]
+(4)
+The GAIL method utilizes a combination of imitation
+learning and generative adversarial networks, where D ∈
+(0, 1)S×A acts as the discriminator. Through this formal-
+ism, the method trains a generator, represented by πθ, to
+generate state-action pairs that the discriminator attempts to
+distinguish from expert demonstrations. The optimal policy
+is achieved when the discriminator is unable to distinguish
+between the data generated by the generator and the expert
+data.
+In our problem, as we aim to address the imitation learn-
+ing problem within the constraints of an MDP, we have
+employed a unique distance measure that diverges from
+the traditional GAIL framework. This approach allows us
+to more effectively navigate the complexities of the con-
+strained MDP setting and achieve our desired outcome.
+Lagrangian Method
+In this section, we first describe the problem of cost-
+constrained imitation learning and outline our approach to
+compute the policy that mimics expert behaviors while sat-
+isfying the cost constraints.
+We work in the γ−discounted infinite horizon setting, and
+we denote the expected reward and cost in association with
+policy π ∈Π as: Eπ[r(s, a)] ≜Eπ[P∞
+t=0 γtr(st, at)] and
+Eπ[d(s, a)] ≜Eπ[P∞
+t=0 γtd(st, at)], where s0 ∼p0, at ∼
+π(·|st), and st+1 ∼P(·|st, at) for t ≥0. Formally, the
+Cost-Constrained Imitation Learning problem is a combina-
+tion of the CMDP problem (2) and the Imitation Learning
+problem (3), and can be characterized as:
+min
+π
+−H(π) + ψ∗(ρπ −ρπE)
+s.t.
+Eπ[d(s, a)] ≤EπE[d(s, a)]
+(5)
+The imitation learning objective includes two terms: one
+maximizes the policy’s entropy, ensuring all feasible alter-
+natives are considered; the other minimizes the disparity be-
+tween occupation measures of the policy and expert trajec-
+tories. The constraint ensures that the expected cost using
+the policy must be less than that of expert trajectories. We
+assume that d(s, a) is known, but the reward is not.
+Our generative approach to computing the policy that
+mimics the behavior of the expert within cost constraints re-
+lies on computing a solution to the unconstrained objective
+function of Equation (6) below. The theoretical justification
+for choosing this objective function is provided in the Ap-
+pendix, and our analysis is based on the GAIL framework.
+Equation (6) is composed of three optimizations:
+• Minimize the distance between state, action distributions
+of the new policy, πθ, and expert policy, πE. This is
+transformed into the loss associated with a discriminator,
+Dω, which discriminates between (state, action) pairs
+from experts, and (state, action) pairs generated by the
+new policy πθ.
+
+
+• Maximize the entropy of the new policy, πθ, to ensure
+none of the correct policies are ignored.
+• Minimize the cost constraint violations corresponding to
+the new policy, πθ.
+L(ω, λ, θ) ≜min
+θ
+max
+ω,λ Eπθ[log Dω(s, a)] +
+EπE [log(1 −Dω(s, a))] +
+λ (Eπθ[d(s, a)] −EπE[d(s, a)]) −βH(πθ),
+(6)
+where θ represents the parameters of the policy, β is the pa-
+rameter corresponding to the causal entropy (since we max-
+imize entropy similar to imitation learning) and finally, λ
+is the Lagrangian multiplier corresponding to the cost con-
+straint. H(πθ) ≜Eπθ[−log πθ(a|s)] is the casual entropy of
+policy πθ.The given expert policy is represented by πE, and
+a known cost function, represented by d, is also incorporated
+into the objective function.
+Given the three optimization components, we do not
+choose one of the three but instead compute a saddle point
+(θ, ω, λ) for (6). To accomplish this, we employ a param-
+eterized policy, represented by πθ, with adjustable weights
+θ, as well as a discriminator network, represented by Dω,
+which maps states and actions to a value between 0 and 1,
+and has its own set of adjustable weights ω. The Lagrangian
+multiplier, denoted by λ, is for penalizing the number of cost
+constraint violations.
+To obtain the saddle point, we update the parameters
+of policy, discriminator, and Lagrangian multiplier sequen-
+tially:
+Updating ω: The gradient of (6) with respect to ω is calcu-
+lated as:
+▽ω L(ω, λ, θ) = Eπθ[▽ω log Dω(s, a)]+
+EπE[▽ω log(1 −Dω(s, a))]
+(7)
+We utilize the Adam gradient step method (Kingma and Ba
+2015) on the variable ω, targeting the maximization of (6) in
+relation to D.
+Updating θ: To update policy parameters, we adopt the
+Trust Region Policy Optimization (TRPO) method (Schul-
+man et al. 2015). The theoretical foundation of the TRPO
+update process involves utilizing a specific algorithm to im-
+prove the overall performance of the policy by optimizing
+the parameters within a defined trust region:
+θk+1 = arg max
+θ
+L(θk, θ), s.t.
+¯DKL(θ||θk) ≤δ.
+(8)
+The key challenge in applying the TRPO update process
+is the computation of the surrogate advantage, denoted by
+L(θk, θ). It is a metric that quantifies the relative perfor-
+mance of a new policy πθ in comparison to an existing policy
+πθk, based on data collected from the previous policy:
+L(θk, θ) =
+E
+s,a∼πθk
+ πθ(a|s)
+πθk(a|s)(A
+πθk
+r
+(s, a) −λA
+πθk
+d
+(s, a))
+
+(9)
+We do not have a reward function to compute the advan-
+tage and hence we utilize the output of the discriminator,
+represented by −log Dω(s, a), as the reward signal. Subse-
+quently, we employ the Generalized Advantage Estimation
+(GAE) method outlined in Schulman et al. (2016) to calcu-
+late the advantage of the reward, A
+πθk
+r
+(s, a). Additionally,
+we also calculate the advantage pertaining to cost, denoted
+as A
+πθk
+d
+(s, a), by utilizing the GAE method, as we know the
+cost function.
+The average KL-divergence, represented by ¯DKL(θ||θk),
+between policies across states visited by the previous policy,
+can be computed as:
+¯DKL(θ||θk) =
+E
+s∼πθk
+DKL (πθ(·|s)||πθk(·|s))
+(10)
+Updating ϕr, ϕd: We do an Adam gradient step on
+ϕr(reward value network parameters), ϕd (cost value net-
+work parameters)to minimize the mean-squared error of re-
+ward value and cost value, as we minimize these two loss
+functions:
+min
+ϕr
+E
+s∼πθk
+(V r
+ϕr(st) −ˆRr
+t)2
+min
+ϕd
+E
+s∼πθk
+(V d
+ϕd(st) −ˆRd
+t )2
+(11)
+Here ˆRr
+t, ˆRd
+t are the reward to go and cost to go, which
+are calculated by the GAE method.
+Updating λ: We do an Adam gradient step on λ to increase
+(6), the gradient of (6) with respect to λ is calculated as:
+▽λ L(ω, λ, θ) = (Eπθ[d(s, a)] −EπE[d(s, a)])
+(12)
+Algorithm 1 shows the pseudocode for our approach,
+Cost-ConstraIned Lagrangian (CCIL).
+Meta-Gradient for Lagrangian Approach
+In this section, we introduce a meta-gradient approach to im-
+prove the Lagrangian method introduced in the previous sec-
+tion by applying cross-validation to optimize the Lagrangian
+multipliers. We call this approach MALM.
+Meta-gradient is a strategy designed for the optimiza-
+tion of hyperparameters, such as the discount factor and
+learning rates in Reinforcement Learning problems. This ap-
+proach involves the simultaneous execution of online cross-
+validation while pursuing the optimization objective of re-
+inforcement learning, such as the maximization of expected
+return (Xu, van Hasselt, and Silver 2018; Calian et al. 2021).
+The goal is to optimize both inner and outer losses. The
+update of parameters on the inner loss is to update the
+parameters of the policy. The outer loss can be based on
+measures such as policy gradient loss and temporal differ-
+ence loss, and is optimized by updating hyperparameters
+(Calian et al. 2021) in constrained RL problems, and us-
+ing Distributed Distributional Deterministic Policy Gradi-
+ents (D4PG) (Barth-Maron et al. 2018) algorithm frame-
+work. The critic loss is used in Barth-Maron et al. (2018)
+as the outer loss function to optimize the hyperparameters.
+Instead of optimizing the hyperparameters, the key idea
+of MALM is to update the Lagrangian multiplier such that
+there is a better balance between reward maximization and
+cost constraint enforcement. Specifically, we use the outer
+loss that is defined as follows:
+Louter(λ) = Eπθ(Ar(s, a) −λd(s, a))2
+(13)
+
+
+Algorithm 1: Cost-ConstraIned Lagrangian (CCIL)
+Input: initial parameters of policy θ, reward value network
+ϕr, cost value network ϕd, discriminator network ω, batch
+size K, a set of expert trajectories ΦE = {τE ∼πE}, ini-
+tial Lagrangian multipliers λ, entropy parameter β, learning
+rates αr, αd, αλ, αω.
+Output: Optimal policy πθ
+1: Compute the average cost of expert trajectories: JE =
+1
+|ΦE|
+P
+τ∈ΦE
+PT
+t=1 dt
+2: for k = 1, 2, ... do
+3:
+Collect set of learner’s trajectories Φk = {τi} by run-
+ning policy πθk for K time steps.
+4:
+Collect the reward rt of K time steps by using the
+discriminator output:rt = −log(Dω(st, at))
+5:
+Compute V r
+ϕr(st) and V d
+ϕd(st) of K time steps.
+6:
+Compute the reward and cost advantage Ar(st, at)
+and Ad(st, at), reward to go ˆRr
+t and cost to go ˆRd
+t
+of K time steps by using GAE.
+7:
+Compute the average episode cost of learner’s trajec-
+tories: Jk =
+1
+|Φk|
+P
+τ∈Φk
+PT
+t=1 dt
+8:
+Update policy by using TRPO rule:
+θ′ = arg max
+θ
+PK
+t=1
+πθ(at|st)
+πθk (at|st)(Ar(st, at) −λAd(st, at)) + βH(πθk)
+9:
+Update reward value network:
+ϕ′
+r ←ϕr −1
+K
+PK
+t=1 αr ▽ϕr (V r
+ϕr(st) −ˆRr
+t)2
+10:
+Update cost value network:
+ϕ′
+d ←ϕd −1
+K
+PK
+t=1 αd ▽ϕd (V d
+ϕd(st) −ˆRd
+t )2
+11:
+Update discriminator network:
+ω′ ←ω + 1
+K
+PK
+t=1 αω(▽ω[log(Dω(st, at))]+
+▽ω[log(1 −Dω(st, at))])
+12:
+Update Lagrangian multipliers:
+λ′ ←λ + αλ(Jk −JE)
+13:
+θ ←θ′, ϕr ←ϕ′
+r, ϕd ←ϕ′
+d, ω ←ω′, λ ←λ′.
+14: end for
+Every batch is divided into training and validation data
+sets. The parameter update equations for the training data set
+are the same as described in the Lagrangian-based method
+(Equations (8) – (12)), and for the validation data set, we
+update the Lagrangian multiplier by minimizing the above
+outer loss function. MALM is similar to Algorithm 1 ex-
+cept that from lines 7 to 12, we update policy parameters,
+discriminator parameters, and Lagrangian multipliers based
+on the training data set. We also have an additional proce-
+dure to update the Lagrangian multipliers by minimizing the
+outer loss function based on the validation data set (see the
+Appendix for detailed pseudocode).
+Cost-Violation-based Alternating Gradient
+We now describe our third method, Cost-Violation-based
+Alternating Gradient (CVAG), which does not rely on La-
+grangian multipliers. Like previous methods, this method
+also maintains a policy network, θ, reward value network,
+ϕr, and cost value network, ϕd. The key novelty of this
+approach is in doing a feasibility check-based gradient up-
+date that is fairly intuitive. If the average episode cost of the
+learner does not exceed the average episode cost of experts
+(cost constraint), then we update the policy parameters to-
+wards the direction of maximizing the return, which would
+be the following equation in TRPO:
+L(θk, θ) =
+max
+θ
+E
+s,a∼πθk
+ πθ(a|s)
+πθk(a|s)A
+πθk
+r
+(s, a)
+
+(14)
+Otherwise, we update the policy towards the direction of
+minimizing the costs.
+L(θk, θ) =
+min
+θ
+E
+s,a∼πθk
+ πθ(a|s)
+πθk(a|s)A
+πθk
+d
+(s, a)
+
+(15)
+The detailed pseudocode is provided in the Appendix.
+Experiments
+In this section, we compare our approaches against leading
+approaches for imitation learning (IL), including GAIL (Ho
+and Ermon 2016), IQ-Learn (Garg et al. 2021), Behavioral
+Cloning (BC) (Bain and Sammut 1995), and LGAIL (Cheng
+et al. 2023) in cost-constrained environments. This is to il-
+lustrate that a new approach is needed to mimic expert be-
+haviors when there are unknown cost constraints. As we will
+soon demonstrate, all baselines suffer from either extensive
+cost constraint violations or low reward.
+Setup
+Environments and Cost Definition. We selected Safety
+Gym (Ray, Achiam, and Amodei 2019) and MuJoCo
+(Todorov, Erez, and Tassa 2012), two well-known environ-
+ments from the literature for our evaluation purpose.
+The Safety Gym environment is a standard platform for
+evaluating constrained RL algorithms. Each instance of this
+environment features a robot tasked with navigating a clut-
+tered space to achieve a goal, all while adhering to specific
+constraints governing its interactions with objects and sur-
+rounding areas. In our experiments, there are three robotic
+agents (Point, Car, and Doggo) and two task types (Goal
+and Button), resulting in a total of six unique scenarios.
+The difficulty level for these environments is standardized
+to 1. Throughout each timestep, the environment provides
+distinct cost signals for various unsafe elements, each linked
+to an associated constraint. Additionally, an aggregate cost
+signal is provided, encapsulating the overall impact of the
+agent’s interactions with unsafe elements. The cost functions
+are straightforward indicators, evaluating whether an unsafe
+interaction has occurred (ct = 1 if the agent engages in an
+unsafe action, otherwise ct = 0).
+In order to illustrate the robustness of our methods, we
+also adopt MuJoCo for its wide array of continuous control
+tasks, such as Walker2d and Swimmer. These tasks are fre-
+quently employed to assess RL and IL algorithms. For the
+reward, we utilized the default MuJoCo environment set-
+tings, however, as the MuJoCo environment does not have
+built-in cost constraints like in Safety Gym, we introduce
+constraints on features of the state space and action space.
+Table 1 shows the descriptions of cost and corresponding
+tasks in both MuJoCo and Safety Gym environments.
+
+
+Task
+Observation
+Action
+Dataset
+Reward
+Cost
+Safety
+Space
+Space
+Size
+Coefficient
+PointGoal1
+60
+2
+10
+18.77 ± 4.64
+51.1± 3.36
+NA
+PointButton1
+76
+2
+10
+18.56± 3.83
+93.5 ± 7.8
+NA
+CarGoal1
+72
+2
+10
+25.73 ±2.44
+45.2 ± 6.35
+NA
+CarButton1
+88
+2
+10
+11.84± 1.36
+196.6 ± 25.44
+NA
+DoggoGoal1
+104
+12
+10
+4.62± 1.55
+57.9 ± 9.46
+NA
+DoggoButton1
+120
+12
+10
+3.32± 1.2
+181.7 ± 15.48
+NA
+HalfCheetah-v3
+17
+6
+10
+4132.72±132.82
+547.5 ± 8.1
+0.4
+Hopper-v3
+11
+3
+10
+3594.04±1.78
+433.6 ± 2.24
+0.001
+Ant-v3
+27
+8
+10
+1263.43±142.14
+653.2 ± 78.82
+2
+Swimmer-v3
+8
+2
+10
+110.47±1.01
+63.8 ± 1.08
+1
+Walker2d-v3
+17
+6
+10
+1781.42± 19.06
+130.1 ± 21.1
+1
+Humanoid-v3
+376
+17
+10
+1744.53±257.22
+206.6 ± 29
+0.2
+Table 1: Environments and expert trajectories.
+Figure 1: Performance of Safety Gym environments. The x-axes indicate the number of iterations, and the y-axes indicate the
+performance of the agent, including average rewards/costs/cost rates with standard deviations.
+In Table 1, the safety coefficient is the cost threshold for
+the cost indicator. At each time step, if the cost indicator is
+larger than the safety coefficient, the agent will get a cost of
+1, otherwise, the cost is 0. The expert trajectories are gener-
+ated by solving a forward-constrained RL problem and we
+summarize the statistics in the table.
+Baselines and Code. In order to evaluate the performance
+of our algorithms, we compare them against three popu-
+lar IL methods without explicit cost constraints considera-
+tion (GAIL, IQ-Learn, and BC). For the constraint-aware IL
+method, we use LGAIL as the baseline. As noted earlier,
+LGAIL assumes the knowledge of cost limit d′, which is
+used as a parameter in their objective function:
+min
+θ
+max
+ω,λ Eπθ[log Dω(s, a)] + EπE [log(1 −Dω(s, a))]
++λ (Eπθ[d(s, a)] −d′) −βH(πθ).
+(16)
+As they defined d′ to be less than the minimal episode cost of
+expert trajectories, we use the 90% of minimal episode cost
+of expert trajectories as d′. In the case of BC, the expert tra-
+jectories dataset, which consists of state-action pairs, was di-
+vided into a 70% training data set and a 30% validation data
+set. The policy was then trained using supervised learning
+
+
+Task
+BC
+GAIL
+IQ-learn
+LGAIL
+CCIL
+MALM
+CVAG
+CarGoal1
+Rpen
+0.54±0.03
+-0.86± 0.34
+-0.57± 0.5
+-0.28±0.62
+0.17±0.6
+0.67± 0.08
+0.61±0.06
+Rrec
+53.91
+73.57
+0
+72.06
+76.02
+67.39
+61.13
+Cost-Vio
+0
+20.55
+0
+7.28
+1.54
+0
+0
+CarButton1
+Rpen
+0.35±0.45
+-0.59± 0.07
+0.05± 0.02
+-0.36±0.47
+0.13±0.53
+0.01±0.52
+0.42±0.08
+Rrec
+56.84
+60.73
+5.49
+59.29
+58.19
+51.94
+42.48
+Cost-Vio
+0.07
+18.01
+0
+13.28
+1.32
+13.29
+0
+PointGoal1
+Rpen
+0.81±0.03
+0.35± 0.78
+-1.07± 0.91
+0.1±0.72
+0.07± 0.73
+0.95±0.09
+0.87±0.11
+Rrec
+80.87
+95.05
+2.82
+95.15
+93.55
+94.78
+87.32
+Cost-Vio
+0
+7.32
+20.3
+8.99
+9.58
+0
+0
+PointButton1
+Rpen
+-0.19±0.53
+-0.55± 0.06
+-1.26± 0.21
+0.37±0.54
+-0.19±0.54
+0.44±0.53
+0.27±0.48
+Rrec
+69.5
+73.49
+7.44
+68.53
+69.88
+72.95
+55.98
+Cost-Vio
+5.19
+15.41
+19.71
+3.46
+5.15
+0.87
+1.64
+DoggoGoal1
+Rpen
+-0.3 ±0.57
+-0.94±0.03
+0± 0.01
+0.25±0.04
+0.36±0.07
+0.29 ± 0.09
+-0.25± 0.6
+Rrec
+27.92
+44.81
+0
+25.32
+35.5
+28.79
+33.33
+Cost-Vio
+1.69
+14.97
+0
+0
+0
+0
+1.95
+DoggoButton1
+Rpen
+0.35±0.05
+-0.38± 0.55
+-0.01±0.04
+0.14±0.11
+0.35±0.06
+0.3± 0.05
+0.06± 0.1
+Rrec
+34.94
+41.27
+0
+14.16
+34.64
+30.42
+5.72
+Cost-Vio
+0
+11.73
+0
+0
+0
+0
+0
+HalfCheetah-v3
+Rpen
+-6.16±0.08
+-5.91±0.05
+-7.08±0.1
+-0.29 ± 1.63
+0.44±0.37
+0.81±0.07
+0.53 ± 0.26
+Rrec
+70.61
+95.19
+0
+51.91
+44.47
+81.49
+52.91
+Cost-Vio
+392.94
+392.12
+417.49
+1.08
+0
+0
+0
+Hopper-v3
+Rpen
+0.16±0.02
+0.48±0.61
+0.07± 0.03
+0.02 ±0.49
+1±0.01
+0.75±0.48
+0.5±0.59
+Rrec
+16.11
+98.78
+6.54
+99.92
+99.71
+99.62
+98.58
+Cost-Vio
+0
+8.59
+0
+7.89
+0
+0.62
+0.8
+Ant-v3
+Rpen
+-0.73±0.18
+-0.69±0.02
+0.15± 0.07
+0.77± 0.1
+0.06±0.61
+0.86±0.03
+0.53± 0.47
+Rrec
+86.64
+95.59
+14.8
+76.82
+79.86
+85.76
+78.1
+Cost-Vio
+213.94
+242.25
+0
+0
+10.64
+0
+4.71
+Swimmer-v3
+Rpen
+-2.37±2.02
+-0.17 ±0.56
+0.36 ± 0.05
+-0.42± 0.12
+0.7 ± 0.49
+0.46 ± 0.6
+0.63± 0.49
+Rrec
+58.44
+94.87
+35.71
+93.35
+94.76
+94.29
+87.41
+Cost-Vio
+93.13
+8.63
+0
+7.96
+0.51
+0.37
+0.05
+Walker2d-v3
+Rpen
+-0.34±0.06
+-0.06±0.53
+0.19±0.06
+0.2±0.63
+0.73±0.5
+0.72±0.51
+0.97±0.01
+Rrec
+99.2
+99.35
+19.04
+98.57
+98.53
+98.58
+97.25
+Cost-Vio
+14.02
+10.22
+0
+7.01
+1.33
+2.33
+0
+Humanoid-v3
+Rpen
+0.32±0.01
+-0.26±0.02
+0.21±0.02
+0.86 ± 0.02
+0.95 ± 0.02
+0.39±0.52
+0.82± 0.03
+Rrec
+32.21
+122.94
+20.6
+86.01
+94.83
+95.77
+82.4
+Cost-Vio
+0
+73.54
+0
+0
+0
+2.87
+0
+Table 2: Overall performance of different environments. Normalized penalized return Rpen captures the trade-off between
+achieving higher rewards and making the episode cost go below the expert’s episode cost, higher is better. Recovered return
+Rrec evaluates how closely the agent imitates the expert’s behavior, higher Rrec means the agent imitated the expert better.
+Cost-Vio captures the extent the agent’s episode cost goes beyond the expert’s episode cost, lower is better.
+Cost type
+Description
+Tasks
+Best methods
+Hazards
+Penalizing for entering dangerous areas.
+PointGoal1, CarGoal1, DoggoGoal1
+MALM
+Hazards + Buttons
+Penalizing for hazards and pressing wrong buttons
+PointButton1,CarButton1,DoggoButton1 MALM
+Control Cost
+Penalizing for taking excessively large actions
+HalfCheetah-v3, Hopper-v3
+MALM, CCIL
+Control + Contact
+Costs
+Penalizing for having large actions and external
+contact force
+Ant-v3, Humanoid-v3
+MALM, CCIL
+Speed Limit
+Penalizing for moving at a much higher speed.
+Swimmer-v3, Walker2d-v3
+CVAG
+Table 3: Summarizing performances based on the type of cost constraints.
+techniques. Then in the GAIL method, the policy network,
+reward value network, cost value network, and discriminator
+network all employ the same architectures, comprising two
+hidden layers of 100 units each, with tanh nonlinearities be-
+
+
+ing utilized in the layers. Lastly, for the IQ-Learn method,
+we use the same setting as illustrated in Garg et al. (2021),
+that we use critic and actor networks with an MLP architec-
+ture with 2 hidden layers and 256 hidden units.
+Implementation. We employ a neural network architecture
+consistent with the one utilized in the GAIL method. In ad-
+dition, our approaches add a cost value network and a La-
+grangian penalty term λ (in CCIL and MALM), which dis-
+tinguishes our method from GAIL. The policy, value, and
+cost value network are optimized through gradient descent
+with the Adam optimizer (Kingma and Ba 2015). The initial
+value of λ is set to 0.01 and optimized using the Adam op-
+timizer. In MALM, the state-action pairs of each batch size
+are divided into a 70% training data set and a 30% valida-
+tion data set. We run each algorithm for 5 different random
+seeds. The algorithms ran for 2000 time steps (batch size)
+during each iteration, and the episode’s total true reward
+and cost were recorded. The details of the hyper-parameters
+used in the experiments can be found in the Appendix. The
+implementation of all code is based on the OpenAI Base-
+lines library (Dhariwal et al. 2017), and can be found at
+https://github.com/SHAOQIAN12/CCIL.
+Performance Metrics. We use different performance met-
+rics to compare overall performance. Firstly, followed by
+(Ray, Achiam, and Amodei 2019), we record the average
+episode’s true reward, the average episode’s cost, and the
+cost rate over the entirety of training (the sum of all costs di-
+vided by the total number of environment interaction steps)
+throughout the training. We also incorporate the normal-
+ized penalized return introduced by (Calian et al. 2021).
+This metric effectively captures the delicate balance between
+maximizing rewards and ensuring that the episode cost re-
+mains below the expert’s episode cost. The formulation is
+represented as Rpen = R/RE −K max(Jπ
+d /JπE
+d
+−1, 0),
+where R and Jπ
+d denote the average episode true reward/-
+cost for the algorithm upon convergence (computed as an
+average over the last 100 iterations), and RE, JπE
+d
+represent
+the average episode reward/cost of the expert. The second
+term in the equation introduces a penalty if the episode cost
+exceeds the expert cost; otherwise, this term remains zero.
+The constant K serves as a fixed parameter determining the
+weight assigned to the constraint violation penalty. To effec-
+tively penalize algorithms consistently breaching cost con-
+straints during evaluation, we set K = 1.2. The recovered
+return metric captures the degree to which the agent repli-
+cates the expert’s behavior, denoted as Rrec = R/RE ×100.
+A value of Rrec ≥100 signifies proficient imitation of
+the expert, while an approach to 0 indicates the agent’s in-
+ability to replicate the expert’s behavior (with Rrec being
+0 when returns are negative).Finally, cost violation is de-
+fined as ϕd = max(0, Jπ
+d −JπE
+d ). In cases where the agent’s
+episode cost is less than the expert’s episode cost, denoting
+no cost violation, ϕd is set to 0.
+Results
+Table 2 compares performance across methods using penal-
+ized return, recovered return, and cost violation. Figure 1
+plots training dynamics1 for most Safety Gym environments,
+with further details on MuJoCo environments and DoggoB-
+utton in the Appendix. We summarize our findings in Table
+3, and elaborate our key observations below:
+• MALM performs best on average in Safety Gym tasks.
+Although there is no clear winner for tasks with haz-
+ards plus button constraints, MALM demonstrates bet-
+ter training performances in reward and cost overall on
+average according to Figure 1.
+• In MuJoCo environments focusing on control cost and
+contact cost, MALM leads for HalfCheetah and Ant,
+while CCIL excels in Hopper and Humanoid tasks. Es-
+pecially in HalfCheetah, MALM closely approximates
+expert behavior, outperforming all competitors.
+• CVAG performs well in constraints related to speed,
+ranking best for Walker2d and second for Swimmer.
+• Among methods that neglect cost constraints, BC and
+IQ-learn have difficulty emulating expert behaviors in
+terms of both costs and rewards. Meanwhile, GAIL can
+achieve rewards close to expert levels but falls short
+in adhering to cost constraints, frequently incurring the
+highest cost rates for most scenarios.
+• LGAIL comes close to expert rewards in some tasks,
+performance-wise it is similar to CCIL, but often incurs
+higher costs throughout the training process.
+In summary, MALM shows the best balance between re-
+ward and cost adherence, with CVAG and CCIL next in line,
+outperforming baselines on reward and cost metrics.
+Conclusion
+In this study, we tackle the challenge of cost-constrained im-
+itation learning with three scalable and effective methods.
+Our first approach is based on the Lagrangian relaxation.
+We then propose a meta-gradient technique that tunes La-
+grangian penalties to enhance the performance. Finally, we
+propose an alternating gradient approach that adjusts gra-
+dients based on solution feasibility. Our experiments show
+these methods effectively imitate expert behaviors while
+meeting cost constraints, outperforming methods that ignore
+costs. The meta-gradient method strikes the best balance be-
+tween high rewards and cost satisfaction.
+Acknowledgments
+This research is supported by the Ministry of Education, Sin-
+gapore, under its Social Science Research Thematic Grant
+(MOE Reference Number: MOE2020-SSRTG-018). Any
+opinions, findings and conclusions, or recommendations ex-
+pressed in this material are those of the authors and do not
+reflect the views of the Ministry of Education, Singapore.
+1Including average episode true reward (R), average episode
+cost (Jπ
+d ), and cost rate (PN
+t=1 dt/N, where N is the total number
+of environment interaction steps).
+
+
+References
+Abbeel, P.; and Ng, A. Y. 2004. Apprenticeship learning via
+inverse reinforcement learning. In Twenty-First International
+Conference on Machine Learning.
+Altman, E. 1999.
+Constrained Markov decision processes:
+stochastic modeling. Routledge.
+Bain, M.; and Sammut, C. 1995. A Framework for Behavioural
+Cloning. In Machine Intelligence 15, 103–129.
+Barth-Maron, G.; Hoffman, M. W.; Budden, D.; Dabney, W.;
+Horgan, D.; Tb, D.; Muldal, A.; Heess, N.; and Lillicrap, T.
+2018. Distributed distributional deterministic policy gradients.
+In Sixth International Conference on Learning Representations.
+Calian, D. A.; Mankowitz, D. J.; Zahavy, T.; Xu, Z.; Oh, J.;
+Levine, N.; and Mann, T. 2021. Balancing constraints and re-
+wards with meta-gradient D4PG. In Ninth International Con-
+ference on Learning Representations.
+Cheng, Z.; Shen, L.; Zhu, M.; Guo, J.; Fang, M.; Liu, L.; Du,
+B.; and Tao, D. 2023. Prescribed Safety Performance Imitation
+Learning from A Single Expert Dataset. IEEE Transactions on
+Pattern Analysis and Machine Intelligence.
+Dhariwal, P.; Hesse, C.; Klimov, O.; Nichol, A.; Plappert, M.;
+Radford, A.; Schulman, J.; Sidor, S.; Wu, Y.; and Zhokhov, P.
+2017. OpenAI Baselines. https://github.com/openai/baselines.
+Fang, B.; Jia, S.; Guo, D.; Xu, M.; Wen, S.; and Sun, F. 2019.
+Survey of imitation learning for robotic manipulation. Inter-
+national Journal of Intelligent Robotics and Applications, 3(4):
+362–369.
+Finn, C.; Levine, S.; and Abbeel, P. 2016. Guided cost learning:
+Deep inverse optimal control via policy optimization. In Thirty-
+Third International Conference on Machine Learning, 49–58.
+PMLR.
+Garg, D.; Chakraborty, S.; Cundy, C.; Song, J.; and Ermon, S.
+2021. IQ-Learn: Inverse soft-Q Learning for Imitation. In Ran-
+zato, M.; Beygelzimer, A.; Dauphin, Y.; Liang, P.; and Vaughan,
+J. W., eds., Advances in Neural Information Processing Sys-
+tems, volume 34, 4028–4039.
+Ho, J.; and Ermon, S. 2016. Generative adversarial imitation
+learning. Advances in Neural Information Processing Systems,
+29.
+Hoang, H.; Mai, T.; and Varakantham, P. 2024.
+Imitate the
+Good and Avoid the Bad: An Incremental Approach to Safe
+Reinforcement Learning.
+In Thirty-Eighth AAAI Conference
+on Artificial Intelligence.
+Hussein, A.; Gaber, M. M.; Elyan, E.; and Jayne, C. 2017. Imi-
+tation learning: A survey of learning methods. ACM Computing
+Surveys, 50(2): 1–35.
+Ingimundardottir, H.; and Runarsson, T. P. 2018. Discovering
+dispatching rules from data using imitation learning: A case
+study for the job-shop problem.
+Journal of Scheduling, 21:
+413–428.
+Kingma, D. P.; and Ba, J. 2015. Adam: A method for stochastic
+optimization. In Third International Conference for Learning
+Representations.
+Kuefler, A.; Morton, J.; Wheeler, T.; and Kochenderfer, M.
+2017. Imitating driver behavior with generative adversarial net-
+works. In 2017 IEEE Intelligent Vehicles Symposium, 204–211.
+IEEE.
+Malik, S.; Anwar, U.; Aghasi, A.; and Ahmed, A. 2021. Inverse
+constrained reinforcement learning. In Thirty-Eighth Interna-
+tional Conference on Machine Learning, 7390–7399. PMLR.
+Millar, P. W. 1983. The minimax principle in asymptotic sta-
+tistical theory. In Ecole d’Et´e de Probabilit´es de Saint-Flour
+XI—1981, 75–265. Springer.
+Ng, A. Y.; Russell, S.; et al. 2000. Algorithms for inverse re-
+inforcement learning. In Seventeenth International Conference
+on Machine Learning, volume 1, 2.
+Pathmanathan, P.; and Varakantham, P. 2023. Constrained Re-
+inforcement Learning in Hard Exploration Problems. In Thirty-
+Seventh AAAI Conference on Artificial Intelligence, 15055–
+15063.
+Pomerleau, D. A. 1991.
+Efficient training of artificial neu-
+ral networks for autonomous navigation. Neural Computation,
+3(1): 88–97.
+Puterman, M. L. 2014.
+Markov decision processes: discrete
+stochastic dynamic programming. John Wiley & Sons.
+Ray, A.; Achiam, J.; and Amodei, D. 2019.
+Benchmarking
+safe exploration in deep reinforcement learning. arXiv preprint
+arXiv:1910.01708, 7(1): 2.
+Ross, S.; Gordon, G.; and Bagnell, D. 2011. A reduction of
+imitation learning and structured prediction to no-regret on-
+line learning. In Fourteenth International Conference on Ar-
+tificial Intelligence and Statistics, 627–635. JMLR Workshop
+and Conference Proceedings.
+Satija, H.; Amortila, P.; and Pineau, J. 2020.
+Constrained
+Markov Decision Processes via Backward Value Functions. In
+Thirty-Seventh International Conference on Machine Learning,
+volume 119, 8502–8511.
+Schulman, J.; Levine, S.; Abbeel, P.; Jordan, M.; and Moritz, P.
+2015. Trust region policy optimization. In Thirty-Second Inter-
+national Conference on Machine Learning, 1889–1897. PMLR.
+Schulman, J.; Moritz, P.; Levine, S.; Jordan, M.; and Abbeel, P.
+2016. High-dimensional continuous control using generalized
+advantage estimation. In Fourth International Conference on
+Learning Representations.
+Syed, U.; Bowling, M.; and Schapire, R. E. 2008. Apprentice-
+ship learning using linear programming. In Twenty-Fifth Inter-
+national Conference on Machine Learning, 1032–1039.
+Tessler, C.; Mankowitz, D. J.; and Mannor, S. 2019. Reward
+constrained policy optimization. In Seventh International Con-
+ference on Learning Representations.
+Todorov, E.; Erez, T.; and Tassa, Y. 2012. MuJoCo: A physics
+engine for model-based control. In 2012 IEEE/RSJ Interna-
+tional Conference on Intelligent Robots and Systems, 5026–
+5033. IEEE.
+Xu, Z.; van Hasselt, H. P.; and Silver, D. 2018. Meta-gradient
+reinforcement learning.
+In Advances in Neural Information
+Processing Systems, volume 31, 2402–2413.
+Ziebart, B. D.; Bagnell, J. A.; and Dey, A. K. 2010. Model-
+ing interaction via the principle of maximum causal entropy. In
+Twenty-Seventh International Conference on Machine Learn-
+ing, 1255–1262.
+Ziebart, B. D.; Maas, A. L.; Bagnell, J. A.; Dey, A. K.; et al.
+2008. Maximum entropy inverse reinforcement learning. In
+Twenty-Third AAAI Conference on Artificial Intelligence, vol-
+ume 8, 1433–1438. Chicago, IL, USA.
+
+
+A. Theoretical Analysis
+The objective function of the imitation learning problem can
+be represented using (A.1),
+min
+π −H(π) + ψ∗(ρπ −ρπE),
+(A.1)
+And the distance measure in the GAIL framework is de-
+fined as (A.2).
+ψ∗(ρπ−ρπE) = max
+D Eπ[log D(s, a)]+EπE[log(1−D(s, a))]
+(A.2)
+Our proof is based on the GAIL framework, and the ob-
+jective function of the cost-constrained imitation learning
+problem is formulated in (A.3).
+L(ω, λ, θ) ≜min
+θ
+max
+ω,λ Eπθ[log Dω(s, a)] +
+EπE [log(1 −Dω(s, a))] +
+λ (Eπθ[d(s, a)] −EπE[d(s, a)]) −βH(πθ),
+(A.3)
+However, it is important to note that the form of the dis-
+tance measure will differ from that of (A.2), as will be ex-
+plained in the following theory.
+Theorem 1 The objective function of the cost-constrained
+imitation learning problem is:
+min
+π∈Π −H(π) + ψ∗(ρπ −ρπE),
+(A.4)
+where
+ψ∗(ρπ −ρπE)
+=
+max
+D,λ Eπ[log(D(s, a))] +
+EπE[log(1 −D(s, a))] + λ(Eπ[d(s, a)] −EπE[d(s, a)])
+There are broadly two steps to the proof :
+Step 1: Typically, optimal policy in an imitation learning
+setting is obtained by first solving the Inverse Reinforce-
+ment Learning (IRL) problem to get the optimal reward
+function r∗and then running an RL algorithm on the ob-
+tained reward function. In GAIL, these two steps were
+compressed into optimizing a ψ−regularized objective.
+Our first step is to show this can be also done for
+Cost Constrained Imitation Learning problems, al-
+beit with an altered ψ−regularized objective.
+Step 2: Our second step is to derive the specific form of ψ∗
+for CCIL problems.
+Step 1
+Constrained Markov Decision Process (CMDP) is com-
+monly solved by utilizing the Lagrangian relaxation tech-
+nique (Tessler, Mankowitz, and Mannor 2019). Then CMDP
+is transformed into an equivalent unconstrained problem by
+incorporating the cost constraint into the objective function:
+max
+λ≥0 min
+π∈Π Eπ[−r(s, a)] + λ(Eπ[d(s, a)] −d0)
+(A.5)
+In the aforementioned equation, our objective is to find
+the saddle point of the minimax problem. Since the reward
+function r(s, a) is not provided, our goal is to determine
+the optimal policy by utilizing the expert policy πE and the
+given cost functions d(s, a). To accomplish this, we utilize
+the maximum casual entropy Inverse Reinforcement Learn-
+ing (IRL) method (Ziebart et al. 2008; Ziebart, Bagnell, and
+Dey 2010) to solve the following optimization problem:
+max
+r∈R
+λ≥0
+
+min
+π∈Π −H(π) + Eπ[−r(s, a)] + λ(Eπ[d(s, a)] −d0)
+
+−(EπE[−r(s, a)] + λ(EπE[d(s, a)] −d0))
+(A.6)
+Where R is a set of reward functions. Maximum casual
+entropy IRL aims to find a reward function r ∈R that gives
+low rewards to the learner’s policy while giving high rewards
+to the expert policy. The optimal policy can be found via a
+reinforcement learning procedure:
+RL(r, λ) = arg min
+π∈Π
+−H(π)+Eπ[λd(s, a)−r(s, a)]−λd0
+(A.7)
+We study policies generated through reinforcement learn-
+ing, utilizing rewards learned through IRL on the most ex-
+tensive set of reward functions, denoted as R in Eq.(A.6),
+which encompasses all functions mapping from RS×A to R.
+However, as the use of a large R can lead to overfitting in
+the IRL process, we employ a concave reward function reg-
+ularizer (Finn, Levine, and Abbeel 2016), denoted as ψ, to
+define the IRL procedure:
+IRLψ(πE, d) =
+arg max
+r∈RS×A
+λ≥0
+
+min
+π∈Π −H(π) + Eπ[λd(s, a) −r(s, a)]
+
+−EπE[λd(s, a) −r(s, a)] + ψ(r)
+(A.8)
+Given (˜r, ˜λ) ∈IRLψ(πE, d), our objective is to learn a
+policy defined by RL(˜r, ˜λ). To characterize RL(˜r, ˜λ), it is
+commonly beneficial to convert optimization problems in-
+volving policies into convex problems. We use occupancy
+measure ρπ to accomplish this. After which we express the
+expected value of the reward and the expected value of
+the constraint as: Eπ[r(s, a)] = P
+s,a ρπ(s, a)r(s, a) and
+Eπ[d(s, a)] = P
+s,a ρπ(s, a)d(s, a) as described in Altman
+(1999). IRL can be reformulated as:
+IRLψ(πE, d) = arg max
+r∈RS×A
+λ≥0
+min
+π∈Π −H(π) + ψ(r)+
+X
+s,a
+(ρπ(s, a) −ρπE(s, a))[λd(s, a) −r(s, a)]
+(A.9)
+We then characterize RL(˜r, ˜λ), the policy learned by RL
+on the reward recovered by IRL as the optimal solution of
+Eq.(A.4).
+Proposition 1 (Theorem 2 of Syed, Bowling, and Schapire
+(2008)) If ρ ∈D, then ρ is the occupancy measure for
+πρ(a|s) ≜ρ(s, a)/ P′
+a ρ(s, a′), and πρ is the only policy
+whose occupancy measure is ρ.
+Proposition 2 (Lemma 3.1 of Ho and Ermon (2016)) Let
+¯H(ρ) = −P
+s,a ρ(s, a) log(ρ(s, a)/ P
+a′ ρ(s, a′)). Then,
+¯H is strictly concave, and for all π ∈Π and ρ ∈D, we
+have H(π) = ¯H(ρπ) and ¯H(ρ) = H(πρ).
+
+
+Proposition 3 Let (˜r, ˜λ) ∈IRLψ(πE, d), ˜π ∈RL(˜r, ˜λ),
+and
+πA ∈arg min
+π
+−H(π) + ψ∗(ρπ −ρπE)
+= arg min
+π
+max
+r,λ −H(π) + ψ(r)+
+X
+s,a
+(ρπ(s, a) −ρπE(s, a))[λd(s, a) −r(s, a)]
+(A.10)
+Then πA = ˜π.
+Proof. Let ρA be the occupancy measure of πA and ˜ρ be
+the occupancy measure of ˜π. By using Proposition 1, we
+define ¯L : D × RS×A × R →R by
+¯L(ρ, (r, λ)) = −¯H(ρ) + ψ(r)+
+X
+s,a
+(ρπ(s, a) −ρπE(s, a))[λd(s, a) −r(s, a)]
+(A.11)
+The following relationship then holds:
+ρA ∈arg min
+ρ∈D
+max
+r,λ
+¯L(ρ, (r, λ))
+(A.12)
+(˜r, ˜λ) ∈arg max
+r,λ
+min
+ρ∈D
+¯L(ρ, (r, λ))
+(A.13)
+˜ρ ∈arg min
+ρ∈D
+¯L(ρ, (˜r, ˜λ))
+(A.14)
+D is compact and convex, RS×A is convex. Due to con-
+vexity of −¯H,it follows that ¯L(ρ, ·) is convex for all ρ.
+¯L(·, (r, λ)) is concave for all (r, λ) (see proof in ).
+Therefore, we can use minimax duality (Millar 1983):
+min
+ρ∈D max
+r∈R
+λ
+¯L(ρ, (c, λ)) = max
+r∈R
+λ
+min
+ρ∈D
+¯L(ρ, (c, λ))
+(A.15)
+Hence, from Eqs.(A.12) and (A.13), (ρA, (˜r, ˜λ)) is a sad-
+dle point of ¯L, which implies that:
+ρA ∈arg min
+ρ∈D
+¯L(ρ, (˜r, ˜λ))
+(A.16)
+Because
+˜L(·, (r, λ)) is strictly concave for all (r, λ),
+Eqs.(A.14) and (A.16) imply ρA = ˜ρ. Since policies whose
+corresponding occupancy measure are unique (Proposition
+2), finally we get πA = ˜π.
+Proposition 3 illustrates the process of IRL in finding the
+optimal reward function and Lagrangian multiplier, repre-
+sented by (r∗, λ∗). By utilizing the output of IRL, reinforce-
+ment learning can be executed to obtain the optimal policy,
+represented by π∗. And we prove that π∗is the same as by
+directly solving the ψ-regularized imitation learning prob-
+lem ˜L. Furthermore, ψ-regularized imitation learning aims
+to identify a policy whose occupancy measure is similar to
+that of an expert, as measured by the convex function ψ∗.
+Subsequently, we deduce the form of ψ∗.
+Algorithm A.1: Meta-Gradients for Lagrangian Multipliers
+Input: initial parameters of policy θ, reward value network
+ϕr, cost value network ϕd, discriminator network ω, batch
+size K, a set of expert trajectories ΦE = {τE ∼πE}, ini-
+tial Lagrangian multipliers λ, entropy parameter β, learning
+rates αr, αd, αω, αλ
+Output: Optimal policy πθ
+1: Compute the average cost of expert trajectories: JE =
+1
+|Φk|
+P
+τ∈ΦE
+PT
+t=1 dt
+2: for k = 1, 2, ... do
+3:
+Collect set of learner’s trajectories Φk = {τi} by run-
+ning policy πθk for K time steps.
+4:
+Collect the reward rt of K time steps by using the dis-
+criminator output:rt = −log(Dω(st, at))
+5:
+Compute V r
+ϕr(st) and V d
+ϕd(st) of K time steps.
+6:
+Compute the reward and cost advantage Ar(st, at) and
+Ad(st, at), reward to go ˆRr
+t and cost to go ˆRd
+t of K time
+steps by using GAE.
+7:
+Compute the average episode cost of learner’s trajecto-
+ries: Jk =
+1
+|Φk|
+P
+τ∈Φk
+PT
+t=1 dt
+8:
+Split the data of K time steps into training and validation
+sets Ktr, Kva
+9:
+Inner loss:
+10:
+Update policy by using TRPO rule:
+θ′ = arg max
+θ
+PKtr
+t=1
+πθ(at|st)
+πθk (at|st)(Ar(st, at) −λAd(st, at)) + βH(πθk)
+11:
+Update reward value network:
+ϕ′r ←ϕr −
+1
+Ktr
+PKtr
+t=1 αr ▽ϕr (V r
+ϕr(st) −ˆRr
+t )2
+12:
+Update cost value network:
+ϕ′
+d ←ϕd −
+1
+Ktr
+PKtr
+t=1 αdαr ▽ϕd (V d
+ϕd(st) −ˆRd
+t )2
+13:
+Update discriminator network:
+ω′ ←ω + 1
+K
+PK
+t=1 αω(▽ω[log(Dω(st, at))]+
+▽ω[log(1 −Dω(st, at)])
+14:
+Update Lagrangian multipliers:
+λ′ ←λ + αλ(Jk −JE)
+15:
+Outer loss:
+16:
+Meta-parameter update:
+λ′′ ←λ′ −
+1
+Kva
+PKva
+t=1 ▽λ′(Ar(st, at) −λ′dt)2
+17:
+θ ←θ′, ϕr ←ϕ′r, ϕd ←ϕ′
+d, ω ←ω′, λ ←λ′′.
+18: end for
+Step 2
+In their GAIL paper, Ho and Ermon (2016) present a cost
+regularizer, ψGA, that leads to an imitation learning algo-
+rithm, as outlined in Eq.(A.1), which aims to minimize the
+Jensen-Shannon divergence between the occupancy mea-
+sures. Specifically, they convert a surrogate loss function, ϕ,
+which is used for binary classification of state-action pairs
+drawn from the occupancy measures ρπ and ρπE, into cost
+function regularizers ϕ, such that ϕ∗(ρπ −ρπE) represents
+the minimum expected risk, Rϕ(ρπ, ρπE), for the function ϕ
+(Ho and Ermon 2016).
+Rϕ(ρπ, ρπE) =
+X
+s,a
+max
+γ∈R ρπ(s, a)ϕ(γ) + ρπE(s, a)ϕ(−γ)
+(A.17)
+Here we use the same formula of surrogate loss function
+
+
+Algorithm A.2: Cost Violation based Alternating Gradient
+Input: initial parameters of policy θ, reward value network
+ϕr, cost value network ϕd, discriminator network ω, batch
+size K, a set of expert trajectories ΦE = {τE ∼πE}, en-
+tropy parameter β, learning rates αr, αd, αω.
+Output: Optimal policy πθ
+1: Compute the average cost of expert trajectories: JE =
+1
+|Φk|
+P
+τ∈ΦE
+PT
+t=1 dt
+2: for k = 1, 2, ... do
+3:
+Collect set of learner’s trajectories Φk = {τi} by run-
+ning policy πθk for K time steps.
+4:
+Collect the reward rt of K time steps by using the dis-
+criminator output:rt = −log(Dω(st, at))
+5:
+Compute V r
+ϕr(st) and V d
+ϕd(st) of K time steps.
+6:
+Compute the reward and cost advantage Ar(st, at) and
+Ad(st, at), reward to go ˆRr
+t and cost to go ˆRd
+t of K time
+steps by using GAE.
+7:
+Compute the average episode cost of learner’s trajecto-
+ries: Jk =
+1
+|Φk|
+P
+τ∈Φk
+PT
+t=1 dt
+8:
+if Jk ≤JE then
+9:
+Update policy towards maximizing the return:
+θ′ = arg max
+θ
+PK
+t=1
+πθ(at|st)
+πθk (at|st)Ar(st, at) + βH(πθk)
+10:
+else
+11:
+Update policy towards minimizing the cost:
+θ′ = arg min
+θ
+PK
+t=1
+πθ(at|st)
+πθk (at|st)Ad(st, at) −βH(πθk)
+12:
+end if
+13:
+Update reward value network:
+ϕ′r ←ϕr −1
+K
+PK
+t=1 αr ▽ϕr (V r
+ϕr(st) −ˆRr
+t )2
+14:
+Update cost value network:
+ϕ′
+d ←ϕd −1
+K
+PK
+t=1 αd ▽ϕd (V d
+ϕd(st) −ˆRd
+t )2
+15:
+Update discriminator network:
+ω′ ←ω + 1
+K
+PK
+t=1 αω(▽ω[log(Dω(st, at))]+
+▽ω[log(1 −Dω(st, at)])
+16:
+θ ←θ′, ϕr ←ϕ′r, ϕd ←ϕ′
+d, ω ←ω′.
+17: end for
+ϕ as in GAIL paper: ψϕ(c) = P
+ρπE gϕ(c(s, a)), where
+gϕ(x) = −x + ϕ(−ϕ−1(−x)), ϕ is a strictly decreasing
+convex function (Proposition 1 from Ho and Ermon (2016)).
+Noted that in GAIL paper they adopt cost function c(s, a)
+not reward function r(s, a), then we write in this form:
+ψϕ(−r) = P
+ρπE gϕ(−r(s, a)).
+Then formulation of ψ∗
+ϕ(ρπ −ρπE) is represented as fol-
+lows(see proof in ):
+ψ∗
+ϕ(ρπ −ρπE)
+= −Rϕ(ρπ, ρπE) + max
+λ
+X
+s,a
+λ(ρπ(s, a) −ρπE(s, a))d(s, a)
+Using the logistic loss ϕ(γ)
+=
+log(1 + e−γ), the
+same form in GAIL paper, then −Rϕ(ρπ, ρπE)
+=
+max
+D∈(0,1)S×A
+P
+s,a ρπ(s, a) log D(s, a) + ρπE(s, a) log(1 −
+D(s, a)). Therefore, we obtain the final form of ψ∗(ρπ −
+ρπE) as follows:
+ψ∗(ρπ −ρπE) =
+max
+D∈(0,1)S×A
+λ
+X
+s,a
+ρπ(s, a) log D(s, a)+
+ρπE(s, a) log(1 −D(s, a)) + λ(ρπ(s, a) −ρπE(s, a))d(s, a)
+=
+max
+D∈(0,1)S×A
+λ
+Eπ[log D(s, a)] + EπE[log(1 −D(s, a))]
++ λ(Eπ[d(s, a)] −EπE[d(s, a)])
+Other Proofs
+Prove concavity of ¯L
+¯L(·, (r, λ)) is concave for all (r, λ).
+Proof We known that ψ(r) is concave, suppose α ∈[0, 1].
+¯L(·, (αr1 + (1 −α)r2, αλ1 + (1 −α)λ2)) = −¯H(ρ)+
+ψ(αr1 + (1 −α)r2)+
+X
+s,a
+(ρπ −ρπE)[d(αλ1 + (1 −α)λ2) −(αr1 + (1 −α)r2)]
+≥αψ(r1) + (1 −α)ψ(r2) + α
+X
+s,a
+(ρπ −ρπE)(λ1d −r1)
++ (1 −α)
+X
+s,a
+(ρπ −ρπE)(λ2d −r2)
+Therefore, ¯L(·, (αr1 + (1 −α)r2, αλ1 + (1 −α)λ2)) ≥
+¯L(·, (αr1, αλ1) + ¯L(·, ((1 −α)r2, (1 −α)λ2)), ¯L(·, (r, λ))
+is concave for all (r, λ).
+Proof of ψ∗
+ϕ(ρπ −ρπE)
+We deduce the form of ψ∗
+ϕ(ρπ −
+ρπE) as:
+ψ∗
+ϕ(ρπ −ρπE) =
+−Rϕ(ρπ, ρπE) + max
+λ
+λ
+X
+s,a
+(ρπ(s, a) −ρπE(s, a))d(s, a)
+We will simplify notation by using the symbols ρπ, ρπE,
+r, and d to represent ρπ(s, a),ρπE(s, a),r(s, a) and d(s, a),
+respectively.
+ψ∗
+ϕ(ρπ −ρπE) = max
+r∈R
+λ
+X
+s,a
+(ρπ −ρπE)(λd −r) −ψϕ(−r)
+= max
+r∈R
+λ
+X
+s,a
+(ρπ −ρπE)(λd −r) −
+X
+s,a
+ρπEgϕ(−r)
+= max
+r∈R
+X
+s,a
+(ρπ −ρπE)(−r) −
+X
+s,a
+ρπE(r + ϕ(−ϕ−1(r)))
++ max
+λ
+X
+s,a
+λ(ρπ −ρπE)d
+= max
+r∈R
+X
+s,a
+ρπ(−r) −
+X
+s,a
+ρπEϕ(−ϕ−1(r))
++ max
+λ
+X
+s,a
+λ(ρπ −ρπE)d
+Then we make the change of variables r →ϕ(γ), the
+
+
+above equation becomes:
+ψ∗
+ϕ(ρπ −ρπE) =
+X
+s,a
+max
+γ∈R ρπ(−ϕ(γ)) −ρπEϕ(−γ) + max
+λ
+λ
+X
+s,a
+(ρπ −ρπE)d
+= −Rϕ(ρπ, ρπE) + max
+λ
+λ
+X
+s,a
+(ρπ −ρπE)d
+Therefore, we prove Theorem 1 and the objective function
+of cost-constrained imitation learning is Eq.(A.3).
+B. Algorithms for MALM and CVAG
+Algorithms A.1 and A.2 are pseudocode for Meta-Gradients
+for Lagrangian multipliers (MALM) and Cost Violation
+based Alternating Gradient (CVAG) methods.
+C. Experiment Figures
+C.1 Experiments results
+Figures A.1 and A.2 are experiment results from MuJoCo,
+Humanoid, and DoggoButton tasks.
+C.2 Experiment Hyperparameters
+Table A.1 lists hyperparameters we used in our experiments.
+Hyperparameter
+Value
+Policy and Value network size
+(100,100)
+Actor and Critic network size (for IQ-Learn)
+(256,256)
+Activation
+tanh
+Batch Size
+2000
+Generator network update times
+3
+Discriminator network update times
+1
+Generalized Advantage Estimation γ
+0.995
+Generalized Advantage Estimation λ
+0.97
+Maximum KL
+0.01
+Learning rate (Value network)
+1 × 10−3
+Learning rate (Discriminator network)
+3 × 10−4
+Policy entropy
+0.0
+Discriminator entropy
+1 × 10−3
+Initial Lagrangian penalty
+0.01
+Lagrangian penalty learning rate
+0.05
+Meta-learning rate
+0.05
+Table A.1: Hyperparameters used in experiments.
+
+
+Figure A.1: Performance of MuJoCo environments. The x-axes indicate the number of iterations, and the y-axes indicate the
+performance of the agent, including average rewards/costs/cost rates with standard deviations.
+Figure A.2: Performance of Humanoid and DoggoButton tasks The x-axes indicate the number of iterations, and the y-axes
+indicate the performance of the agent, including average rewards/costs/cost rates with standard deviations.

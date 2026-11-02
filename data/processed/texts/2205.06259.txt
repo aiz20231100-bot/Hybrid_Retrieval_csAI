@@ -1,0 +1,988 @@
+arXiv:2205.06259v1  [cs.AI]  12 May 2022
+Computing Programs for Generalized Planning as Heuristic Search
+(Extended Abstract)
+Javier Segovia-Aguas1 , Sergio Jim´enez2 and Anders Jonsson1
+1Dept. Information and Communication Technologies, Universitat Pompeu Fabra, Spain
+2Valencian Research Institute for Artiﬁcial Intelligence, Universitat Polit`ecnica de Val`encia, Spain
+javier.segovia@upf.edu, serjice@dsic.upv.es, anders.jonsson@upf.edu
+Abstract
+Although heuristic search is one of the most suc-
+cessful approaches to classical planning, this plan-
+ning paradigm does not apply straightforwardly to
+Generalized Planning (GP). This paper adapts the
+planning as heuristic search paradigm to the partic-
+ularities of GP, and presents the ﬁrst native heuris-
+tic search approach to GP. First, the paper deﬁnes
+a program-based solution space for GP that is in-
+dependent of the number of planning instances in a
+GP problem, and the size of these instances. Sec-
+ond, the paper deﬁnes the BFGP algorithm for GP,
+that implements a best-ﬁrst search in our program-
+based solution space, and that is guided by different
+evaluation and heuristic functions.
+1
+Introduction
+Heuristic
+search
+is
+one
+of
+the
+most
+suc-
+cessful
+approaches
+to
+classical
+plan-
+ning
+[Bonet and Geffner, 2001;
+Hoffmann, 2003;
+Helmert, 2006;
+Lipovetzky and Geffner, 2017].
+Unfor-
+tunately, it is not straightforward to adopt state-of-the-art
+search algorithms and heuristics from classical planning
+to Generalized Planning (GP). The planning as heuristic
+search approach traditionally addresses the computation
+of sequential plans implementing a grounded state-space
+search.
+GP requires however reasoning about the syn-
+thesis of algorithm-like solutions that,
+in addition to
+action sequences,
+contain branching and looping con-
+structs [Winner and Veloso, 2003; Hu and Levesque, 2011;
+Siddharth et al., 2011;
+Hu and De Giacomo, 2013;
+Segovia-Aguas et al., 2016;
+Illanes and McIlraith, 2019;
+Franc`es et al., 2021].
+Furthermore, GP aims to synthesize
+solutions that generalize to a (possibly inﬁnite) set of
+planning instances. The domain of the state variables may
+then be large, making unfeasible the grounding traditionally
+implemented by of off-the-shelf classical planners.
+This paper adapts the planning as heuristic search
+paradigm to the particularities of GP, and presents the ﬁrst na-
+tive heuristic search approach to GP1. Given a GP problem,
+1This is an extended abstract of the “Generalized Planning as
+Heuristic Search” paper that appeared at ICAPS 2021 conference.
+that comprises an input set of classical planning instances
+from a given domain, our GP as heuristic search approach
+computes an algorithm-like plan that solves the full set of in-
+put instances. The contribution of the paper is two-fold:
+• A tractable solution space for GP. We leverage the
+computational models of the Random-Access Ma-
+chine [Skiena, 1998] and the Intel x86 FLAGS regis-
+ter [Dandamudi, 2005] to deﬁne an innovative program-
+based solution space that is independent of the number
+of input planning instances in a GP problem, and the size
+of these instances (i.e. the number of state variables and
+their domain size).
+• A heuristic search algorithm for GP. We present the
+BFGP algorithm that implements a best-ﬁrst search in
+our solution space for GP. We also deﬁne several evalu-
+ation and heuristic functions to guide BFGP; evaluating
+these functions does not require to ground states/actions
+in advance, so they allow to addressing GP problems
+where state variables have large domains (e.g. integers).
+The paper is structured as follows. First we formalize the
+classical planning model. Then we show how to extend this
+model with a Random-Access Machine (RAM) and formal-
+ize GP with planning programs, our representation formalism
+for GP solutions. Last, we describe the implementation of
+our GP as heuristic search approach and report results on its
+empirical performance. More details on the GP as heuristic
+search approach can be found in Segovia-Aguas et al. [2021].
+2
+Classical Planning
+Let X be a set of state variables, each x ∈X with do-
+main Dx.
+A state is a total assignment of values to the
+set of state variables. For a variable subset X′ ⊆X, let
+D[X′] = ×x∈X′Dx denote its joint domain. The state space
+is then S = D[X]. Given a state s ∈S and a subset of vari-
+ables X′ ⊆X, let s|X′ = ⟨xi = vi⟩xi∈X′ be the projection
+of s onto X′ i.e. the partial state deﬁned by the values that s
+assigns to the variables in X′. The projection of s onto X′
+deﬁnes the subset of states {s | s ∈S, s|X′ ⊆s} that are
+consistent with the corresponding partial state.
+Let A be a set of deterministic actions. An action a ∈A
+has an associated set of variables par(a) ⊆X, called param-
+eters, and is characterized by two functions: an applicability
+function ρa : D[par(a)] →{0, 1}, and a successor function
+
+
+θa : D[par(a)] →D[par(a)]. Action a is applicable in a
+given state s iff ρa(s|par(a)) equals 1, and results in a suc-
+cessor state s′ = s ⊕a, that is built replacing the values that
+s assigns to variables in par(a) with the values speciﬁed by
+θa(s|par(a)).
+A classical planning instance is a tuple P = ⟨X, A, I, G⟩,
+where X is a set of state variables, A is a set of actions,
+I ∈S is an initial state, and G is a goal condition on
+the state variables that induces the subset of goal states
+SG = {s | s ⊨G, s ∈S}. Given P, a plan is an ac-
+tion sequence π = ⟨a1, . . . , am⟩whose execution induces
+a trajectory τ = ⟨s0, a1, s1, . . . , am, sm⟩such that, for each
+1 ≤i ≤m, ai is applicable in si−1 and results in the succes-
+sor state si = si−1 ⊕ai. A plan π solves P if the execution
+of π in s0 = I ﬁnishes in a goal state, i.e. sm ∈SG.
+3
+Generalized Planning as Heuristic Search
+This work builds on top of the inductive formalism for GP,
+where a GP problem is a set of classical planning instances
+with a common structure. Here we describe our heuristic
+search approach to GP.
+3.1
+Classical Planning with a RAM
+To deﬁne a tractable solution space for GP, that is indepen-
+dent of the number (and domain size) of the planning state
+variables, we extend the classical planning model with: (i), a
+set of pointers over the state variables (ii), their primitive op-
+erations and (iii), two Boolean (the zero and carry FLAGS)
+to store the result of the primitive operations over pointers.
+Formally a pointer is a ﬁnite domain variable z ∈Z with
+domain Dz = [0..|X|). To formalize the primitive opera-
+tions over pointers we leverage the notion of the RAM; the
+RAM is an abstract computation machine, that is polyno-
+mially equivalent to a Turing machine, and that enhances a
+multiple-register counter machine with indirect memory ad-
+dressing [Boolos et al., 2002]. The indirect memory address-
+ing of the RAM enables the deﬁnition of programs that ac-
+cess an unbounded number of state variables. Let z ∈Z be
+a pointer over the state variables, and ∗z the content of that
+pointer, our GP as heuristic search implements the follow-
+ing primitive operations over pointers: {inc(z1), dec(z1),
+cmp(z1, z2), cmp(∗z1, ∗z2), set(z1, z2) | z1, z2 ∈Z}. Re-
+spectively, these primitive operations increment/decrement a
+pointer, compare two pointers (or their content), and set the
+value of a pointer z1 to another pointer z2. Each primitive
+operation also updates two Boolean Y = {yz, yc}, the zero
+and carry FLAGS, according to the result (denoted here by
+res) of that primitive operation:
+inc(z1) =⇒res := z1 + 1,
+dec(z1) =⇒res := z1 −1,
+cmp(z1, z2) =⇒res := z1 −z2,
+cmp(∗z1, ∗z2) =⇒res := ∗z1 −∗z2,
+set(z1, z2) =⇒res := z2,
+yz := (res == 0),
+yc := (res > 0).
+Given a classical planning instance P = ⟨X, A, I, G⟩, its
+extension with a RAM of |Z| pointers and two FLAGS is the
+classical planning instance PZ = ⟨XZ, AZ, IZ, G⟩, where
+the set of the state variables is extended with the FLAGS and
+the pointers, XZ = X ∪Y ∪Z. The set of actions AZ
+comprises the primitive pointer operations and the original
+actions A, but replacing their parameters by pointers in Z.
+The initial state IZ is extended to set the FLAGS to False,
+and the pointers to zero (by default). The goals of PZ are
+the same as those of the original instance. An extended in-
+stance PZ preserves the solution space of the original instance
+P [Segovia-Aguas et al., 2021].
+3.2
+Generalized Planning with a RAM
+A GP problem is a set of classical planning instances with
+a common structure. In this work the common structure is
+given by the RAM extension; it provides a set of different
+classical planning instances with a common set of FLAGS,
+pointers, and actions deﬁned over those pointers.
+Deﬁnition 1 (GP problem). A GP problem is a set of T
+classical planning instances P = {P 1
+Z, . . . , P T
+Z } that share
+the same subset of state variables {Y ∪Z}, and actions
+AZ, but may differ in their state variables, initial state,
+and goals. Formally, P 1
+Z = ⟨X1
+Z, AZ, I1
+Z, G1⟩, . . . , P T
+Z =
+⟨XT
+Z , AZ, IT
+Z , GT ⟩where ∀t{Y ∪Z} ⊂Xt
+Z, 1 ≤t ≤T.
+Representations
+of
+GP
+solutions
+range
+from
+programs
+[Winner and Veloso, 2003;
+Jimenez and Jonsson, 2015;
+Segovia-Aguas et al., 2019]
+and
+generalized
+policies
+[Mart´ın and Geffner, 2004],
+to
+ﬁnite
+state
+controllers
+[Bonet et al., 2010;
+Segovia-Aguas et al., 2019]
+or
+formal
+grammars
+and
+hierarchies
+[Nau et al., 2003; Segovia-Aguas et al., 2017].
+Each representation has its own expressiveness capacity, as
+well as its own computation complexity. We can however
+deﬁne a common condition under which a generalized plan is
+considered a solution to a GP problem [Jim´enez et al., 2019].
+First, let us deﬁne exec(Π, P)
+=
+⟨a1, . . . , am⟩as the
+sequential plan produced by the execution of a generalized
+plan Π, on a classical planning instance P.
+Deﬁnition 2 (GP solution). A generalized plan Π solves a GP
+problem P iff for every classical planning instance Pt ∈P,
+1 ≤t ≤T, it holds that exec(Π, Pt) solves Pt.
+In this work we represent GP solutions as planning pro-
+grams [Segovia-Aguas et al., 2019]. A planning program is
+a sequence of n instructions Π = ⟨w0, . . . , wn−1⟩, where
+each instruction wi ∈Π is associated with a program line
+0 ≤i < n and is either:
+• A planning action wi ∈A.
+• A goto instruction wi = go(i′, !y), where i′ is a program
+line 0 ≤i′ < i or i + 1 < i′ < n, and y is a proposition.
+• A termination instruction wi = end. The last instruction
+of a program Π is always wn−1 = end.
+The execution model for a planning program is a program
+state (s, i), i.e. a pair of a planning state s ∈S and program
+line 0 ≤i < n. Given a program state (s, i), the execution of
+a programmed instruction wi is deﬁned as:
+• If wi ∈A, the new program state is (s′, i + 1), where
+s′ = s ⊕wi is the successor when applying wi in s.
+
+
+Initial State
+Goal State
+P2
+3
+2
+1
+5
+4
+4
+5
+1
+2
+3
+P1
+6
+3
+4
+2
+5
+1
+1
+5
+2
+4
+3
+6
+Figure 1: Classical planning instances for reversing the content of
+two lists by swapping their elements.
+REVERSE
+0.
+swap (z1 ,z2 )
+1.
+i nc (z1 )
+2.
+dec (z2 )
+3. cmp (z2 ,z1 )
+4.
+goto (1 ,¬(¬yz ∧¬yc ) )
+5.
+end
+Figure 2: Generalized plan for reversing a list, no matter its length.
+• If wi = go(i′, !y), the new program state is (s, i + 1)
+if y holds in s, and (s, i′) otherwise2. Proposition y can
+be the result of an arbitrary expression on the state vari-
+ables [Lotinac et al., 2016].
+• If wi = end, program execution terminates.
+To execute a planning program Π on a planning instance
+P, the initial program state is set to (I, 0), i.e. the initial state
+of P and the ﬁrst program line of Π. A planning program Π
+solves P iff the execution terminates in a program state (s, i)
+that satisﬁes the goal condition, i.e. wi = end and s ∈SG.
+Example. Figure 1 shows the initial state and goals of
+two classical planning instances, P1 = ⟨X, A, I1, G1⟩and
+P2 = ⟨X, A, I2, G2⟩, for reversing two lists. Both instances
+can be deﬁned with a set of state variables X = {xi}l
+1,
+where an integer is assigned to every xi and l is the list
+length, and a set of swap(xi, xj) actions that swap the con-
+tent of two state variables. An example solution plan for P1
+is π1 = ⟨swap(x1, x6), swap(x2, x5), swap(x3, x4)⟩while
+π2 = ⟨swap(x1, x5), swap(x2, x4)⟩is a solution plan for
+P2. This set of two classical planning instances can be ex-
+tended with a RAM, and the resulting set P = {P 1
+Z, P 2
+Z}
+is an example GP problem. Figure 2 shows the generalized
+plan, represented as a planning program with six lines and
+two pointers Z = {z1, z2}. Initially, the ﬁrst list element is
+pointed by z1 (default) and the last element by z2. The ele-
+ments pointed by z1 and z2 are swapped in Line 0, and the
+pointers are moved forward and backward once respectively
+(Lines 1-2). Then, z2 and z1 are compared in Line 3, and the
+FLAGS are updated as follows: yz = ((z2 −z1) == 0) and
+yc = ((z2 −z1) > 0). This is repeated until ¬(¬yz ∧¬yc) is
+falsiﬁed, which only occurs when z2 is smaller than z1, thus
+reversing any list, no matter its length or content.
+2We adopt the convention of jumping to line i′ whenever y is
+false, inspired by jump instructions in the Random-Access Machine
+that jump when a register equals zero.
+3.3
+The BFGP algorithm for Generalized Planning
+Given a GP problem P = {P1, . . . , PT }, a number of pro-
+gram lines n, and a number of pointers |Z|, the BFGP algo-
+rithm outputs a planning program Π that solves every classi-
+cal planning instance Pt ∈P, 1 ≤t ≤T. Otherwise BFGP
+reports that there is no solution within the given number of
+program lines and pointers.
+Search space. BFGP searches in the space of planning
+programs with n program lines, and |Z| pointers, that can be
+built with the shared set of actions AZ, and goto instructions
+that are exclusively conditioned on the value of FLAGS Y =
+{yz, yc}. Since only the primitive operations over pointers
+update FLAGS Y , we have an observation space of 2|Y | ×
+2|Z|2 state observations implemented with only |Y | Boolean
+variables. The four joint values of {yz, yc} model then a large
+space of observations, including = 0,̸ = 0, < 0, > 0, ≤0, ≥0
+as well as relations =,̸ =, <, >, ≤, ≥on variable pairs.
+Search algorithm. BFGP implements a Best First Search
+(BFS) that starts with an empty planning program. To gen-
+erate a tractable set of successor nodes, child nodes in the
+search tree are restricted to planning programs that result
+from programming the PCMAX line (i.e. the maximum line
+reached after executing the current program on the classi-
+cal planning instances in P). This procedure for successor
+generation guarantees that duplicate successors are not gen-
+erated. BFGP is a frontier search algorithm, meaning that,
+to reduce memory requirements, BFGP stores only the open
+list of generated nodes, but not the closed list of expanded
+nodes [Korf et al., 2005]. BFS sequentially expands the best
+node in a priority queue (aka open list) sorted by an evalua-
+tion/heuristic function. If the planning program Π solves all
+the instances Pt ∈P, then search ends, and Π is a valid solu-
+tion for the GP problem P.
+Evaluation functions.
+BFGP exploits two different
+sources of information to guide the search in the space of can-
+didate planning programs:
+• The program structure. These are evaluation functions
+computed in linear time in the size of program Π.
+– f1(Π), the number of goto instructions in Π.
+– f2(Π), number of undeﬁned program lines in Π.
+– f3(Π), the number of repeated actions in Π.
+• The program performance. These functions assess the
+performance of Π executing it on each of the classical
+planning instances Pt ∈P, 1 ≤t ≤T; the execution
+of a planning program on a classical planning instance
+is a deterministic procedure that requires no variable in-
+stantiation. If the execution of Π on an instance Pt ∈P
+fails, this means that the search node corresponding to
+the planning program Π is a dead-end, and hence it is
+not added to the open list:
+– h4(Π, P) = n −PCMAX, where PCMAX is the
+maximum program line that is eventually reached
+after executing Π on all the instances in P.
+– h5(Π, P) = P
+Pt∈P
+P
+v∈Gt(st[v] −Gt[v])2. This
+function accumulates, for each instance Pt ∈P,
+the euclidean distance of state st to the goal state
+variables Gt. The state st is obtained applying the
+
+
+Domain
+n, |Z|
+f1
+f2
+f3
+Time
+Mem.
+Exp.
+Eval.
+Time
+Mem.
+Exp.
+Eval.
+Time
+Mem.
+Exp.
+Eval.
+T. Sum
+5, 2
+0.24
+4.2
+4.8K
+5.8K
+0.30
+3.8
+6.4K
+6.4K
+0.13
+3.9
+2.2K
+2.8K
+Corridor
+7, 2
+3.04
+6.6
+12.4K
+26.7K
+0.41
+3.8
+2.2K
+2.2K
+3.66
+4.2
+24.2K
+25.9K
+Reverse
+7, 3
+82
+61
+0.28M
+0.57M
+181
+4.0
+0.95M
+0.95M
+170
+23
+0.75M
+0.84M
+Select
+7, 3
+198
+110
+0.83M
+1.10M
+27
+3.9
+0.12M
+0.12M
+76.49
+11
+0.34M
+0.38M
+Find
+7, 3
+195
+175
+0.50M
+1.36M
+271
+4.0
+1.46M
+1.46M
+86
+12
+0.41M
+0.45M
+Fibonacci
+8, 3
+496
+922
+2.48M
+6.79M
+1,082
+3.9
+11.8M
+11.8M
+TO
+-
+-
+-
+Gripper
+8, 4
+TO
+-
+-
+-
+3,439
+4.1
+19.9M
+19.9M
+TO
+-
+-
+-
+Sorting
+9, 3
+TO
+-
+-
+-
+TO
+-
+-
+-
+3,143
+711
+19.5M
+22.9M
+Average
+162
+213
+0.68M
+1.64M
+714
+3.9
+4.89M
+4.89M
+580
+128
+3.51M
+4.09M
+Domain
+n, |Z|
+h4
+h5
+f6
+Time
+Mem.
+Exp.
+Eval.
+Time
+Mem.
+Exp.
+Eval.
+Time
+Mem.
+Exp.
+Eval.
+T. Sum
+5, 2
+0.10
+3.8
+1.6K
+1.6K
+0.09
+3.9
+1.2K
+1.4K
+0.45
+4.8
+7.4K
+7.4K
+Corridor
+7, 2
+1.09
+3.9
+5.3K
+5.4K
+5.29
+4.1
+30.3K
+31.3K
+6.16
+7.6
+35.3K
+35.3K
+Reverse
+7, 3
+205
+4.2
+0.88M
+0.88M
+1.46
+4.2
+4.9K
+6.3K
+369
+230
+1.57M
+1.65M
+Select
+7, 3
+0.80
+3.9
+3.0K
+4.2K
+94
+5.7
+0.34M
+0.35M
+255
+155
+1.06M
+1.14M
+Find
+7, 3
+415
+4.4
+1.76M
+1.76M
+140
+7.0
+0.58M
+0.59M
+423
+244
+1.76M
+1.77M
+Fibonacci
+8, 3
+TO
+-
+-
+-
+1,500
+120
+11.3M
+11.8M
+TO
+-
+-
+-
+Gripper
+8, 4
+TO
+-
+-
+-
+83
+5.5
+0.34M
+0.35M
+TO
+-
+-
+-
+Sorting
+9, 3
+TO
+-
+-
+-
+TO
+-
+-
+-
+TO
+-
+-
+-
+Average
+125
+4.0
+0.53M
+0.53M
+260
+21
+1.80M
+1.88M
+211
+128
+0.89M
+0.92M
+Table 1: We report the number of program lines n, and pointers |Z| per domain, and for each evaluation/heuristic function, CPU (secs),
+memory peak (MBs), and the numbers of expanded and evaluated nodes. TO stands for Time-Out (>1h of CPU). Best results in bold.
+Dom.
+BFGP(f1, h5) / BFGP(h5, f1)
+T.
+M.
+Exp.
+Eval.
+T. Sum
+0.2/0.1
+4.3/3.8
+2.8K/1.1K
+4.8K/1.4K
+Corr.
+3.2/4.5
+6.6/5.9
+6.5K/26.0K
+21.6K/27.5K
+Rev.
+63/1.4
+52/4.7
+81.9K/3.7K
+0.3M/7.7K
+Sel.
+203/80
+110/7.0
+0.6M/0.3M
+0.9M/0.3M
+Find
+313/162
+176/14
+0.9M/0.7M
+1.5M/0.7M
+Fibo.
+528/22
+828/32
+1.4M/75K
+5.3M/0.2M
+Grip.
+TO/6.9
+-/10
+-/5.8K
+-/37.3K
+Sort.
+TO/713
+-/730
+-/4.4M
+-/4.5M
+Table 2: CPU time (secs), memory peak (MBs), num. of expanded
+and evaluated nodes. Best results in bold.
+Dom.
+Inst.
+Time∞
+Mem∞
+Time
+Mem
+T. Sum
+44,709
+1,066.74
+53MB
+574.08
+47MB
+Corr.
+1,000
+0.23
+5.0MB
+0.15
+4.7MB
+Rev.
+50
+37.96
+5.2GB
+2.70
+0.3GB
+Sel.
+50
+144.75
+19.6GB
+2.29
+33MB
+Find
+50
+114.55
+19.6GB
+2.12
+33MB
+Fibo.
+33
+0.00
+4.2MB
+0.00
+3.9MB
+Grip.
+1,000
+2.71
+0.1GB
+1.65
+0.1GB
+Sort.
+20
+272.06
+15.2GB
+52.04
+3.8MB
+Table 3: Validation set, CPU-time (secs) and memory peak for pro-
+gram validation, with/out inﬁnite program detection.
+sequence of actions exec(Π, Pt) to the initial state
+It of that problem Pt ∈P. Computing h5(Π, Pt)
+requires that goals are speciﬁed as a partial state.
+Note that for Boolean variables the squared differ-
+ence becomes a simple goal counter.
+– f6(Π, P)
+=
+P
+Pt∈P |exec(Π, Pt)|,
+where
+exec(Π, Pt) is the sequence of actions induced
+from executing the planning program Π on the
+planning instance Pt.
+All these functions are cost functions (i.e. smaller values are
+preferred). Functions h4(Π, P) and h5(Π, P) are cost-to-go
+heuristics; they provide an estimate on how far a program
+is from solving the given GP problem. Functions h4(Π, P),
+h5(Π, P), and f6(Π, P) aggregate several costs that could be
+expressed as a combination of different functions, e.g. sum,
+max, average, weighted average, etc.
+4
+Evaluation
+We evaluated the performance of our GP as heuristic search
+approach in eight domains [Segovia-Aguas et al., 2021]. Ex-
+periments performed in an Ubuntu 20.04 LTS, with AMD®
+Ryzen 7 3700x 8-core processor × 16 and 32GB of RAM.
+Table 1 summarizes the results of BFGP with our six dif-
+ferent evaluation/heuristic functions (best results in bold): i)
+f2 and h5 exhibited the best coverage; ii) there is no clear
+dominance of a structure evaluation function, f2 has the best
+memory consumption while f3 is the only structural function
+that solves Sorting; iii) the performance-based function h5
+dominates h4 and f6. Interestingly, the base performance of
+BFGP with a single evaluation/heuristic function is improved
+guiding BFGP with a cost-to-go heuristic function and break-
+ing ties with a structural evaluation function (or vice versa).
+Table 2 shows the performance of BFGP(f1, h5) and its re-
+versed conﬁguration BFGP(h5, f1) which actually resulted
+in the overall best conﬁguration solving all domains.
+The solutions synthesized by BFGP were successfully val-
+idated. Table 3 reports the CPU time, and peak memory, yield
+when running the solutions synthesized by BFGP(h5, f1)
+on a validation set.
+The largest CPU-times and memory
+peaks correspond to the conﬁguration that implements the
+detection of inﬁnite programs, which requires saving states
+to detect whether they are revisited during execution. Skip-
+ping this mechanism allows to validate non-inﬁnite programs
+faster [Segovia-Aguas et al., 2020].
+5
+Conclusion
+We presented the ﬁrst native heuristic search approach for GP
+that leverages solutions represented as automated planning
+programs. We believe this work builds a stronger connection
+between the two closely related areas of planning and pro-
+gram synthesis [Gulwani et al., 2017; Alur et al., 2018]. A
+wide landscape of effective techniques, coming from heuris-
+tic search and classical planning, promise to improve the base
+performance of our approach [Segovia-Aguas et al., 2022].
+For instance, better estimates may be obtained by building on
+top of better informed planning heuristics [Franc`es, 2017].
+
+
+Acknowledgements
+Javier Segovia-Aguas is supported by TAILOR, a project funded by
+EU H2020 research and innovation programme no. 952215. Ser-
+gio Jim´enez is supported by Spanish grants RYC-2015-18009 and
+TIN2017-88476-C2-1-R. Anders Jonsson is partially supported by
+Spanish grant PID2019-108141GB-I00.
+References
+[Alur et al., 2018] Rajeev Alur, Rishabh Singh, Dana Fis-
+man, and Armando Solar-Lezama. Search-based program
+synthesis.
+Communications of the ACM, 61(12):84–93,
+2018.
+[Bonet and Geffner, 2001] Blai Bonet and H´ector Geffner.
+Planning as heuristic search. Artiﬁcial Intelligence, 129:5–
+33, 2001.
+[Bonet et al., 2010] Blai Bonet, Hector Palacios, and Hector
+Geffner. Automatic derivation of ﬁnite-state machines for
+behavior control. In AAAI, volume 24, 2010.
+[Boolos et al., 2002] George S Boolos, John P Burgess, and
+Richard C Jeffrey. Computability and logic. Cambridge
+university press, 2002.
+[Dandamudi, 2005] Sivarama P Dandamudi. Installing and
+using nasm. Guide to Assembly Language Programming
+in Linux, 2005.
+[Franc`es et al., 2021] Guillem Franc`es, Blai Bonet, and Hec-
+tor Geffner. Learning general planning policies from small
+examples without supervision. In AAAI, 2021.
+[Franc`es, 2017] Guillem Franc`es.
+Effective planning with
+expressive languages.
+PhD thesis, Universitat Pompeu
+Fabra, 2017.
+[Gulwani et al., 2017] Sumit Gulwani, Oleksandr Polozov,
+Rishabh Singh, et al. Program synthesis. Foundations and
+Trends in Programming Languages, 2017.
+[Helmert, 2006] Malte Helmert. The Fast Downward Plan-
+ning System. JAIR, 26:191–246, 2006.
+[Hoffmann, 2003] J¨org Hoffmann. The metric-ff planning
+system: Translating ”ignoring delete lists” to numeric state
+variables. JAIR, 20:291–341, 2003.
+[Hu and De Giacomo, 2013] Yuxiao Hu and Giuseppe De
+Giacomo. A generic technique for synthesizing bounded
+ﬁnite-state controllers. In ICAPS, 2013.
+[Hu and Levesque, 2011] Yuxiao
+Hu
+and
+Hector
+J.
+Levesque.
+A correctness result for reasoning about
+one-dimensional planning problems.
+In IJCAI, pages
+2638–2643, 2011.
+[Illanes and McIlraith, 2019] Le´on Illanes and Sheila A
+McIlraith. Generalized planning via abstraction: arbitrary
+numbers of objects.
+In AAAI, volume 33, pages 7610–
+7618, 2019.
+[Jimenez and Jonsson, 2015] Sergio Jimenez and Anders
+Jonsson. Computing plans with control ﬂow and proce-
+dures using a classical planner. In International Sympo-
+sium on Combinatorial Search, 2015.
+[Jim´enez et al., 2019] Sergio
+Jim´enez,
+Javier
+Segovia-
+Aguas, and Anders Jonsson.
+A review of generalized
+planning. KER, 34:1–28, 2019.
+[Korf et al., 2005] Richard E Korf, Weixiong Zhang, Ignacio
+Thayer, and Heath Hohwald. Frontier search. Journal of
+the ACM, 52(5):715–748, 2005.
+[Lipovetzky and Geffner, 2017] Nir Lipovetzky and Hector
+Geffner. Best-ﬁrst width search: Exploration and exploita-
+tion in classical planning. In AAAI, volume 31, 2017.
+[Lotinac et al., 2016] Damir Lotinac, Javier Segovia-Aguas,
+Sergio Jim´enez, and Anders Jonsson. Automatic genera-
+tion of high-level state features for generalized planning.
+In IJCAI, pages 3199–3205, 2016.
+[Mart´ın and Geffner, 2004] Mario
+Mart´ın
+and
+Hector
+Geffner.
+Learning generalized policies from planning
+examples using concept languages. Applied Intelligence,
+20:9–19, 2004.
+[Nau et al., 2003] Dana S Nau, Tsz-Chiu Au, Okhtay Il-
+ghami, Ugur Kuter, J William Murdock, Dan Wu, and
+Fusun Yaman. Shop2: An htn planning system. JAIR,
+20:379–404, 2003.
+[Segovia-Aguas et al., 2016] Javier Segovia-Aguas, Sergio
+Jim´enez, and Anders Jonsson. Generalized planning with
+procedural domain control knowledge. In ICAPS, 2016.
+[Segovia-Aguas et al., 2017] Javier Segovia-Aguas, Sergio
+Jim´enez, and Anders Jonsson.
+Generating context-free
+grammars using classical planning. In IJCAI, 2017.
+[Segovia-Aguas et al., 2019] Javier Segovia-Aguas, Sergio
+Jim´enez, and Anders Jonsson. Computing programs for
+generalized planning using a classical planner. Artiﬁcial
+Intelligence, 272:52–85, 2019.
+[Segovia-Aguas et al., 2020] Javier Segovia-Aguas, Sergio
+Jim´enez, and Anders Jonsson. Generalized planning with
+positive and negative examples.
+In AAAI, volume 34,
+pages 9949–9956, 2020.
+[Segovia-Aguas et al., 2021] Javier Segovia-Aguas, Sergio
+Jim´enez, and Anders Jonsson. Generalized planning as
+heuristic search. In ICAPS, volume 31, pages 569–577,
+2021.
+[Segovia-Aguas et al., 2022] Javier Segovia-Aguas, Sergio
+Jim´enez, Anders Jonsson, and Laura Sebasti´a. Scaling-up
+generalized planning as heuristic search with landmarks.
+arXiv preprint arXiv:2205.04850, 2022.
+[Siddharth et al., 2011] Srivastava
+Siddharth,
+Immerman
+Neil, Zilberstein Shlomo, and Zhang Tianjiao. Directed
+search for generalized plans using classical planners. In
+ICAPS, volume 21, 2011.
+[Skiena, 1998] Steven S Skiena. The algorithm design man-
+ual: Text, volume 1. Springer Science & Business Media,
+1998.
+[Winner and Veloso, 2003] Elly
+Winner
+and
+Manuela
+Veloso.
+Distill: Learning domain-speciﬁc planners by
+example. In ICML, pages 800–807, 2003.

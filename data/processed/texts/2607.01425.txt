@@ -1,0 +1,2201 @@
+Agent4cs: A Multi-agent System for Code Summarization in Large
+Hierarchical Codebases
+Yongjian Tang
+Siemens AG
+Technical University of Munich
+Munich, Bayern, Germany
+Ezgi Sarikayak
+Siemens AG
+Technical University of Munich
+Munich, Bayern, Germany
+Doruk Tuncel
+Siemens AG
+Munich, Bayern, Germany
+Jie M. Zhang
+Kings College London
+London, the United Kingdom
+Thomas Runkler
+Siemens AG
+Technical University of Munich
+Munich, Bayern, Germany
+Abstract
+Understanding large, complex codebases, especially those with
+obfuscated structures and incomplete documentation, remains a
+significant challenge. Existing code summarization solutions often
+rely on a single language model or coding assistant like Claude
+Code, and treat source code as flat text, underutilizing the rich inter-
+dependencies and hierarchical information within a repository. To
+address these shortcomings, we propose Agent4cs – a multi-agent
+framework that summarizes large codebases in a bottom-up fashion,
+where a summarization agent focuses on producing robust sum-
+maries; a keyword-extraction agent proactively identifies critical
+information from subfolders; and a quality-assurance agent itera-
+tively refines the outputs for readability, coherence, and complete-
+ness. Evaluated on 7 frontier models, Agent4cs improves semantic
+consistency across all folder levels by average 8% compared to two
+structured prompting baselines with code segments. Furthermore,
+extensive evaluation on real-world datasets demonstrates up to 38%
+gains in normalized keyword coverage rate over the same baselines.
+CCS Concepts
+• Computing methodologies →Multi-agent systems; Coopera-
+tion and coordination; Natural language processing; • Software and
+its engineering →Software development techniques; Automatic
+programming; General programming languages.
+Keywords
+Multi-agent System, Large Language Models, Agents, Code Sum-
+marization, Software Engineering, Codebase
+1
+Introduction
+As software projects evolve rapidly, they often lead to incomplete,
+outdated, or inconsistent documentation. This friction slows on-
+boarding, complicates maintenance, and increases the risk of defects
+and architectural drift. To address these problems, considerable ef-
+forts have been dedicated to automated code summarization, such
+as identifying class stereotypes and retrieving functional keywords
+[56]. More recently, deep learning approaches have advanced this
+field by utilizing neural models to learn complex mappings be-
+tween code structures and natural language descriptions [34, 51].
+The advent of Large Language Models (LLMs) [41, 54] has further
+minimized the semantic gap between code and natural language,
+offering new avenues for robust code summarization.
+While advances in code-aware language models have signifi-
+cantly improved function-level summarization [41], achieving com-
+prehensive repository-level summaries remains challenging – cross-
+file dependencies and hierarchical information are often dispersed
+across many directories and therefore not fully utilized. Prior ef-
+forts have shown that simply prompting an LLM is inadequate to
+capture all sub-modules throughout the repository [9, 12, 23], and
+interactive agents like Claude Code are designed for on-demand
+query-based code exploration rather than generating persistent doc-
+umentation in a systematic way [43]. This problem is amplified for
+industrial codebases that often far exceed 300K tokens. Therefore,
+a more structured solution is required.
+To mitigate this gap, we propose Agent4cs – an agentic frame-
+work that features a keyword extraction agent to capture latent
+information from subfolders and a quality assurance agent to pro-
+vide iterative feedback for summary refinement, as illustrated in
+Figure 1. Combined with a bottom-up approach for hierarchical
+code summarization, the framework strengthens the cross-folder
+connections within repositories while ensuring summary quality
+and readability, serving as a ideal complementary tool for exist-
+ing coding agents. The main contributions of this work can be
+summarized as follows:
+(i) We propose Agent4cs – a lightweight agentic framework
+for repository-level code summarization. To the best of our
+knowledge, this represents the first multi-agent approach
+for hierarchical codebase summarization.
+(ii) Following a bottom-up summarization strategy, we effec-
+tively leverage hierarchical information within repositories
+to enhance cross-folder connections, achieving an 8% aver-
+age improvement in semantic similarity between folder and
+subfolder summaries compared to two structured prompting
+baselines that incorporate segment-level code context.
+(iii) We analyze the performance of Agent4cs by integrating
+seven frontier LLMs spanning different performance tiers,
+studying its effectiveness and robustness across diverse model
+capabilities and computational budgets.
+(iv) We validate our approach on filtered data from three real-
+world datasets and their obfuscated versions, surpassing the
+code segment-augmented baselines in normalized keyword
+coverage rate by approximately 38% with certain LLMs while
+maintaining summary length. Meanwhile, we improve the
+arXiv:2607.01425v2  [cs.AI]  4 Jul 2026
+
+
+Figure 1: Agent4cs performs hierarchical repository summarization in two stages: function-level summarization and hierarchical
+folder-level summarization.
+readability of generated summaries across most evaluated
+LLMs.
+2
+Problem Statement
+Figure 2 exemplifies a representative subset of a large Python repos-
+itory, showcasing its multi-folder architecture and source code files
+in the bottom layer. For clarity, we divide code summarization into
+two tasks: function-level summarization for individual code files
+and hierarchical summarization for repository-wide understanding
+[51, 56].
+Figure 2: Overview of a repository: hierarchical folder struc-
+tures (in blue) and function-level code files (in yellow).
+2.1
+Function-level Code Summarization
+The code files (yellow) in Figure 2 contain code snippets and func-
+tions. The groundtruth data from most established datasets applies
+to this problem scope, providing human-written function-summary
+pairs as evaluation benchmarks. Nevertheless, this setting is con-
+strained to local code interpretation. For repository-level under-
+standing, such function-oriented benchmarks fall short.
+In our experiments, we extend beyond standard clean-code
+datasets and include obfuscated code to increase the difficulty and
+simulate real-world scenarios. Code obfuscation [33, 47] is a deliber-
+ate transformation strategy that conceals the logic and structure of
+source code while preserving its functionality, widely employed in
+industry to protect intellectual property and prevent malicious code
+analysis. Common obfuscation techniques include structural modifi-
+cation, identifier renaming, structural modification, and control flow
+alteration, all designed to make code difficult to understand and an-
+alyze. Figure 3 demonstrates an example of obfuscated code, where
+original identifiers (calculate_area, radius, pi, area) were re-
+placed with arbitrary, non-descriptive names (a, b, c, d, e), which
+reduces semantic clarity and makes the code more challenging to
+interpret.
+Before LLMs, traditional summarization approaches often strug-
+gle with obfuscated code because the semantic meaning is hidden
+beneath layers of syntactic transformation. Evaluating LLMs on
+obfuscated code provides insights into model robustness and their
+ability to extract underlying functionality despite obfuscation, mak-
+ing this valuable for real-world code understanding scenarios.
+2
+
+
+Figure 3: An example of code obfuscation through identifier
+renaming.
+2.2
+Hierarchical Code Summarization
+Most existing studies overlook summaries of higher-level folders
+and subfolders because available datasets, collected from open-
+source repositories, lack ground-truth annotations at this level.
+However, as modern software projects continue to grow in com-
+plexity and scale, understanding code at folder and repository levels
+becomes increasingly critical for effective long-term maintenance.
+Consequently, we identify hierarchical code summarization as a
+distinct problem within the broader code summarization domain
+and propose novel solutions and evaluation metrics to address this
+challenge in this work.
+3
+Related Work
+3.1
+Neural Models for Code Summarization
+Motivated by the success of neural machine translation in natu-
+ral language processing [4, 5], encoder-decoder architectures were
+soon adapted for code summarization. Early work like CODE-NN
+trained an end-to-end LSTM to generate summaries for C# and SQL
+queries [18]. Building upon these sequential neural models, subse-
+quent research utilized structural code information by additionally
+incorporating Abstract Syntax Tree (AST) alongside code snippets
+into deep reinforcement learning frameworks [48]. This structural
+awareness evolved further with graph-based neural architectures,
+which moved beyond flattened AST representations to preserve
+the hierarchical nature of AST trees [19]. Several follow-up studies
+combined neural models with retrieval techniques [21, 52], enhanc-
+ing encoder-decoder architectures by leveraging syntactically and
+semantically similar code samples from training corpora.
+3.2
+Language Models for Code Summarization
+The emergence of transformer-based language models [46] marked
+a paradigm shift in code summarization, moving from task-specific
+neural architectures to fine-tuning pre-trained models on code-
+related tasks. These attention-based models have demonstrated su-
+perior performance in capturing long-range dependencies and sig-
+nificantly outperformed neural approaches in summarizing source
+code [1]. To investigate whether these models truly understand code
+semantics or merely rely on surface-level textual cues, researchers
+modified function and variable names and found that such changes
+had minimal impact on model performance [25]. Meanwhile, con-
+cerns about resource consumption have driven the development
+of more compact alternatives, such as distilling GPT-3.5’s code ex-
+pertise into a model with 350M parameters[37]. Building on these
+foundations, several innovative approaches have emerged. Inspired
+by genetic algorithms, the EACS framework improves candidate
+summaries using selection, crossover, and mutation operations,
+which consistently improves the quality of code documentation
+across large software projects [38]. Moreover, ESALE combined
+neural architecture with transformers and employed a two-phase
+approach – pre-training a shared encoder via multi-task learning
+and then fine-tuning it with a decoder for task-specific code sum-
+marization [13].
+In line with the development of language modeling, solutions to
+code summarization have soon evolved from fine-tuning to efficient
+prompt-based inference with LLMs. Although early investigation of
+ChatGPT in code summarization observed inferior performance to
+fine-tuned language models [40], recent studies with more advanced
+SOTA models have revealed that LLMs using prompting strategies
+can outperform fine-tuned models in most code summarization
+and translation benchmarks [35, 41]. To understand what drives
+current LLMs’ effectiveness in code summarization, researchers
+also examined the impact of token overlap between code and the
+corresponding natural language references, revealing that LLMs
+often rely more heavily on these shared tokens than on underlying
+code structure [15]. To strengthen LLMs’ competence in code un-
+derstanding and other domain-specific tasks, few-shot prompting
+with demonstration examples is widely used [2, 3, 14, 42], which
+can outperform a fine-tuned model trained by thousands of samples
+using only several demonstration examples. Subsequent research
+has explored the upper limits of this technique by incorporating
+hundreds of semantically selected few-shot examples in software
+engineering domain [44].
+3.3
+Hierarchical Code Summarization
+While LLM-based techniques have proven their efficiency for in-
+dividual code snippets, the challenge of summarizing large code-
+bases with complex interdependencies has driven researchers to
+develop approaches that can capture multi-layer code structures.
+A syntax-driven approach for Hierarchical Repository-Level Code
+Summarization (HR-CS) [9] employed local LLMs to aggregate
+code segment-level information such as function names, variables,
+inputs, and outputs, and then produce comprehensive package-
+level summaries for improved relevance and coverage. Another
+work extended Code Summarization Beyond Functions (CS-BF) by
+incorporating class and repository domain context and few-shot
+examples [23]. While this repository-level summarization shows
+promise, it remains compute-intensive and omits mid-level folder
+layers within repositories. By contrast, other studies utilize summa-
+rization as an intermediate step for downstream tasks. For instance,
+HCGS generated summaries of code elements and their relation-
+ships to achieve context-aware code retrieval [36], while another
+method leveraged LLMs to build hierarchical project summaries
+3
+
+
+for bug localization, performing top-down inference to overcome
+domain mismatch and context limits [28].
+In this work, we focus on hierarchical code summarization and
+select HR-CS and CS-BF as baselines to directly measure improve-
+ments in experiments.
+3.4
+LLM-Based Evaluation
+Beyond generating summaries, recent research has explored lever-
+aging language models as automated evaluators to judge the quality
+of code understanding and summarization. CodeJudge-Eval estab-
+lishes a benchmark for measuring LLMs’ code understanding abili-
+ties through their performance in judging code solution correctness
+[55], while CODERPE integrates multi-role prompts into LLMs to
+automatically evaluate code summaries across coherence, fluency,
+and relevance [49]. Despite these advances, empirical evidence
+shows that while large-scale models, such as GPT-4-turbo, exhibit
+promising capabilities in judging summary quality, smaller LLMs
+struggle, and even the best one frequently misjudges, indicating
+that robust LLM-based evaluation remains an open challenge [8].
+4
+Agent4cs
+4.1
+Agentic Workflow for Function-level
+Summarization
+Figure 4 illustrates our two experimental strategies for function-
+level code summarization: 1) a direct prompt designed by us and 2)
+a prompt enhanced with the abstract syntax tree (AST) [39] of code.
+For reference, AST is a hierarchical tree representation of source
+code that captures its syntactic structure, including elements such
+as function declarations, variable assignments, and control flow
+statements. The latter strategy with AST was used in baseline HR-
+CS [9], and we aim to validate its effectiveness in our experimental
+context.
+Figure 4: The prompts used to summarize the function-level
+code files. We experiment with two methods: direct prompt-
+ing and prompting with AST tree.
+In this scenario, Agent4cs comprises two collaborative agents: a
+code summarization agent and a quality assurance agent. Given a
+code file, the summarization agent generates a concise summary,
+which is then analyzed by the quality assurance agent that provides
+feedback for refinement. Based on this feedback, the summarization
+agent improves the summary, establishing an effective feedback
+loop between the agents.
+4.2
+Agentic Workflow for Hierarchical
+Summarization
+For higher-level folder summarization, we follow a hierarchical
+procedure, progressively aggregating summaries from individual
+code files to construct a complete repository summary. This method
+leverages the multi-layered tree structure of folders.
+Figure 5: An illustrative example showing the hierarchical
+relationship between child, parent, and grandparent folders.
+Given the generated function-level summaries for code files
+at the deepest repository layer, Agent4cs continues to summarize
+folders at the next layer. Starting from the third layer, i.e., the grand-
+parent layer in Figure 5, we adopt the prompting strategy in Figure
+6. An additional keyword extraction agent is introduced to identify
+keywords and critical information from child-folder summaries,
+which are then combined with parent-folder summaries of next
+layer and passed as input to the summarization agent together. This
+initial round produces a draft of grandparent-folder summary. Sub-
+sequently, a quality assurance agent reviews the draft and provides
+suggestions for improvements. Based on this feedback, the summa-
+rization agent refines the draft iteratively and generates the final-
+ized version. Following this hierarchical grandparent-parent-child
+framework across three neighboring folder layers, the multi-agent
+system constructs the summaries at each successive layer until
+reaching the top repository level.
+Figure 6: The prompts used to summarize a parent folder
+based on its folder and subfolder summaries.
+Keyword extraction serves as a critical step to enhance the hi-
+erarchical connection between multiple folder layers. Compared
+to simply using parent-folder summaries, aggregating child-folder
+4
+
+
+information through keywords provides a more condensed repre-
+sentation of the underlying content while maintaining manageable
+input sizes. Notably, due to context window limitations, includ-
+ing all child-folder summaries directly in the prompt is impossible.
+Therefore, we implement this keyword-based alternative, enabling
+the system to leverage lower-level insights within computational
+constraints.
+5
+Experiments
+5.1
+Datasets
+Prior research on folder- and repository-level code summariza-
+tion faces significant limitations due to the lack of appropriate
+data and evaluation resources. All public datasets exclusively focus
+on function-level assessment, and previous studies on repository-
+level summarization have not open-sourced their datasets. To ad-
+dress these constraints, we conduct a comprehensive search of pub-
+lic datasets and identify two that provide detailed function paths
+within repositories. Using the provided paths, we restore the entire
+repositories to enable future hierarchical summarization research.
+The CodeSearchNet (CSN) corpus [17] contains approximately
+6 million functions across 6 programming languages (Go, Java,
+JavaScript, PHP, Python, and Ruby) and has been widely used in
+the study of code summarization [13, 23, 35, 36, 38, 40, 41]. The
+CodeXGLUE benchmark [22] is established to advance research in
+program understanding and generation. It features 10 diverse tasks
+across 14 code datasets, including four primary categories of code-
+related challenges: code-code, text-code, code-text, and text-text
+tasks.
+Since our research focuses on hierarchical summarization of
+large codebases, we selectively include repositories from these two
+benchmarks by applying specific criteria: The repositories must
+1) contain more than 1000 functions with clean comments and
+2) have a folder depth exceeding 7 layers. In addition to these
+two datasets, we add the open-source pybind repository to evalua-
+tion. This results in 6 high-quality repositories containing human-
+written, function-level descriptions (used as groundtruth) for re-
+search, as shown in Table 1. Notably, the functions in the collected
+repositories may share the same folder path, indicating that they
+are located within the same code file. This explains why the number
+of files is significantly fewer than the total number of functions. All
+repositories can be freely accessed online [32].
+Table 1: The information of collected repositories.
+Dataset
+Repository
+Domain
+Depth
+Code files
+Functions
+CodeXGlue
+base
+Robotics
+7
+216
+1116
+CodeXGlue
+coretools
+IoT tools
+8
+347
+1683
+CSN
+twilio-python
+Communication
+9
+293
+1199
+CSN
+turicreate
+AI tools
+10
+237
+1725
+CSN
+pants
+Monorepo tools
+10
+300
+1186
+by us
+pybind
+C++ Integration
+13
+598
+1319
+Beyond standard clean code evaluation, we obfuscate the source
+code – renaming variables, randomizing identifiers, and stripping
+documentation, while preserving functional equivalence. These
+experiments help provide insights into whether LLMs truly compre-
+hend code structure and logic flow or merely rely on surface-level
+patterns.
+5.2
+Language Models
+We strategically select seven LLMs as experimental representa-
+tives that span different performance tiers. To fully exploit the
+capabilities of our agentic framework, we employ four frontier
+models – GPT-5 [26], gpt-4.1 [27], GPT-4o[16], and gemini-2.5-flash
+[6] – accessed via APIs due to computational constraints. Comple-
+menting these top-tier models, we incorporate three open-source
+alternatives that ensure reproducibility and broader applicability:
+Meta’s LLaMA-3.1-8B [11], Alibaba’s Qwen3-8B [50], and Google’s
+Gemma-3-4B [45].
+5.3
+Metrics
+For function-level summary evaluation with groundtruth, we em-
+ploy a broad spectrum of metrics:
+1) Regarding summary-to-summary text similarity, we apply
+BLEU-1 [29] and ROUGE-L [20] for evaluation. BLEU-1
+measures the proportion of individual words (unigrams) in
+the candidate summary that match the reference summary,
+while ROUGE-L evaluates the longest common subsequence
+between the candidate and reference texts.
+(2) For summary-to-summary semantic similarity, we apply
+BERTScore [53] and SentenceBert [31]. BERTScore com-
+putes token-level semantic similarity by comparing BERT-
+based word embeddings between the candidate and reference
+summaries, while SentenceBert measures sentence-level sim-
+ilarity by encoding summaries into dense vector representa-
+tions and calculating their cosine similarity.
+(3) Regarding summary-to-code semantic similarity metrics, we
+apply SIDE [24] and LLM-as-a-judge [8, 49]. SIDE leverages
+a fine-tuned encoder model to assess how well the candidate
+summary captures code semantics, while LLM-as-a-judge
+employs prompt-based assessment to grade the generated
+summaries. Figure 7 presents the prompt used for LLM-as-a-
+judge, with grades assigned on a scale from 1 to 4.
+Figure 7: The prompt for LLM-as-a-judge.
+5
+
+
+(4) We further include human evaluation for comparison. To
+align with LLM-as-a-judge, three software developers as-
+sess summaries independently on a scale from 1 to 4, with
+final scores averaged for fairness. We selected human evalu-
+ators based on their software development experience, code-
+review skills, and relevant domain expertise. Finally, we
+chose two senior software engineers, each with three years
+of development experience, and one junior software devel-
+oper in industry. In addition to their own experience and
+judgment criteria, we also provided the prompt and grading
+schema used in LLM-as-a-judge to ensure consistent evalua-
+tion. Their evaluation results served as valuable reference in
+our experimental context.
+For hierarchical summary evaluation, no open-source datasets
+provide groundtruth annotations for folder-level summaries, mak-
+ing traditional reference-based metrics inapplicable. Consequently,
+we define the following reference-free metrics for evaluation:
+1) Semantic similarity – measures the average pairwise co-
+sine similarity between a parent-folder summary and each of
+its child-folder summaries, computed using SentenceBERT
+embeddings [31]. This metric measures the semantic con-
+nectivity between parent folders and their children.
+2) Keyword coverage rate – quantifies the proportion of
+keywords from child-folder summaries that appear in their
+parent-folder summary. We extract keywords from child-
+folder summaries using the Scikit-learn TF-IDF library [30],
+then compute and average the coverage rates across parent
+folders at each hierarchical depth.
+3) Normalized keyword coverage rate – represents the key-
+word coverage rate normalized by summary length. This
+metric assesses whether high keyword coverage is achieved
+efficiently, without introducing unnecessary redundancy
+through overly verbose summaries. Equation 1, 2, and 3
+demonstrate the formula for normalization, where 𝑅𝑖stands
+for the ratio between keyword coverage rate 𝑟𝑖and summary
+length 𝑙𝑖for the 𝑖-th selected model.
+𝑅𝑖
+=
+𝑟𝑖
+𝑙𝑖
+(1)
+𝑅𝑚𝑎𝑥
+=
+𝑚𝑎𝑥(𝑟𝑖
+𝑙𝑖
+)
+(2)
+Given the maximum ratio, here is the formula to compute
+normalized keyword coverage rate:
+𝑅𝑁𝑖
+=
+𝑅𝑖
+𝑅𝑚𝑎𝑥
+(3)
+4) Readability – measures the Flesch reading-ease score
+[10] of summaries, which considers the number of words
+per sentence and syllables per word. According to the
+Flesch–Kincaid framework [7, 10], reading-ease scores range
+from 0 to 100, with higher scores indicating easier readabil-
+ity. For example, scores of 30 to 50 correspond to college
+entry-level reading difficulty, while scores of 10 to 30 indi-
+cate graduate-level complexity. We use the textstat library
+to calculate the scores for each summary, then average the
+results for each evaluated LLM.
+We select these metrics considering multiple facts. Relying solely
+on semantic similarity is insufficient, as it may reward summaries
+that simply repeat content from child folders, achieving high coher-
+ence while lacking meaningful abstraction and failing to highlight
+key information. For this reason, we introduce keyword coverage
+as the second metric to ensure that critical concepts, identities,
+and function names are preserved in the summary. While these
+two metrics measure whether parent-folder summaries adequately
+capture child-folder content, normalized keyword coverage rate
+and readability focus on efficiency and usability, ensuring that the
+generated summaries achieve high coverage without unnecessary
+redundancy and remain readable to developers in practice. Notably,
+we do not employ LLM-as-a-judge for hierarchical summary evalua-
+tion, as this approach may introduce evaluation bias when assessing
+summaries generated by the same or similar LLMs. Instead, we pri-
+oritize objective and reproducible metrics that maintain consistency
+across all hierarchical depths.
+5.4
+Function-level Code Summarization
+Table 2 demonstrates the evaluation outcomes for summarizing
+functional-level code files. Agent4cs surpasses the two baselines
+in all considered metrics. Regarding traditional evaluation met-
+rics, no individual model emerges as a clear winner, while the se-
+lected GPT models consistently demonstrate superior performance
+across all scenarios, achieving 0.189 in Rouge-L, 0.197 in BLEU-1,
+0.826 in BERT F1 Score, and 0.672 in Sentence-BERT similarity to
+groundtruth. Furthermore, our experiments with obfuscated code
+reveal that LLMs can comprehend obfuscated code effectively. De-
+spite a minimal performance drop compared to clean code scenarios,
+the summaries maintain readable and informative in practice to
+provide developers with meaningful project insights.
+In case of using LLM-as-a-judge, GPT-5 performs best, consis-
+tently achieving scores above 3.81 across all judge models, and
+occasionally securing perfect 4.0 ratings from several evaluators.
+Another interesting finding emerges with Qwen: while showing
+poor results on traditional metrics, it achieves significantly better
+performance under LLM-as-a-judge evaluation. This improvement
+can likely be attributed to its post-training strategy, which incorpo-
+rates distilled output logits from teacher models [50]. The enhanced
+performance potentially stems from this distilled knowledge, which
+aligns Qwen more closely with flagship models like GPT-5 and
+Gemini-2.5-flash.
+Furthermore, behavior analysis on judge models reveals distinct
+evaluation patterns: GPT-4.1 tends to score other models highly,
+potentially due to its prioritization of code intelligence over lan-
+guage understanding and quality assessment, leading to favorable
+evaluation of LLM-generated content. In contrast, GPT-5 applies
+more rigorous evaluation criteria, often assigning average scores be-
+low 3.0 to compact models. This observation indicates that models
+with superior language comprehension capabilities tend to evaluate
+more strictly in summarization tasks.
+To investigate the alignment between LLMs and human devel-
+opers, we compare their scores by computing Pearson correlation
+coefficients, which ranges from −1 to 1, with higher positive values
+indicating stronger agreement. We exclude GPT-4o and gemini-
+2.5-flash from this analysis due to their consistently high scoring
+6
+
+
+Table 2: Performance comparison of function-level code summarization on selected repositories using text-based, semantic-
+based, LLM-based metrics, and human evaluation.
+Summary to Summary
+Code to Summary
+Code quality
+Methods
+Models
+Text Based
+Semantic Based
+LLM-as-a-judge
+Human
+Rouge-L
+BLEU-1
+BERTScore (F1)
+Sentence-BERT
+SIDE
+GPT-4o
+GPT-4.1
+GPT-5
+Gemini-2.5-flash
+GPT-4o
+0.189
+0.184
+0.826
+0.624
+0.864
+3.82
+3.97
+3.34
+3.95
+3.52
+GPT-4.1
+0.177
+0.189
+0.822
+0.672
+0.880
+3.75
+3.99
+3.37
+3.96
+3.61
+GPT-5
+0.171
+0.197
+0.824
+0.650
+0.778
+3.92
+4.00
+3.92
+4.00
+3.72
+Agent4cs
+Gemini-2.5-flash
+0.172
+0.164
+0.822
+0.647
+0.880
+3.62
+3.94
+3.43
+3.96
+3.58
+LLaMA-3.1-8B
+0.151
+0.151
+0.815
+0.627
+0.772
+3.32
+3.71
+2.93
+3.66
+3.18
+Qwen3-8B
+0.114
+0.118
+0.811
+0.588
+0.792
+3.74
+3.98
+3.84
+3.95
+1.92
+Gemma3-4B
+0.145
+0.143
+0.812
+0.606
+0.782
+3.47
+3.82
+2.74
+3.81
+1.93
+GPT-4o
+0.177
+0.176
+0.821
+0.605
+0.879
+3.76
+3.89
+3.28
+3.94
+3.52
+GPT-4.1
+0.172
+0.179
+0.822
+0.656
+0.812
+3.64
+3.97
+3.29
+3.94
+3.60
+Clean
+Baseline
+GPT-5
+0.166
+0.193
+0.810
+0.624
+0.768
+3.89
+3.99
+3.88
+4.00
+3.64
+code
+HR-CS
+Gemini-2.5-flash
+0.170
+0.166
+0.812
+0.622
+0.832
+3.53
+3.92
+3.41
+3.96
+3.51
+LLaMA-3.1-8B
+0.144
+0.149
+0.818
+0.623
+0.792
+3.24
+3.54
+2.81
+3.62
+3.03
+Qwen3-8B
+0.113
+0.112
+0.803
+0.586
+0.783
+3.69
+3.94
+3.78
+3.92
+2.68
+Gemma3-4B
+0.140
+0.147
+0.803
+0.601
+0.772
+3.38
+3.79
+2.99
+3.75
+1.90
+GPT-4o
+0.181
+0.179
+0.822
+0.615
+0.859
+3.79
+3.94
+3.28
+3.95
+3.53
+GPT-4.1
+0.166
+0.176
+0.814
+0.651
+0.864
+3.65
+3.98
+3.28
+3.93
+3.60
+Baseline
+GPT-5
+0.161
+0.185
+0.826
+0.666
+0.774
+3.89
+4.00
+3.90
+4.00
+3.60
+CS-BF
+Gemini-2.5-flash
+0.172
+0.162
+0.807
+0.617
+0.836
+3.54
+3.93
+3.44
+3.97
+3.58
+LLaMA-3.1-8B
+0.149
+0.152
+0.826
+0.618
+0.783
+3.27
+3.56
+2.83
+3.66
+3.23
+Qwen3-8B
+0.118
+0.109
+0.798
+0.590
+0.787
+3.72
+3.95
+3.81
+3.90
+2.59
+Gemma3-4B
+0.135
+0.145
+0.810
+0.595
+0.779
+3.36
+3.81
+3.01
+3.77
+2.03
+GPT-4o
+0.161
+0.168
+0.819
+0.530
+0.762
+3.35
+3.90
+3.08
+3.88
+-
+GPT-4.1
+0.157
+0.173
+0.817
+0.671
+0.789
+3.53
+3.96
+3.20
+3.93
+-
+GPT-5
+0.154
+0.182
+0.819
+0.612
+0.704
+3.88
+3.99
+3.84
+4.00
+-
+Agent4cs
+Gemini-2.5-flash
+0.162
+0.156
+0.792
+0.622
+0.742
+3.35
+3.90
+3.23
+3.91
+-
+LLaMA-3.1-8B
+0.144
+0.139
+0.808
+0.613
+0.708
+2.98
+3.48
+2.78
+3.46
+-
+Qwen3-8B
+0.103
+0.102
+0.794
+0.566
+0. 732
+3.39
+3.89
+3.12
+3.87
+-
+Gemma3-4B
+0.130
+0.132
+0.790
+0.578
+0.707
+3.24
+3.63
+2.84
+3.58
+-
+GPT-4o
+0.150
+0.159
+0.814
+0.509
+0.763
+3.34
+3.88
+3.02
+3.86
+-
+GPT-4.1
+0.149
+0.163
+0.815
+0.623
+0.723
+3.31
+3.96
+3.10
+3.92
+-
+Obfuscated
+Baseline
+GPT-5
+0.156
+0.181
+0.809
+0.599
+0.698
+3.86
+3.99
+3.84
+3.99
+-
+code
+HR-CS
+Gemini-2.5-flash
+0.149
+0.159
+0.798
+0.614
+0.728
+3.25
+3.87
+3.01
+3.85
+-
+LLaMA-3.1-8B
+0.140
+0.133
+0.799
+0.603
+0.679
+3.12
+3.58
+2.76
+3.49
+-
+Qwen3-8B
+0.105
+0.108
+0.786
+0.571
+0.723
+3.24
+3.82
+3.07
+3.86
+-
+Gemma3-4B
+0.129
+0.129
+0.787
+0.570
+0.688
+3.18
+3.54
+2.68
+3.49
+-
+GPT-4o
+0.156
+0.173
+0.816
+0.535
+0.770
+3.37
+3.88
+3.10
+3.86
+-
+GPT-4.1
+0.152
+0.179
+0.812
+0.645
+0.775
+3.55
+3.94
+3.22
+3.91
+-
+Baseline
+GPT-5
+0.160
+0.179
+0.813
+0.607
+0.699
+3.86
+3.99
+3.81
+3.99
+-
+CS-BF
+Gemini-2.5-flash
+0.160
+0.153
+0.788
+0.618
+0.736
+3.38
+3.92
+3.21
+3.92
+-
+LLaMA-3.1-8B
+0.149
+0.136
+0.813
+0.609
+0.703
+3.01
+3.46
+2.76
+3.49
+-
+Qwen3-8B
+0.108
+0.107
+0.789
+0.562
+0.727
+3.41
+3.91
+3.14
+3.89
+-
+Gemma3-4B
+0.127
+0.137
+0.795
+0.580
+0.712
+3.26
+3.66
+2.86
+3.56
+-
+patterns observed in Figure 2. As shown in Figure 8, LLMs and hu-
+man judges exhibit positive correlation for the Agent4CS approach,
+indicating that LLM-as-a-judge can reasonably approximate human
+judgment in our experimental context.
+5.5
+Hierarchical Code Summarization
+Table 3 presents the evaluation results across multiple folder layers,
+from repository level to bottom file level, showing semantic similar-
+ity and keyword coverage rates for all selected LLMs. The baseline
+CS-BF follows its own function–class–repository summarization
+scheme, which is incompatible with our layer-wise folder analysis.
+Accordingly, we report its overall average score directly in Table 3.
+With respect to semantic similarity, Agent4cs outperforms the
+two baselines in 5 out of 7 selected models. GPT-5 achieves the
+GPT-5
+GPT-4o
+Human
+GPT-5
+GPT-4o
+Human
+1.000
+0.820
+0.244
+0.820
+1.000
+0.357
+0.244
+0.357
+1.000
+Correlation Heatmap: 
+Agent4cs
+1.0
+0.5
+0.0
+0.5
+1.0
+Figure 8: The correlation heatmap between human and LLM-
+as-a-judge when using Agent4cs.
+7
+
+
+Table 3: The performance of Agent4cs and the two baselines at each depth level, measured by semantic similarity score and
+keyword coverage rate.
+GPT-4o
+GPT-4.1
+GPT-5
+Gemini-2.5-flash
+LLaMA-3.1-8B
+Qwen3-8B
+Gemma3-4B
+Metrics
+Depth
+CS-BF HR-CS Agen. CS-BF HR-CS Agen. CS-BF HR-CS Agen. CS-BF HR-CS Agen. CS-BF HR-CS Agen. CS-BF HR-CS Agen. CS-BF HR-CS Agen.
+Layer 1
+-
+0.583
+0.576
+-
+0.611
+0.594
+-
+0.633
+0.701
+-
+0.533
+0.535
+-
+0.622
+0.575
+-
+0.480
+0.537
+-
+0.251
+0.321
+Layer 2
+-
+0.584
+0.572
+-
+0.623
+0.607
+-
+0.647
+0.720
+-
+0.542
+0.592
+-
+0.638
+0.591
+-
+0.488
+0.603
+-
+0.316
+0.332
+Layer 3
+-
+0.594
+0.582
+-
+0.629
+0.609
+-
+0.665
+0.715
+-
+0.524
+0.540
+-
+0.690
+0.575
+-
+0.528
+0.638
+-
+0.482
+0.731
+Layer 4
+-
+0.569
+0.599
+-
+0.635
+0.620
+-
+0.689
+0.744
+-
+0.519
+0.581
+-
+0.697
+0.611
+-
+0.516
+0.581
+-
+0.452
+0.555
+Layer 5
+-
+0.617
+0.653
+-
+0.648
+0.650
+-
+0.714
+0.763
+-
+0.550
+0.702
+-
+0.712
+0.664
+-
+0.516
+0.608
+-
+0.446
+0.423
+Semantic Layer 6
+-
+0.621
+0.660
+-
+0.663
+0.676
+-
+0.731
+0.767
+-
+0.577
+0.670
+-
+0.720
+0.672
+-
+0.529
+0.601
+-
+0.473
+0.437
+Layer 7
+-
+0.660
+0.682
+-
+0.683
+0.692
+-
+0.742
+0.811
+-
+0.663
+0.683
+-
+0.694
+0.698
+-
+0.595
+0.708
+-
+0.345
+0.328
+rate
+Layer 8
+-
+0.659
+0.737
+-
+0.730
+0.693
+-
+0.768
+0.836
+-
+0.626
+0.752
+-
+0.769
+0.740
+-
+0.608
+0.685
+-
+0.372
+0.510
+Layer 9
+-
+0.668
+0.757
+-
+0.731
+0.700
+-
+0.786
+0.843
+-
+0.636
+0.790
+-
+0.770
+0.714
+-
+0.621
+0.682
+-
+0.321
+0.509
+Layer 10
+-
+0.710
+0.776
+-
+0.741
+0.693
+-
+0.805
+0.853
+-
+0.657
+0.801
+-
+0.790
+0.726
+-
+0.633
+0.693
+-
+0.305
+0.382
+Layer 11
+-
+0.754
+0.772
+-
+0.751
+0.707
+-
+0.825
+0.862
+-
+0.709
+0.737
+-
+0.792
+0.741
+-
+0.675
+0.760
+-
+0.282
+0.251
+Layer 12
+-
+0.738
+0.746
+-
+0.741
+0.677
+-
+0.823
+0.848
+-
+0.780
+0.690
+-
+0.771
+0.707
+-
+0.671
+0.732
+-
+0.287
+0.351
+Layer 13
+-
+0.708
+0.801
+-
+0.729
+0.742
+-
+0.811
+0.857
+-
+0.712
+0.776
+-
+0.738
+0.689
+-
+0.613
+0.700
+-
+0.339
+0.588
+Average
+0.651
+0.632
+0.681
+0.667
+0.682
+0.672
+0.721
+0.738
+0.794
+0.585
+0.595
+0.696
+0.714
+0.727
+0.683
+0.549
+0.564
+0.644
+0.412
+0.402
+0.460
+Layer 1
+-
+0.594
+0.751
+-
+0.656
+0.666
+-
+0.668
+0.718
+-
+0.592
+0.612
+-
+0.798
+0.779
+-
+0.780
+0.785
+-
+0.447
+0.651
+Layer 2
+-
+0.605
+0.769
+-
+0.679
+0.677
+-
+0.668
+0.748
+-
+0.567
+0.533
+-
+0.780
+0.745
+-
+0.784
+0.782
+-
+0.418
+0.549
+Layer 3
+-
+0.611
+0.782
+-
+0.659
+0.691
+-
+0.697
+0.768
+-
+0.544
+0.561
+-
+0.800
+0.753
+-
+0.833
+0.808
+-
+0.674
+0.866
+Layer 4
+-
+0.614
+0.796
+-
+0.659
+0.671
+-
+0.707
+0.768
+-
+0.557
+0.573
+-
+0.820
+0.778
+-
+0.811
+0.812
+-
+0.646
+0.815
+Keyword
+Layer 5
+-
+0.625
+0.804
+-
+0.656
+0.705
+-
+0.718
+0.790
+-
+0.549
+0.559
+-
+0.833
+0.817
+-
+0.816
+0.833
+-
+0.628
+0.739
+Layer 6
+-
+0.631
+0.813
+-
+0.664
+0.720
+-
+0.738
+0.802
+-
+0.588
+0.573
+-
+0.837
+0.835
+-
+0.835
+0.795
+-
+0.640
+0.882
+coverage
+Layer 7
+-
+0.682
+0.832
+-
+0.701
+0.720
+-
+0.764
+0.824
+-
+0.615
+0.590
+-
+0.846
+0.847
+-
+0.895
+0.911
+-
+0.422
+0.486
+Layer 8
+-
+0.701
+0.859
+-
+0.722
+0.746
+-
+0.775
+0.861
+-
+0.685
+0.650
+-
+0.872
+0.899
+-
+0.933
+0.942
+-
+0.443
+0.559
+rate
+Layer 9
+-
+0.702
+0.867
+-
+0.741
+0.768
+-
+0.787
+0.870
+-
+0.625
+0.684
+-
+0.872
+0.884
+-
+0.940
+0.924
+-
+0.379
+0.578
+Layer 10
+-
+0.725
+0.873
+-
+0.759
+0.755
+-
+0.785
+0.873
+-
+0.673
+0.668
+-
+0.895
+0.886
+-
+0.949
+0.920
+-
+0.360
+0.496
+Layer 11
+-
+0.754
+0.868
+-
+0.783
+0.772
+-
+0.818
+0.893
+-
+0.696
+0.716
+-
+0.889
+0.887
+-
+0.962
+0.989
+-
+0.343
+0.552
+Layer 12
+-
+0.759
+0.858
+-
+0.762
+0.777
+-
+0.817
+0.903
+-
+0.753
+0.750
+-
+0.890
+0.898
+-
+0.957
+0.941
+-
+0.311
+0.434
+Layer 13
+-
+0.715
+0.870
+-
+0.722
+0.767
+-
+0.842
+0.890
+-
+0.703
+0.658
+-
+0.878
+0.831
+-
+0.957
+0.923
+-
+0.428
+0.589
+Average
+0.682
+0.659
+0.829
+0.686
+0.691
+0.722
+0.732
+0.748
+0.809
+0.582
+0.603
+0.635
+0.846
+0.827
+0.843
+0.841
+0.872
+0.870
+0.543
+0.526
+0.643
+best performance with a weighted average score of 0.794 across
+all folder summaries and layers, while Gemini-2.5-flash shows the
+largest improvement at over 10%, followed by Qwen3-8B at 8%. In
+comparison, LLaMA-3.1-8B and GPT-4.1 are the two underperform-
+ing models, with the latter being optimized for code intelligence,
+which may compromise its language comprehension capabilities.
+Furthermore, we notice that the similarity scores gradually decrease
+from lower to higher hierarchical layers across all models, with
+degradation ranging from 10% to 20%. This observation aligns with
+our expectations, as higher-level summarization requires capturing
+more abstract concepts within a constrained word limit, making
+the task more challenging.
+Consistent with this trend in semantic similarity, the keyword
+coverage rate also declines gradually across layers, which reflects
+the increasing difficulty of capturing all key information as the
+number of folders grow exponentially. Compared to the two base-
+lines, Agent4cs effectively improves the keyword coverage rate in
+five models. GPT-4o exhibits the most significant enhancement,
+increasing from 0.682 to 0.829. And for the two underperforming
+models, Agent4cs also achieves on-par performance to baselines
+with differences of only 0.3% and 0.2% respectively. An unexpected
+finding is that compact models lead in performance: Qwen3-8B
+achieves 0.872, while LLaMA-3.1-8B reaches 0.846. This observation
+suggested the presence of potential confounding factors. Further
+analysis revealed that token length was the underlying cause.
+As illustrated in Figure 9, different LLMs produce summaries
+of varying length. Despite the fluctuating number of files at each
+depth layer, the summary length generated by each specific LLM
+is relatively consistent. For large-scale models including GPT-5,
+GPT-4.1, and Gemini-2.5-flash, regardless of whether Agent4cs or
+baseline is used, the generated summaries contain approximately
+200 words. In contrast, compact models exhibit greater variation
+in summary length and tend to produce more redundant outputs.
+For instance, Qwen3-8B generates summaries averaging over 800
+words while Gemma3-4B produces about 600 words, which explains
+the reason for high keyword coverage rate in evaluation. Notably,
+GPT-4o is the only model that performs differently across the two
+approaches: its summary length increases from 200 to over 350
+words when using Agent4cs, leading to more verbose responses.
+To obtain fair conclusions, we normalize the keyword coverage
+rate for all selected models based on their summary length and
+present the results in Figure 10. GPT-5 achieves the highest rate
+when using Agent4cs, indicating that the model tends to produce
+more condensed summaries that efficiently incorporate crucial in-
+formation. The Gemini-2.5-flash secures the second place, closely
+following the most capable GPT model with a normalized coverage
+rate of 99%. This strong performance is largely attributed to having
+the shortest answers among all models deployed in our agentic sys-
+tem. In general, large-scale models outperform the selected compact
+models, showing superior ability to produce concise yet informa-
+tive summaries. In particular, Agent4cs surpasses the baselines in
+6 out of 7 evaluated models, with GPT-5 achieving a noteworthy
+improvement of 38%. GPT-4o represents the only exception to this
+trend, which may stem from its earlier release in May 2024 and
+potentially less mature capability to handle large-scale contexts
+with feedback loops, leading to increased summary length.
+Furthermore, we assess the summary readability to make sure
+that they are easy to understand and accessible to developers. Fig-
+ure 11 illustrates the average Flesch reading-ease scores for the
+summaries generated by all included models. While large-scale
+8
+
+
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+Depth of Folder
+0
+200
+400
+600
+800
+1000
+Avg Words in Summaries / 
+Number of Files
+HR-CS: Summary Length vs. the Number of Files at Each Depth Level
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+Depth of Folder
+0
+200
+400
+600
+800
+1000
+Avg Words in Summaries / 
+Number of Files
+Agent4cs: Summary Length vs. the Number of Files at Each Depth Level
+Figure 9: Average summary length of different LLMs vs. the
+corresponding file count at each depth, while using HR-CS
+baseline (above) and Agent4cs (below). CS-BF is not included
+for this layer-based analysis because of its unique summa-
+rization scheme.
+GPT-4o
+GPT-4.1
+GPT-5
+Gemini-
+2.5-flash
+LLaMA-
+3.1-8B
+Qwen3-8B Gemma3-4B
+0.00
+0.25
+0.50
+0.75
+1.00
+Normalized Rate
+.78.84
+.69
+.69
+.59
+.92
+.61.62
+1.00
+.75
+.62
+.99
+.48.46
+.66
+.18.20.27
+.24.17
+.30
+The Keyword Coverage Rate Normalized by the Summary Length.
+CS-BF
+HR-CS
+Agent4cs
+Figure 10: The normalized keyword coverage rate considering
+the summary length.
+models reach 14 to 30, corresponding to graduate-level complexity,
+compact models perform better with scores ranging from 33 to
+44. Nevertheless, we should interpret these absolute scores within
+the context of software engineering. Code summaries inherently
+contain technical elements such as lengthy identifiers, function
+names, and explanations of complex algorithms, which naturally
+lower Flesch reading-ease scores. For developers with domain ex-
+pertise, this increased complexity should not pose any significant
+comprehension barrier. Agent4cs demonstrates improved readabil-
+ity over the baseline in 6 out of 7 models, with GPT-4.1 as the only
+exception. This deviation likely reflects the model’s emphasis on
+code intelligence at the expense of natural language generation.
+6
+Conclusions and Future Work
+The proposed Agent4cs extends code summarization beyond func-
+tion level to investigate hierarchical summarization of vast reposito-
+ries. Compared to the baseline, it effectively preserves information
+GPT-4o
+GPT-4.1
+GPT-5
+Gemini-
+2.5-flash
+LLaMA-
+3.1-8B
+Qwen3-8B Gemma3-4B
+0
+10
+20
+30
+40
+50
+Flesch Reading Ease Score
+16.214.4
+26.4
+16.117.015.9
+28.025.6
+29.3
+16.917.818.8
+33.134.5
+38.7 42.041.543.7
+33.435.4
+38.7
+Graduate-level
+College-level
+High School-level
+Average Readability of Generated Summaries.
+CS-BF
+HR-CS
+Agent4cs
+Figure 11: Average Flesch reading-ease scores for summaries
+generated by different models.
+when scaling from bottom-level code files to repository-level sum-
+maries layer by layer, demonstrating significant improvement in se-
+mantic comprehensiveness, normalized keyword average rate, and
+Flesch-Kincaid readability. In principle, modern general-purpose
+LLMs, such as GPT-5, benefit most from this multi-agent workflow,
+while compact or specialized models may derive fewer advantages
+from this loop due to their comparatively limited natural language
+generation and reasoning capabilities. Furthermore, the empiri-
+cal study on LLMs’ behavior reveals that smaller models tend to
+produce redundant summaries, while their larger counterparts gen-
+erate more concise yet informative summaries given the same in-
+structions. Notably, large-scale models with strengthened language
+capabilities, specifically GPT-5, can also judge LLM-generated con-
+tent effectively by applying more rigorous rating criteria. These
+findings highlight the great potential of LLMs and novel agentic
+solutions in code summarization research.
+This work opens several promising avenues for future research.
+First, while we introduce four metrics for hierarchical code sum-
+marization, developing more robust and comprehensive evaluation
+frameworks remains critical. Furthermore, beyond the dataset re-
+leased in this work, the community requires larger, more diverse
+repository-level datasets with high-quality annotated groundtruth
+summaries. Moreover, building on Agent4cs, we plan to explore
+alternative architectures, incorporating specialized agents to op-
+timize performance while maintaining the current computational
+efficiency. Finally, as LLMs continue evolving, benchmarking new
+models within this agentic framework will provide valuable insights
+into how model capability enhancement translates to improved
+summarization performance.
+Acknowledgments
+This work was carried out within the ITEA 4 project GENIUS, as
+part of the ITEA program, the Eureka Cluster on software inno-
+vation. This work was funded by the German Federal Ministry of
+Research, Technology and Space (BMFTR).
+References
+[1] Wasi Ahmad, Saikat Chakraborty, Baishakhi Ray, and Kai-Wei Chang. 2020. A
+Transformer-based Approach for Source Code Summarization. In Proceedings of
+the 58th Annual Meeting of the Association for Computational Linguistics. 4998–
+5007.
+[2] Toufique Ahmed and Premkumar Devanbu. 2023. Few-shot training LLMs for
+project-specific code-summarization. In Proceedings of the 37th IEEE/ACM In-
+ternational Conference on Automated Software Engineering (Rochester, MI, USA)
+(ASE ’22). Association for Computing Machinery, New York, NY, USA, Article
+177, 5 pages. doi:10.1145/3551349.3559555
+9
+
+
+[3] Toufique Ahmed, Kunal Suresh Pai, Premkumar Devanbu, and Earl Barr. 2024.
+Automatic semantic augmentation of language model prompts (for code summa-
+rization). In Proceedings of the IEEE/ACM 46th international conference on software
+engineering. 1–13.
+[4] Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Bengio. 2015. Neural machine
+translation by jointly learning to align and translate. International Conference on
+Learning Representations (ICLR) (2015), 1–15. arXiv:1409.0473 [cs.CL]
+[5] Kyunghyun Cho, Bart van Merriënboer, Dzmitry Bahdanau, and Yoshua Bengio.
+2014. On the Properties of Neural Machine Translation: Encoder–Decoder Ap-
+proaches. In Proceedings of SSST-8, Eighth Workshop on Syntax, Semantics and
+Structure in Statistical Translation. Association for Computational Linguistics,
+Doha, Qatar, 103–111. doi:10.3115/v1/W14-4012
+[6] Gheorghe Comanici, Eric Bieber, Mike Schaekermann, Ice Pasupat, Noveen
+Sachdeva, Inderjit Dhillon, Marcel Blistein, Ori Ram, Dan Zhang, Evan Rosen,
+et al. 2025. Gemini 2.5: Pushing the frontier with advanced reasoning, multi-
+modality, long context, and next generation agentic capabilities. arXiv preprint
+arXiv:2507.06261 (2025).
+[7] Wikipedia contributors. n.d..
+Flesch–Kincaid readability tests.
+https://en.
+wikipedia.org/wiki/Flesch%E2%80%93Kincaid_readability_tests Accessed: Octo-
+ber 7, 2025.
+[8] Giuseppe Crupi, Rosalia Tufano, Alejandro Velasco, Antonio Mastropaolo, Denys
+Poshyvanyk, and Gabriele Bavota. 2025. On the Effectiveness of LLM-as-a-
+judge for Code Generation and Summarization. IEEE Transactions on Software
+Engineering (2025).
+[9] Nilesh Dhulshette, Sapan Shah, and Vinay Kulkarni. 2025. Hierarchical repository-
+level code summarization for business applications using local LLMs. In 2025
+IEEE/ACM International Workshop on Large Language Models for Code (LLM4Code).
+IEEE, 145–152.
+[10] William H DuBay. 2004. The principles of readability. (2004).
+[11] Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad
+Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan,
+et al. 2024. The LLaMA 3 herd of models. arXiv e-prints (2024), arXiv–2407.
+[12] Hanya Elhashemy, Youssef Lotfy, and Yongjian Tang. 2025.
+Bridging the
+Prototype-Production Gap: A Multi-Agent System for Notebooks Transforma-
+tion. In 2025 40th IEEE/ACM International Conference on Automated Software
+Engineering Workshops (ASEW). 299–302. doi:10.1109/ASEW67777.2025.00061
+[13] Chunrong Fang, Weisong Sun, Yuchen Chen, Xiao Chen, Zhao Wei, Quanjun
+Zhang, Yudu You, Bin Luo, Yang Liu, and Zhenyu Chen. 2024. ESALE: Enhanc-
+ing code-summary alignment learning for source code summarization. IEEE
+Transactions on Software Engineering 50, 8 (2024), 2077–2095.
+[14] Shuzheng Gao, Xin-Cheng Wen, Cuiyun Gao, Wenxuan Wang, Hongyu Zhang,
+and Michael R. Lyu. 2024. What Makes Good In-Context Demonstrations for Code
+Intelligence Tasks with LLMs?. In Proceedings of the 38th IEEE/ACM International
+Conference on Automated Software Engineering (Echternach, Luxembourg) (ASE
+’23). IEEE Press, 761–773. doi:10.1109/ASE56229.2023.00109
+[15] Rajarshi Haldar and Julia Hockenmaier. 2024. Analyzing the Performance of
+Large Language Models on Code Summarization. In Joint 30th International
+Conference on Computational Linguistics and 14th International Conference on
+Language Resources and Evaluation, LREC-COLING 2024. European Language
+Resources Association (ELRA), 995–1008.
+[16] Aaron Hurst, Adam Lerer, Adam P Goucher, Adam Perelman, Aditya Ramesh,
+Aidan Clark, AJ Ostrow, Akila Welihinda, Alan Hayes, Alec Radford, et al. 2024.
+GPT-4o system card. arXiv preprint arXiv:2410.21276 (2024).
+[17] Hamel Husain, Ho-Hsiang Wu, Tiferet Gazit, Miltiadis Allamanis, and Marc
+Brockschmidt. 2019. CodeSearchNet challenge: Evaluating the state of semantic
+code search. arXiv preprint arXiv:1909.09436 (2019).
+[18] Srinivasan Iyer, Ioannis Konstas, Alvin Cheung, and Luke Zettlemoyer. 2016. Sum-
+marizing source code using a neural attention model. In 54th Annual Meeting of
+the Association for Computational Linguistics 2016. Association for Computational
+Linguistics, 2073–2083.
+[19] Alexander LeClair, Sakib Haque, Lingfei Wu, and Collin McMillan. 2020. Im-
+proved code summarization via a graph neural network. In Proceedings of the
+28th International Conference on Program Comprehension. 184–195.
+[20] Chin-Yew Lin. 2004. ROUGE: A package for automatic evaluation of summaries.
+In Text Summarization Branches Out. 74–81.
+[21] Shangqing Liu, Yu Chen, Xiaofei Xie, Jingkai Siow, and Yang Liu. 2021. Retrieval-
+augmented generation for code summarization via hybrid GNN.(2021). In Pro-
+ceedings of the Ninth International Conference on Learning Representations: ICLR.
+4–8.
+[22] Shuai Lu, Daya Guo, Shuo Ren, Junjie Huang, Alexey Svyatkovskiy, Ambro-
+sio Blanco, Colin Clement, Dawn Drain, Daxin Jiang, Duyu Tang, et al. 2021.
+CodeXGLUE: A Machine Learning Benchmark Dataset for Code Understand-
+ing and Generation. In Thirty-fifth Conference on Neural Information Processing
+Systems Datasets and Benchmarks Track (Round 1).
+[23] Vladimir Makharev and Vladimir Ivanov. 2025. Code Summarization Beyond
+Function Level. In 2025 IEEE/ACM International Workshop on Large Language
+Models for Code (LLM4Code). IEEE, 153–160.
+[24] Antonio Mastropaolo, Matteo Ciniselli, Massimiliano Di Penta, and Gabriele
+Bavota. 2024. Evaluating code summarization techniques: A new metric and
+an empirical characterization. In Proceedings of the IEEE/ACM 46th International
+Conference on Software Engineering. 1–13.
+[25] Debanjan Mondal, Abhilasha Lodha, Ankita Sahoo, and Beena Kumari. 2023.
+Understanding Code Semantics: An Evaluation of Transformer Models in Sum-
+marization. In GenBench: The First Workshop on Generalisation (benchmarking) in
+NLP. 65.
+[26] OpenAI. 2025. GPT-5 System Card. (2025).
+[27] OpenAI. 2025. Introducing GPT-4.1 in the API. (2025).
+[28] Amirkia Rafiei Oskooei, Selcan Yukcu, Mehmet Cevheri Bozoglan, and Mehmet S.
+Aktas. 2025. Repository-Level Code Understanding by LLMs via Hierarchical
+Summarization: Improving Code Search and Bug Localization. In Computational
+Science and Its Applications – ICCSA 2025 Workshops: Istanbul, Turkey, June 30
+– July 3, 2025, Proceedings, Part I (Istanbul, Türkiye). Springer-Verlag, Berlin,
+Heidelberg, 88–105. doi:10.1007/978-3-031-97576-9_6
+[29] Kishore Papineni, Salim Roukos, Todd Ward, and Wei-Jing Zhu. 2002. BLEU: a
+method for automatic evaluation of machine translation. In Proceedings of the
+40th Annual Meeting of the Association for Computational Linguistics. 311–318.
+[30] Fabian Pedregosa, Ga"el Varoquaux, Alexandre Gramfort, Vincent Michel,
+Bertrand Thirion, Olivier Grisel, Mathieu Blondel, Peter Prettenhofer, Ron
+Weiss, Vincent Dubourg, Jake Vanderplas, Alexandre Passos, David Cournapeau,
+Matthieu Brucher, Matthieu Perrot, and ’Edouard Duchesnay. 2011. Scikit-learn:
+Machine Learning in Python. Journal of Machine Learning Research 12 (2011),
+2825–2830.
+[31] Nils Reimers and Iryna Gurevych. 2019. Sentence-BERT: Sentence Embeddings
+using Siamese BERT-Networks. In Proceedings of the 2019 Conference on Empirical
+Methods in Natural Language Processing and the 9th International Joint Conference
+on Natural Language Processing (EMNLP-IJCNLP). 3982–3992.
+[32] Online Free Websites: Public Repositories. [n. d.].
+https://github.com/
+twilio/twilio-python, https://github.com/apple/turicreate, https://github.com/
+extremenetworks/pybind, https://github.com/iotile/coretools, https://github.com/
+pantsbuild/pants.
+[33] Savio Antony Sebastian, Saurabh Malgaonkar, Paulami Shah, Mudit Kapoor, and
+Tanay Parekhji. 2016. A study & review on code obfuscation. In 2016 World
+Conference on Futuristic Trends in Research and Innovation for Social Welfare
+(Startup Conclave). IEEE, 1–6.
+[34] Ensheng Shi, Yanlin Wang, Lun Du, Junjie Chen, Shi Han, Hongyu Zhang, Dong-
+mei Zhang, and Hongbin Sun. 2022. On the evaluation of neural code summariza-
+tion. In Proceedings of the 44th International Conference on Software Engineering.
+1597–1608.
+[35] Jiho Shin, Clark Tang, Tahmineh Mohati, Maleknaz Nayebi, Song Wang, and Hadi
+Hemmati. 2025. Prompt Engineering or Fine-Tuning: An Empirical Assessment
+of LLMs for Code. In 2025 IEEE/ACM 22nd International Conference on Mining
+Software Repositories (MSR). IEEE, 490–502.
+[36] David Sounthiraraj, Jared Hancock, Yassin Kortam, Ashok Javvaji, Prabhat Singh,
+and Shaila Shankar. 2025. Code-Craft: Hierarchical Graph-Based Code Summa-
+rization for Enhanced Context Retrieval. arXiv preprint arXiv:2504.08975 (2025).
+[37] Chia-Yi Su and Collin McMillan. 2024. Distilled GPT for source code summariza-
+tion. Automated Software Engineering 31, 1 (2024), 22.
+[38] Weisong Sun, Chunrong Fang, Yuchen Chen, Quanjun Zhang, Guanhong Tao,
+Yudu You, Tingxu Han, Yifei Ge, Yuling Hu, Bin Luo, et al. 2024. An extractive-
+and-abstractive framework for source code summarization. ACM Transactions
+on Software Engineering and Methodology 33, 3 (2024), 1–39.
+[39] Weisong Sun, Chunrong Fang, Yun Miao, Yudu You, Mengzhe Yuan, Yuchen
+Chen, Quanjun Zhang, An Guo, Xiang Chen, Yang Liu, et al. 2023. Abstract
+syntax tree for programming language understanding and representation: How
+far are we? arXiv preprint arXiv:2312.00413 (2023).
+[40] Weisong Sun, Chunrong Fang, Yudu You, Yun Miao, Yi Liu, Yuekang Li, Gelei
+Deng, Shenghan Huang, Yuchen Chen, Quanjun Zhang, et al. 2023.
+Auto-
+matic code summarization via ChatGPT: How far are we?
+arXiv preprint
+arXiv:2305.12865 (2023).
+[41] Weisong Sun, Yun Miao, Yuekang Li, Hongyu Zhang, Chunrong Fang, Yi Liu,
+Gelei Deng, Yang Liu, and Zhenyu Chen. 2025. Source Code Summarization in the
+Era of Large Language Models. In 2025 IEEE/ACM 47th International Conference
+on Software Engineering (ICSE). IEEE, 1882–1894.
+[42] Yongjian Tang, Rakebul Hasan, and Thomas Runkler. 2024. FsPONER: Few-
+Shot Prompt Optimization for Named Entity Recognition in Domain-Specific
+Scenarios. In ECAI 2024. IOS Press, 3757–3764. https://ebooks.iospress.nl/doi/10.
+3233/FAIA240936
+[43] Yongjian Tang and Thomas Runkler. 2026. LLM-Based Agentic Systems for
+Software Engineering: Challenges and Opportunities. SE2026. doi:10.18420/
+se2026-ws_15
+[44] Yongjian Tang, Doruk Tuncel, Christian Koerner, and Thomas Runkler. 2025.
+The Few-shot Dilemma: Over-prompting Large Language Models. arXiv preprint
+arXiv:2509.13196 (2025).
+[45] Gemma Team, Aishwarya Kamath, Johan Ferret, Shreya Pathak, Nino Vieillard,
+Ramona Merhej, Sarah Perrin, Tatiana Matejovicova, Alexandre Ramé, Morgane
+10
+
+
+Rivière, et al. 2025. Gemma 3 technical report. arXiv preprint arXiv:2503.19786
+(2025).
+[46] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones,
+Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all
+you need. Advances in Neural Information Processing Systems 30 (2017).
+[47] Alessio Viticchié, Leonardo Regano, Marco Torchiano, Cataldo Basile, Mariano
+Ceccato, Paolo Tonella, and Roberto Tiella. 2016. Assessment of source code
+obfuscation techniques. In 2016 IEEE 16th International Working Conference on
+Source Code Analysis and Manipulation (SCAM). IEEE, 11–20.
+[48] Yao Wan, Zhou Zhao, Min Yang, Guandong Xu, Haochao Ying, Jian Wu, and
+Philip S Yu. 2018. Improving automatic source code summarization via deep rein-
+forcement learning. In Proceedings of the 33rd ACM/IEEE International Conference
+on Automated Software Engineering. 397–407.
+[49] Yang Wu, Yao Wan, Zhaoyang Chu, Wenting Zhao, Ye Liu, Hongyu Zhang,
+Xuanhua Shi, Hai Jin, and Philip S Yu. 2025. Can large language models serve as
+evaluators for code summarization? IEEE Transactions on Software Engineering
+(2025).
+[50] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng,
+Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, et al. 2025.
+Qwen3 Technical Report. arXiv:2505.09388 [cs.CL] https://arxiv.org/abs/2505.
+09388
+[51] Chunyan Zhang, Junchao Wang, Qinglei Zhou, Ting Xu, Ke Tang, Hairen Gui, and
+Fudong Liu. 2022. A survey of automatic source code summarization. Symmetry
+14, 3 (2022), 471.
+[52] Jian Zhang, Xu Wang, Hongyu Zhang, Hailong Sun, and Xudong Liu. 2020.
+Retrieval-based neural source code summarization. In Proceedings of the
+ACM/IEEE 42nd International Conference on Software Engineering. 1385–1397.
+[53] Tianyi Zhang, Varsha Kishore, Felix Wu, Kilian Q Weinberger, and Yoav Artzi.
+2019.
+BERTscore: Evaluating text generation with BERT.
+arXiv preprint
+arXiv:1904.09675 (2019).
+[54] Xuejun Zhang, Xia Hou, Xiuming Qiao, and Wenfeng Song. 2024. A review
+of automatic source code summarization. Empirical Software Engineering 29, 6
+(2024), 162.
+[55] Yuwei Zhao, Ziyang Luo, Yuchen Tian, Hongzhan Lin, Weixiang Yan, Annan Li,
+and Jing Ma. 2025. CodeJudge-Eval: Can Large Language Models be Good Judges
+in Code Understanding?. In Proceedings of the 31st International Conference on
+Computational Linguistics. 73–95.
+[56] Yuxiang Zhu and Minxue Pan. 2019. Automatic code summarization: A systematic
+literature review. arXiv preprint arXiv:1909.04352 (2019).
+11

@@ -1,0 +1,4383 @@
+Beyond Hard Constraints: Budget-Conditioned Reachability
+For Safe Offline Reinforcement Learning
+Janaka Brahmanage and Akshat Kumar
+School of Computing and Information Systems, Singapore Management University.
+janakat.2022@phdcs.smu.edu.sg, akshatkumar@smu.edu.sg
+Abstract
+Sequential decision-making using Markov Decision Process
+underpins many real-world applications. Both model-based
+and model-free methods have achieved strong results in
+these settings. However, real-world tasks must balance re-
+ward maximization with safety constraints, often conflicting
+objectives, that can lead to unstable min–max, adversarial op-
+timization. A promising alternative is safety reachability anal-
+ysis, which precomputes a forward-invariant safe state–action
+set, ensuring that an agent starting inside this set remains safe
+indefinitely. Yet, most reachability-based methods address
+only hard safety constraints, and little work extends reach-
+ability to cumulative cost constraints. To address this, first,
+we define a safety-conditioned reachability set that decou-
+ples reward maximization from cumulative safety cost con-
+straints. Second, we show how this set enforces safety con-
+straints without unstable min–max or Lagrangian optimiza-
+tion, yielding a novel offline safe RL algorithm that learns a
+safe policy from a fixed dataset without environment interac-
+tion. Finally, experiments on standard offline safe-RL bench-
+marks, and a real-world maritime navigation task demonstrate
+that our method matches or outperforms state-of-the-art base-
+lines while maintaining safety.
+1
+Introduction
+Markov Decision Processes (MDPs) have demonstrated
+impressive success modeling across a range of domains,
+including robotics (Tang et al. 2024), algorithm discov-
+ery (Fawzi et al. 2022), classical board games (Silver et al.
+2016), and Atari games (Mnih et al. 2013). Despite these
+achievements, deploying agents in real-world settings poses
+significant challenges. In practice, most of the applications
+utilize a Reinforcement Learning (RL) framework to train
+agents, and these agents must not only maximize cumula-
+tive reward but also operate safely (Altman 2021), requir-
+ing policies that strike a balance between performance and
+safety. Additionally, constructing fast and accurate simula-
+tors for complex environments is often computationally pro-
+hibitive. Offline safe reinforcement learning (offline safe RL)
+offers a practical solution by enabling agents to learn from
+pre-collected datasets without further environment interac-
+tion (Liu et al. 2024). This work aims to develop methods
+Copyright © 2026, Association for the Advancement of Artificial
+Intelligence (www.aaai.org). All rights reserved.
+that address the dual goals of reward optimization and safety
+in offline RL, an important problem in RL research (Gu et al.
+2024).
+Approach overview
+Our goal is to solve the standard
+CMDP problem (Altman 2021), where the agent must max-
+imize reward subject to a constraint on the expected cumu-
+lative cost. We propose an approach that augments the state
+with a dynamic budget. This dynamic budget is a quantity
+that controls the conservativeness of the policy; a smaller
+budget implies a more conservative policy. For example, we
+can start with the total cost threshold of the CMDP and track
+the exact remaining budget by subtracting immediate costs
+incurred as the policy executes. In a deterministic setting, we
+can enforce the safety constraint by tracking such a budget.
+However, this does not work in a stochastic environment. In-
+stead, we show that tracking a quantity other than the exact
+remaining budget can enforce safety in stochastic settings.
+We then estimate a budget-conditioned persistent safety set:
+the set of state-action pairs from which there exists a policy
+that keeps future costs within the remaining budget. By re-
+stricting the agent’s actions to this safety set, we decouple
+safety enforcement from reward optimization, avoiding the
+instability of Lagrangian or min-max methods.
+Related work
+Constrained Markov decision processes
+(CMDPs) (Altman 2021) are a standard framework for safe
+RL. Prior offline safe RL methods often struggle with op-
+timization instability or high computational overhead. La-
+grangian methods like BCQ-Lagrangian (Liu et al. 2024)
+suffer from tuning difficulties and unstable learning. Meth-
+ods like COptiDICE (Lee et al. 2022) perform distribu-
+tion correction but struggle empirically on recent bench-
+marks (Liu et al. 2024). Recent approaches learn genera-
+tive models (VAEs) as a pre-training step (Koirala et al.
+2025; Guo et al. 2025), which incurs significant compu-
+tational overhead. While Hamilton-Jacobi reachability (Yu
+et al. 2022) enforces safety independently of the policy for
+hard constraints, action-constrained RL ensures per-step fea-
+sibility through optimization solvers (Lin et al. 2021) or gen-
+erative models (Brahmanage, Ling, and Kumar 2023, 2024).
+Another related approach, Saute RL (Sootla et al. 2022),
+enforces per-step constraints but requires online rollouts to
+track budgets. In contrast, our approach prunes unsafe ac-
+tions offline using a dynamic budget without requiring a
+arXiv:2603.22292v2  [cs.LG]  31 Mar 2026
+
+
+generative model or online samples. We provide an extended
+discussion of related work in Appendix C.
+Adaptive Safty Budgets for RL
+Standard safe RL meth-
+ods enforce static, episode-level constraints (i.e., expected
+cost over all the episodes is less than a budget). In contrast,
+we introduce a step-wise budget that dynamically adjusts
+during policy execution. A key benefit is that using this step-
+wise budget, we can prune unsafe actions at each time step
+and guide value estimation (for both reward and cost), en-
+abling policy that adapts over time.
+Our contributions are:
+• We
+propose
+Budget-Conditioned
+Reachability,
+a
+framework that applies reachability analysis to CMDPs
+with cumulative cost constraints. It uses dynamic budgets
+to estimate persistently safe state–action sets, enabling
+reward-maximizing policy learning within this safe re-
+gion. We also provide rigorous theoretical justification
+for the framework.
+• We introduce two variants of our method to address both
+deterministic and stochastic CMDP settings, ensuring
+broad applicability across different problem structures.
+• Our method integrates seamlessly with existing of-
+fline RL algorithms such as IQL (Wang et al. 2023),
+XQL (Garg et al. 2023), and SparseQL (Xu et al. 2023),
+yielding a safe offline RL approach, BCRL (Budget-
+Conditioned Reachability RL). The resulting algorithms
+are easy to implement, require no min–max adversarial
+training, never query out-of-distribution actions, and gen-
+eralize to any budget.
+• We evaluate BCRL on interpretable grid-world environ-
+ments, DSRL benchmarks (Liu et al. 2024), and a real-
+world maritime navigation task, where agents are trained
+using historical ship trajectory data to navigate safely
+in high-traffic conditions. Extensive ablations show con-
+sistent improvements over state-of-the-art baselines. Our
+code is available at1.
+2
+Preliminaries
+2.1
+Constrained Markov Decision Process
+A constrained Markov Decision Process (CMDP) is defined
+as a tuple M := ⟨S, A, T, r, c, γ, µ0, δinit⟩. Here, S and A
+represent the state and action spaces, respectively. The tran-
+sition dynamics are given by T(s′ | s, a), specifying the
+probability of transitioning from state s to s′ under action
+a. The reward function is r(s, a) : S × A →R, and the cost
+function is c(s, a) : S × A →R+. The discount factor is
+γ ∈[0, 1), and the initial state distribution is µ0 : S →[0, 1].
+The δinit is the cost threshold over the total expected cost
+agent can incur under any policy. The objective is to de-
+termine a policy π : S →∆(A) that maximizes the ex-
+pected discounted reward JR(π), subject to the cost con-
+straint JC(π) ≤δinit where,
+JR(π)=E
+π
+∞
+X
+t=0
+γtr(st, at); JC(π)=E
+π
+∞
+X
+t=0
+γtc(st, at) (1)
+1https://janakact.github.io/bcrl
+Figure 1: Electronic navigation chart for maritime traffic naviga-
+tion in Singapore strait
+and δinit ∈[0, δmax] is the cost (or safety budget) threshold.
+Here δmax =
+cmax
+1−γ , where cmax is the highest cost the envi-
+ronment can incur at a single step.
+Learning from offline data
+For CMDPs, getting faithful
+domain model (e.g., transition, reward, cost functions) for
+realistic problems is challenging. Thus, we focus on the of-
+fline RL setting where we learn from a pre-collected transi-
+tion dataset D = {(si, ai, r(si, ai), c(si, ai), s′
+i)}N
+i=1 gener-
+ated by one or more behavioral policies πβ. Offline safe RL
+aims to learn a policy π that optimizes CMDP objective sub-
+ject to cost constraints using this dataset alone, without fur-
+ther environment interaction. As a real world example, con-
+sider the safe maritime navigation problem in figure 1. The
+Singapore strait is a high traffic, constrained waterway, with
+vessels navigating narrow lanes, TSS corridors, anchorage
+zones, and areas near landmasses. Ships must make sequen-
+tial decisions–adjusting speed or heading–while avoiding re-
+stricted zones, minimizing collision risk, and following nav-
+igation rules. Because unsafe exploration is impossible in
+real waters, learning through trial-and-error is not feasible.
+Yet, the sea traffic generates extensive AIS (automatic iden-
+tification system) data on vessel positions, speeds, headings,
+and interactions. This makes safe offline RL a natural fit for
+such problems where safe policies are learned solely from
+historical data without real-world experimentation.
+2.2
+In-Sample Q-learning Algorithms
+For unconstrained reinforcement learning (i.e., standard RL
+without any cost constraints), several algorithms use asym-
+metric loss functions to estimate the value function instead
+of the exact maximum, learning policies from offline data
+without querying Q-values of unseen actions. Methods such
+as IQL (Kostrikov, Nair, and Levine 2022), XQL (Garg et al.
+2023), and SparseQL (Xu et al. 2023) employ asymmet-
+ric regression to fit the Bellman optimal value, replacing
+the max operator while still following temporal-difference
+learning. The critic Qθ(s, a), target critic QθT (s, a), and
+value function Vψ(s), parameterized by θ, θT , and ψ, are
+trained by minimizing the following losses:
+LV (ψ) =
+E
+(s,a)∼D[L∗(QθT (s, a) −Vψ(s))]
+(2)
+LQ(θ) =
+E
+(s,a,s′)∼D[(r(s, a) + γVψ(s′) −Qθ(s, a))2] (3)
+Here, L∗is an asymmetric loss function that penalizes
+positive and negative errors differently, weighting overes-
+
+
+timation more heavily to approximate the maximum Q-
+value. In IQL (Kostrikov, Nair, and Levine 2022), L∗(u) =
+Lτ(u) = |τ −1{u<0}|u2 is the expectile loss (Newey and
+Powell 1987), with τ > 0.5 pushing Vψ(s) toward the
+maximum. Similarly, XQL (Garg et al. 2023) uses Gum-
+bel regression, and SparseQL (Xu et al. 2023) introduces
+a robust asymmetric loss. Target parameters are updated
+via θT ←(1 −α)θT + αθ. These methods are compu-
+tationally efficient, avoid querying OOD actions, and have
+strong theoretical guarantees (Kostrikov, Nair, and Levine
+2022; Xu et al. 2023). For policy extraction, they use in-
+sample methods similar to Advantage Weighted Regression
+(AWR) (Peng et al. 2019). In this work, we adopt primarily
+in-sample methods to avoid OOD actions.
+2.3
+Persistent Safety with Value Functions
+In safe RL, we sometimes have access to a safety indica-
+tor for a given state, which can be viewed as a state-wise
+safety constraint. However, it is not sufficient to ensure only
+instantaneous safety. When an agent takes an action, we
+also need to guarantee that in the future the agent will al-
+ways have at least one safe action available. In other words,
+the agent should not be driven into an unrecoverable situ-
+ation or a dead end. Formally, a state is unrecoverable if
+there exists no sequence of future actions that can prevent
+an eventual safety violation. A safety signal that indicates
+the agent is not in an unrecoverable state is referred to as
+a persistent safety signal (Yu et al. 2022). Hamilton–Jacobi
+(HJ) reachability-based RL methods (Zheng et al. 2024; Yu
+et al. 2022; Ganai et al. 2023) address this by estimating a
+forward-invariant safety set. This set consists of states from
+which the agent can remain safe indefinitely, provided it fol-
+lows an appropriate policy. For example, in FISOR (Zheng
+et al. 2024), the immediate safety indicator h(s) defines the
+safe state set Sf := {s ∈S | h(s) ≤0}. A learned value
+function is then used to estimate
+V ∗
+h (s) = min
+π V π
+h (s) = min
+π max
+t∈N h(st)
+(4)
+If V ∗
+h (s) ≤0, this implies that there exists a policy π such
+that the future cost satisfies V π
+h (s) ≤0. Therefore, V ∗
+h acts
+as a persistent safety indicator. The set Sp := {s ∈S |
+V ∗
+h (s) ≤0} is then used to define the persistent safety set.
+3
+Budget-Conditioned Reachability
+Prior reachability and persistent safety estimation methods
+are mostly limited to hard constraints (i.e., whether safety
+indicator h(s) ≤0). They do not extend trivially to cu-
+mulative cost based safety constraints in CMDPs defined in
+Section 2.1. Thus, we aim to estimate the persistent safety
+set independently of the policy being learned, using it to en-
+force cumulative cost constraints. Decoupling safety estima-
+tion from policy optimization ensures the learned policy re-
+mains safe while making learning more stable and tractable,
+without using Lagrangian or min-max adversarial optimiza-
+tion. Our approach builds on three key ideas: (1) augmenting
+the CMDP to explicitly track the remaining budget, (2) es-
+timating a budget-conditioned persistent safety set for any
+remaining budget, and (3) solving the augmented CMDP.
+Methodological Intuition: Rather than enforcing a static
+constraint over an entire episode, we augment the state with
+a remaining budget that dynamically depletes as costs are
+incurred. By pre-computing whether this budget is sufficient
+for safe completion (the persistent safety set), we can ac-
+tively prune unsafe actions at each step before the agent acts,
+entirely decoupling safety enforcement from reward maxi-
+mization.
+3.1
+A Budget-Conditioned Persistent Safety Set
+Similar to the definition of persistent safety discussed in Sec-
+tion 2.3, we now define the budget-conditioned safety set
+that indicate feasibility based on the discounted future cost.
+Definition 3.1 (The optimal cost-value function). The op-
+timal state-cost-value function V ∗
+C and the optimal action-
+cost-value function Q∗
+C are defined as:
+V ∗
+C(s) = min
+π V π
+C (s) = min
+π
+E
+π
+s0=s
+X
+t∈N
+γtc(st, at),
+(5)
+Q∗
+C(s, a) = min
+π Qπ
+C(s, a) = min
+π
+E
+π
+s0=s
+a0=a
+X
+t∈N
+γtc(st, at) (6)
+Following a similar reasoning as in Section 2.3, we claim
+that, given a budget δ, if V ∗
+C(s) ≤δ, then there exists
+a policy π such that the future discounted cost satisfies
+V π
+C (s) ≤δ. Therefore, V ∗
+C(s) ≤δ serves as a persistent
+safety indicator for the given budget, guaranteeing that there
+exists a policy under which the future cost remains within
+the budget. This allows us to define the largest set of feasi-
+ble states, as well as the feasible actions for each state, that
+remain within the given budget.
+Definition 3.2 (Budget-Conditioned Persistent Safety Sets).
+Given a budget δ, the budget-conditioned persistent safety
+set is defined as:
+SP (δ) := {s ∈S | V ∗
+C(s) ≤δ}.
+(7)
+Similarly, the budget-conditioned persistent safe action set
+for a given state s is defined as:
+AP (s, δ) := {a ∈A | Q∗
+C(s, a) ≤δ}.
+(8)
+Intuitively, the budget-conditioned persistent safety set
+consists of states where a policy exists to keep the total dis-
+counted future cost within the budget δ.
+Lemma 3.3 (Safe Actions Always Exist for Persistent
+Safety States). Given δ ∈R+; for any state s ∈SP (δ),
+the budget-conditioned persistent safe action set AP (s, δ) is
+non-empty: AP (s, δ)̸ = ∅.
+Proof. Let s ∈SP (δ), which means by definition V ∗
+C(s) ≤
+δ. By the definition of the value function,
+V ∗
+C(s) = min
+π E
+h ∞
+X
+t=0
+γtc(st, at)
+ s0 = s, π
+i
+= min
+a∈A Q∗
+C(s, a),
+so there exists at least one action a∗∈A that attains this
+minimum. Therefore, Q∗
+C(s, a∗) = V ∗
+C(s) ≤δ, which im-
+plies a∗∈AP (s, δ). Hence, AP (s, δ)̸ = ∅.
+In the following sections, we discuss how the budget-
+conditioned persistent safety sets defined above can be used
+to enforce the cumulative cost constraint of the CMDP.
+
+
+3.2
+Budget Adaptive MDPs
+Since the definition of the budget-conditioned persistent
+safety set depends on the remaining budget, it is necessary
+to make the budget an explicit part of the system’s dynam-
+ics. To achieve this, we extend the CMDP by augmenting its
+state space with a dynamic budget variable. This augmen-
+tation allows the agent to reason about safety not only as a
+function of the environment state but also as a function of
+the available safety budget over time. One key contribution
+is our method for initializing and updating the budget via
+functions f and g. Specially for stochastic MDPs, these up-
+dates are non-trivial and crucial for ensuring the theoretical
+guarantees of our approach.
+Definition
+3.4
+(Budget-Adaptive
+MDP).
+A
+Budget-
+Adaptive Markov Decision Process (BAMDP) constructed
+from a CMDP M is a tuple
+¯
+M(M, f, g) := ⟨¯S, A, ¯T, ¯r, ¯c, γ, ¯µ0, δinit⟩.
+where the augmented state space is ¯S := S × R+, and
+the action space A remain unchanged. The reward and cost
+functions are unchanged from the original CMDP. That is,
+¯r((s, δ), a) := r(s, a), ¯c((s, δ), a) := c(s, a).
+The initial budget function f : S × R+ →R+ assigns
+the initial budget based on the CMDP budget δinit and the
+starting state s0, such that the augmented initial state distri-
+bution is:
+¯µ0 := {(s0, δ0) | s0 ∼µ0, δ0 = f(s0, δinit)}.
+The budget update function g : S × A × S × R+ →R+
+updates the budget after each transition. In the most gen-
+eral form considered here, it depends on the current state s,
+action a, next state s′, and the current budget δ, such that
+δ′ = g(s, a, s′, δ). This results in the following augmented
+transition function:
+¯T
+ (s′, δ′) | (s, δ), a
+
+:= T(s′ | s, a) · 1{δ′=g(s,a,s′,δ)},
+where 1{·} is the indicator function.
+Intuition of f and g The role of f and g is to initialize and
+track a remaining budget (or a similar quantity) while exe-
+cuting the policy, and then use it to prune the action space,
+as discussed later in this section. The simplest setup is to de-
+fine f(s0, δinit) := δinit,
+g(s, a, s′, δ) := δ−c(s,a)
+γ
+, where
+the budget is initialized as the CMDP cost constraint. This
+formulation keeps track of the exact remaining budget while
+dividing by γ to account for discounting. However, this is
+not the only possible formulation. We can also track other
+quantities as the budget, as long as they help enforce the
+original CMDP cost constraint. In Section 3.3, we show how
+such a quantity can be utilized in stochastic CMDPs.
+While we present our formulation with a single cost ob-
+jective, our approach naturally extends to multiple cost types
+by augmenting the state space with a budget vector. We pro-
+vide the detailed formulation for multiple cost constraints in
+Appendix A.3.
+Definition 3.5 (Budget-Restricted Policy Set). Let AP (s, δ)
+denote the persistent safety action set, as defined in the
+Eq (8). The budget-restricted policy set is:
+ΠP :=
+n
+π : ¯S →∆(A)
+ π(a | (s, δ)) > 0 =⇒a ∈AP (s, δ)
+o
+Augmented State Space
+Original State Space
+Figure 2: State augmentation with budget. A desirable property is
+set ¯SP to be persistent (trajectories starting in ¯SP must end in ¯SP )
+The goal of defining ΠP is that, with an appropriate
+choice of f and g, any policy in ΠP will satisfy the CMDP
+constraint, as discussed in Section 3.3.
+The objective of the BAMDP
+is to find a policy in ΠP
+that maximizes the reward.
+π∗= max
+π∈ΠP E
+π
+∞
+X
+t=0
+γt¯r((st, δt), at)
+(9)
+Feasible state space and ΠP
+A policy in ΠP may not
+be defined for all states, since there may exist states where
+Q∗
+C(s, a) > δ for all actions a ∈A, leaving no admissi-
+ble action. The following definition identifies the subset of
+states where the budget-restricted policy set ΠP can be well-
+defined.
+Definition 3.6 (Feasible State Subspace). The feasible state
+subspace is ¯SP :=
+n
+(s, δ)
+ δ ∈R+, s ∈SP (δ)
+o
+. where
+SP (δ) is the persistent safety set in (7) .
+Augmented State Space:
+Figure 2 illustrates the modi-
+fied state space and the feasible subspace defined within it.
+The feasible subspace represents the set of augmented states
+((s, δ)) where each state (s) remains feasible under its cor-
+responding budget (δ). As shown in Lemma 3.3, for every
+state s ∈SP (δ), the safe action set AP (s, δ) is non-empty.
+This guarantees that the policy set ΠP is well-defined over
+¯SP , since there is always at least one admissible action for
+each (s, δ) ∈¯SP .
+Intuitively, some key desirable properties associated with
+¯SP and ΠP are: (a) the set ¯SP should be persistent. That, is
+an agent starting in s ∈¯SP remains in ¯SP following a policy
+π ∈ΠP ; (b) For any policy π ∈ΠP , it is guaranteed that the
+original CMDP constraint JC(π) ≤δinit is satisfied. In the
+following, we discuss benefits of defining ΠP and ¯SP , and
+then show how to choose appropriate budget update func-
+tions for properties (a) and (b) to hold.
+Benefits of defining ΠP and ¯SP :
+Both sets are con-
+structed from the persistent safety sets in Eq. 7 and Eq. 8,
+which depend only on the conservative cost critic and are
+independent of both the reward signal and the reward-
+optimizing policy. This makes enforcing π ∈ΠP far sim-
+pler than satisfying the original CMDP constraint in Eq. 1,
+which depends on the policy being learned and creates a
+difficult min–max coupling between the cost critic, reward
+critic, and policy. Our formulation removes this circular de-
+pendency, yielding a more stable learning process.
+
+
+3.3
+Budget Update for CMDPs
+The most intuitive budget update function is to track the re-
+maining cost budget exactly, where δ0 = δinit, and define the
+update rule as: δt+1 = δt−c(st,at)
+γ
+. In fact, such a budget up-
+date rule can result in safety for fully deterministic CMDPs,
+where, transition function and policy both are deterministic.
+We formally define and prove it in Appendix A.1. However,
+tracking such an exact budget and using it to restrict the pol-
+icy to ΠP does not guarantee safety in stochastic CMDPs.
+In a stochastic setting, the cost-to-go satisfies
+Q∗
+C(s, a) = c(s, a) + γEs′[V ∗
+C(s′)],
+rather than the deterministic form
+Q∗
+C(s, a) = c(s, a) + γV ∗
+C(s′).
+As a result, the next-state value V ∗
+C(s′) can take a range
+of values, and the budget update defined for the deter-
+ministic setting no longer guarantees that (s′, δ′) lies in-
+side ¯SP . In such cases, we may need to follow a differ-
+ent policy—possibly the most conservative policy at these
+states—but doing so does not ensure that the agent will sat-
+isfy the CMDP constraint in Eq. (1). To address these issues,
+we propose an alternative budget update formulation, called
+soft budget-tracking.
+Definition 3.7 (Soft Budget-Tracking). Let ¯
+MS denote the
+Soft Budget-Tracking BAMDP defined by
+¯
+MS(M) := ¯
+M(M, f, g),
+with
+f(s0, δinit) = V ∗
+C(s0) + δinit −
+E
+s∼µ0[V ∗
+C(s)],
+(10)
+g(s, a, s′, δ) = V ∗
+C(s′) + δ −Q∗
+C(s, a)
+γ
+(11)
+The advantage of the above formulation is that it en-
+sures that after any transition, the next state (s′, δ′) ∈¯SP .
+Moreover, we can show that it satisfies the CMDP con-
+straint. Although ¯
+MS may seem unintuitive, its budget up-
+date functions reduce to the deterministic budget update in
+fully deterministic settings, and we formally show this in
+Appendix A.2.
+With the soft budget-tracking BAMDP, we can reason
+about the behavior of policies constrained to remain within
+the persistent safety set ¯SP , even in stochastic environments.
+Under the reasonable assumption Eq. (12) on the initial cost
+threshold, we can formally show that these policies maintain
+feasibility: they remain inside the persistent safety set and
+satisfy the CMDP cumulative cost constraint in expectation.
+The following theorem summarizes these key properties.
+Theorem 3.8 (Properties of Policies in ΠP under Soft Bud-
+get-Tracking). Let ¯
+MS be the soft budget-tracking BAMDP.
+Assume the CMDP is feasible, i.e., the cost threshold δinit
+satisfies
+δinit ≥Es∼µ0[V ∗
+C(s)].
+(12)
+Let π ∈ΠP , and define the expected discounted cumula-
+tive cost from an augmented state (s, δ) ∈¯S by
+Jπ
+C((s, δ)) := E
+π
+h ∞
+X
+t=0
+γtc(st, at)
+ (s0, δ0) = (s, δ)
+i
+.
+Then the following properties hold:
+1. Any policy π ∈ΠP induces trajectories that start in and
+remain entirely within the feasible subspace ¯SP .
+2. For any (s, δ)
+∈
+¯SP and any policy π
+∈
+ΠP ,
+Jπ
+C((s, δ)) ≤δ.
+3. Any policy π ∈ΠP satisfies the CMDP cumulative cost
+constraint (Eq. 1): JC(π) ≤δinit.
+The proof of Theorem 3.8 is provided in Appendix A.2.
+The theorem ensures that any policy in ΠP
+remains
+within ¯SP and that the expected cumulative cost from any
+augmented state (s, δ) does not exceed its budget δ, thereby
+satisfying the CMDP constraint. Unlike the deterministic
+case, we cannot guarantee that all CMDP-feasible policies
+lie within ΠP , so the resulting constraint may be stricter.
+Nevertheless, our empirical results show that it still yields
+high-quality policies.
+CMDP Instantiation We next discuss how to formulate and
+solve BAMDP from a given CMDP with known model.
+BAMDP is formed by augmenting the state with a dis-
+cretized budget dimension and defining transitions using f
+or g, depending on whether the setting is stochastic or de-
+terministic. We mask states outside ¯SP and restrict actions
+to the support of ΠP . The resulting finite MDP can then be
+solved with a standard LP solver. Further details appear in
+Appendix D.1.
+In real-world settings where dynamics are unknown, of-
+fline RL is often used to learn from pre-collected data. Next,
+we show how our framework integrates with standard offline
+RL methods to solve constrained RL problems.
+4
+Safe Offline-RL With BAMDP
+In this section we discuss how our approach can be used with
+existing unconstrained offline RL algorithms. Our approach
+can be seen as a three step process:
+1. We first estimate the cost-to-go functions V ∗
+C and Q∗
+C us-
+ing offline RL algorithms, ignoring the reward, using the
+original dataset D.
+2. Then we use it create a new dataset ¯D from D that repre-
+sent valid transitions of the augmented MDP ¯
+M with the
+extended state space ¯S and dynamic budget.
+3. Then we train an Offline RL agent, using the augmented
+dataset ¯D to maximize the reward for the augmented
+MDP
+¯
+M, while ensuring that the resulting policy re-
+spects the persistent safety constraints.
+The first step is performed on the original MDP without
+any modifications to the original MDP, while the third step
+is performed on the BAMDP.
+Learning the Persistent Safety Set
+For the first step,
+any offline RL algorithm can be used; the only differ-
+ence is that we minimize the cost instead of maximizing
+the reward. In practice, in-sample RL algorithms such as
+IQL (Kostrikov, Nair, and Levine 2022), XQL (Garg et al.
+2023), or SparseQL (Xu et al. 2023) are particularly conve-
+nient, as they do not require learning a policy to estimate Q-
+values. However, if one wishes to use algorithms that rely on
+out-of-distribution actions, such as SAC+BC (Fujimoto and
+Gu 2021), CQL (Kumar et al. 2020), our approach is fully
+
+
+Algorithm 1: BCRL : IQL Instantiation Algorithm
+Initialize Parameters: θ, θT , ψ, ˆθ, ˆθT , ˆψ, ϕ
+Inputs: Offline data D, and other hyper parameters τc, τr, α, β
+for each gradient step do
+(s, a, s′) ∼D
+▷sample mini batch of transitions
+θ ←θ −λC
+Q∇θLC
+Q(θ)
+▷update cost-critic Eq.(14)
+ψ ←ψ −λC
+V ∇ψLC
+V (ψ)
+▷update cost-value Eq.(13)
+θT ←(1 −α)θT + αθ
+▷soft update cost target-net.
+δ ∼U[QC
+θ (s,a),δmax]
+▷sample budget from uniform dist.
+δ′ = g(s, a, s′, δ)
+▷compute next budget
+¯s = (s, δ) and ¯s′ = (s′, δ′)
+▷compute augmented states
+ˆθ ←ˆθ −λR
+Q∇ˆθLR
+Q(ˆθ)
+▷update reward critic Eq.(16)
+ˆψ ←ˆψ −λR
+V ∇ˆ
+ψLR
+V ( ˆψ)
+▷update value function Eq.(15)
+ˆθT ←(1 −α)ˆθT + αˆθ
+▷soft update reward target-net.
+ϕ ←ϕ −λπ∇ϕLπR(ϕ) ▷policy extraction (AWR) Eq.(17)
+end for
+compatible and does not impose any restrictions. For conve-
+nience and stability, we use IQL in our implementation. The
+following loss functions can then be used, with τC ≤0.5
+to minimize the cost (details in (Kostrikov, Nair, and Levine
+2022)):
+LV
+C(ψ) =
+E
+(s,a)∼D[LτC(QC
+θT (s, a) −V C
+ψ (s))]
+(13)
+LQ
+C(θ) =
+E
+(s,a,s′)∼D[(c(s, a)+γV C
+ψ (s′)−QC
+θ (s, a))2] (14)
+Offline RL within the Augmented MDP
+In this step, we
+train an RL algorithm within the persistent safety set of the
+augmented MDP
+¯
+M(M, f, g), ensuring the policy selects
+only actions from AP by restricting the MDP to ¯SP . To fa-
+cilitate training, we define an augmented dataset as follows:
+¯D :=
+(
+ (s, δ)
+| {z }
+¯s
+, a, (s′, δ′)
+| {z }
+¯s′
+ 
+(s,a,s′)∼D,
+δ∼U[Q∗
+C (s,a),δmax], δ′=g(s,a,s′,δ)
+)
+Unlike a fixed dataset, this augmented dataset is not pre-
+generated; instead, we sample mini-batches from it dynam-
+ically during training. Here, the budget δ is sampled from
+a uniform distribution U[Q∗
+C(s,a),δmax] to generate augmented
+transitions within the persistent safety set. Sampling δ ≥
+Q∗
+C(s, a) ensures that the dataset extends only to the persis-
+tent safety set ¯SP and not to the full augmented state space
+¯S. Crucially, this process acts as data augmentation rather
+than filtering. A valid budget range [Q∗
+C(s, a), δmax] always
+exists for any state-action transition (s, a, s′) in the offline
+dataset. Thus, we can always sample a valid budget δ and
+construct an augmented transition ((s, δ), a, (s′, δ′)). This
+ensures that the training process utilizes the entire support
+of the original offline dataset without discarding any sam-
+ples. The rewards r(s, a) and c(s, a) remain unchanged, as
+discussed in the Definition 3.4.
+Implicit Enforcement of Persistent Safety Offline RL nat-
+urally stays close to the behavior policy, thus restricting the
+dataset to the persistent safety set already biases the learned
+Optimal Policy (Stochastic)
+Unconstrained Policy
+Ours
+Budget
+Safe
+Unsafe
+20
+15
+10
+5
+Cumulative Return
+Budget = 0.1
+0.6
+0.7
+0.8
+0.9
+1.0
+Transition Prob. (p)
+0
+1
+2
+Cumulative Cost
+15
+10
+5
+Cumulative Return
+Budget = 1.0
+0.6
+0.7
+0.8
+0.9
+1.0
+Transition Prob. (p)
+0
+1
+2
+Cumulative Cost
+Figure 3: Comparison with Optimal Solution: Grid-world re-
+sults with X-axis as the intended-movement probability p
+(higher values indicate less noise). Top plots show total re-
+turn; bottom plots show cost for two budget levels.
+policy to remain within it. In practice, we found no extra
+penalties are required.
+IQL-Instantiation We instantiate our approach using Im-
+plicit Q-Learning (IQL) by extending the offline dataset
+to include only transitions within the persistent safety set
+¯SP . This modification naturally integrates our safety con-
+straint into the learning process. The value and Q-functions
+are trained using the standard expectile regression (with
+τR ≥0.5) and Bellman objectives defined over the aug-
+mented dataset ¯D:
+LV
+R( ˆψ) =
+E
+(¯s,a,¯s′)∼¯
+D
+
+LτR QR
+ˆθT (¯s, a) −V R
+ˆ
+ψ (¯s)
+
+(15)
+LQ
+R(ˆθ) =
+E
+(¯s,a,¯s′)∼¯
+D
+
+(¯r(¯s, a) + γV R
+ˆ
+ψ (¯s′) −QR
+ˆθ (¯s, a))2
+(16)
+Here, θT denotes the target network parameters, which are
+updated using a soft update. For policy extraction, we follow
+Advantage-Weighted Regression (AWR) as in IQL, where
+the policy is trained to maximize the advantage-weighted
+likelihood of actions under the Q-function:
+Lπ(ϕ) = −E
+(¯s,a)∼¯
+D
+
+exp
+A(¯s, a)
+β
+
+log πϕ(a| ¯s)
+
+(17)
+where A(¯s, a) = QR
+ˆθ (¯s, a) −V R
+ˆ
+ψ (¯s) denotes the advan-
+tage, and β controls the temperature of the weighting distri-
+bution. The exact learning process is outlined in the Algo-
+rithm 1. In our method, called BCRL, cost critics (QC, V C)
+can be learned by ignoring rewards altogether, and policy ex-
+traction only depends on reward critics. This is significantly
+more stable that standard Lagrangian relaxation methods.
+5
+Experiments
+We evaluate BCRL on DSRL benchmarks (Liu et al. 2024)
+and a real-world maritime navigation task. We aim to an-
+swer following questions: (Q1) Does BCRL create a no-
+
+
+CDT
+CAPS
+CCAC
+LSPC
+BCRL (Ours)
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+PointButton1
+0.53±0.01
+1.68±0.13
+0.04±0.15
+0.58±1.42
+0.68±0.14
+4.31±3.20
+0.09±0.20
+0.69±1.03
+0.07±0.18
+0.79±2.10
+PointButton2
+0.46±0.01
+1.57±0.10
+0.12±0.20
+0.96±2.35
+0.63±0.11
+4.82±3.61
+0.19±0.21
+1.39±2.53
+0.12±0.22
+0.81±1.36
+PointCircle1
+0.59±0.00
+0.69±0.04
+0.50±0.12
+0.68±1.51
+0.58±0.13
+2.22±1.05
+0.56±0.35
+3.49±3.55
+0.55±0.17
+0.86±0.21
+PointCircle2
+0.64±0.01
+1.05±0.08
+0.51±0.21
+0.76±0.47
+0.18±0.50
+1.42±1.09
+0.67±0.24
+4.18±4.56
+0.58±0.10
+0.74±0.34
+PointGoal1
+0.69±0.02
+1.12±0.07
+0.46±0.28
+0.63±0.81
+0.55±0.26
+1.88±1.72
+0.26±0.27
+0.23±0.45
+0.56±0.25
+0.70±0.65
+PointGoal2
+0.59±0.03
+1.34±0.05
+0.34±0.23
+0.80±0.74
+0.41±0.36
+3.60±3.37
+0.23±0.24
+0.50±0.79
+0.38±0.21
+0.77±0.68
+CarCircle1
+0.60±0.01
+1.73±0.04
+0.55±0.16
+1.54±1.63
+0.49±0.14
+5.13±3.53
+0.46±0.25
+1.86±3.14
+0.50±0.12
+0.48±0.43
+CarPush2
+0.19±0.01
+1.30±0.16
+0.05±0.14
+0.71±1.66
+0.12±0.31
+6.06±9.53
+0.07±0.15
+0.80±1.41
+0.05±0.17
+0.52±1.07
+SwimmerVelocity
+0.66±0.01
+0.96±0.08
+0.44±0.22
+1.66±2.37
+-0.08±0.02
+0.00±0.01
+0.46±0.21
+1.28±2.60
+0.49±0.18
+0.99±0.37
+HopperVelocity
+0.63±0.06
+0.61±0.08
+0.44±0.26
+0.75±0.83
+0.46±0.38
+0.50±0.55
+0.21±0.04
+1.25±1.20
+0.66±0.23
+0.80±0.35
+HalfCheetahVelocity
+1.00±0.01
+0.01±0.01
+0.94±0.04
+0.77±0.13
+0.94±0.04
+0.94±0.07
+0.97±0.02
+1.00±1.04
+0.93±0.07
+0.62±0.27
+SafetyGym Average (21 tasks)
+0.54±0.21
+1.06±0.59
+0.36±0.34
+0.76±1.43
+0.41±0.46
+3.18±5.24
+0.34±0.19
+1.10±1.75
+0.38±0.17
+0.57±0.68
+BallRun
+0.39±0.09
+1.16±0.19
+0.18±0.09
+0.94±0.73
+0.40±0.12
+0.84±0.31
+0.15±0.01
+0.00±0.00
+0.20±0.02
+0.06±0.10
+CarRun
+0.99±0.01
+0.65±0.31
+0.97±0.01
+0.23±0.25
+0.97±0.04
+0.68±0.22
+0.98±0.01
+0.84±1.04
+0.98±0.01
+0.98±0.72
+DroneRun
+0.63±0.04
+0.79±0.68
+0.45±0.10
+2.91±4.46
+0.46±0.18
+4.36±4.32
+0.59±0.06
+0.93±1.51
+0.58±0.03
+0.54±0.91
+AntRun
+0.72±0.04
+0.91±0.42
+0.61±0.13
+0.78±0.59
+0.12±0.09
+0.04±0.08
+0.66±0.13
+1.43±1.25
+0.68±0.11
+0.95±0.29
+BallCircle
+0.77±0.06
+1.07±0.27
+0.69±0.10
+0.59±0.23
+0.78±0.05
+0.46±0.31
+0.62±0.28
+1.17±1.95
+0.69±0.11
+0.97±0.27
+CarCircle
+0.75±0.06
+0.95±0.61
+0.70±0.10
+0.66±0.27
+0.72±0.04
+0.77±0.44
+0.78±0.12
+1.88±3.23
+0.53±0.17
+0.51±0.51
+DroneCircle
+0.63±0.07
+0.98±0.27
+0.55±0.06
+0.65±0.29
+0.29±0.27
+0.63±0.70
+0.60±0.02
+1.31±0.86
+0.42±0.12
+0.52±0.32
+AntCircle
+0.54±0.20
+1.78±4.33
+0.37±0.18
+0.15±0.25
+0.61±0.14
+0.75±0.90
+0.44±0.14
+0.53±0.93
+0.56±0.17
+0.79±0.60
+BulletGym Average (8 tasks)
+0.68±0.19
+1.04±1.65
+0.57±0.25
+0.86±1.82
+0.54±0.30
+1.07±2.04
+0.60±0.10
+1.01±1.35
+0.58±0.09
+0.67±0.46
+easysparse
+0.17±0.14
+0.23±0.32
+0.12±0.20
+0.37±0.43
+-0.06±0.00
+0.10±0.05
+0.79±0.14
+1.34±1.43
+0.70±0.19
+0.94±0.17
+easymean
+0.45±0.11
+0.54±0.55
+0.02±0.07
+0.21±0.23
+-0.06±0.01
+0.07±0.08
+0.82±0.06
+1.33±0.86
+0.73±0.17
+0.94±0.13
+easydense
+0.32±0.18
+0.62±0.43
+0.11±0.15
+0.16±0.17
+-0.06±0.00
+0.07±0.04
+0.84±0.10
+1.88±1.20
+0.70±0.17
+0.90±0.16
+mediumsparse
+0.87±0.11
+1.10±0.26
+0.59±0.36
+0.74±0.97
+-0.08±0.00
+0.07±0.04
+0.97±0.02
+1.24±0.68
+0.94±0.07
+0.82±0.32
+mediummean
+0.45±0.39
+0.75±0.83
+0.66±0.35
+0.90±0.89
+-0.07±0.01
+0.02±0.03
+0.93±0.12
+0.78±0.51
+0.92±0.11
+0.77±0.16
+mediumdense
+0.88±0.12
+2.41±0.71
+0.75±0.29
+0.65±0.57
+-0.08±0.00
+0.06±0.03
+0.82±0.30
+1.07±0.71
+0.78±0.28
+0.68±0.31
+hardsparse
+0.25±0.08
+0.41±0.33
+0.45±0.15
+0.75±0.56
+-0.05±0.00
+0.07±0.04
+0.54±0.09
+0.91±0.51
+0.49±0.13
+0.76±0.44
+hardmean
+0.33±0.21
+0.97±0.31
+0.29±0.13
+0.28±0.31
+-0.05±0.00
+0.06±0.03
+0.48±0.14
+1.16±1.19
+0.46±0.15
+0.84±0.54
+harddense
+0.08±0.15
+0.21±0.42
+0.36±0.18
+0.66±0.92
+-0.03±0.01
+0.11±0.08
+0.47±0.19
+1.43±0.93
+0.44±0.17
+0.63±0.24
+MetaDrive Average (9 tasks)
+0.42±0.31
+0.80±0.61
+0.38±0.34
+0.54±0.69
+-0.06±0.02
+0.07±0.06
+0.74±0.13
+1.24±0.89
+0.69±0.16
+0.81±0.27
+Table 1: Results for normalized cost and normalized reward: ↑indicates that a higher value is better, while ↓indicates that a lower value
+is preferable. Bold text denotes safe policies, gray indicates unsafe policies, and blue highlights the highest reward among the safe policies
+for each task. Each result is obtained by running three random seeds across three distinct cost thresholds and evaluating over 20 episodes.
+Some tasks are omitted to save space. Complete results are provided in Table 3 of Appendix B.
+table gap from the optimal CMDP (model known) solu-
+tion, particularly under stochastic conditions? (Section 5.1)
+(Q2) Can BCRL outperform existing state-of-the-art offline
+(model-free) safe RL baselines on standard benchmarks?
+(Section 5.2) (Q3) How sensitive is BCRL to different hy-
+perparameter settings, and how do these choices affect its
+performance and safety behavior? (Q4) How does BCRL be-
+have on real-world-data, both qualitatively (in terms of safe
+and interpretable trajectories) and quantitatively (in terms of
+performance and safety metrics)? (Section 5.3).
+Baselines and benchmarks: For our main results, we com-
+pare against state-of-the-art baselines that also generalize to
+different cost budgets similar to our method. These meth-
+ods include CDT (Liu et al. 2023), CAPS (Chemingui et al.
+2025), CCAC (Guo et al. 2025), and LSPC (Koirala et al.
+2025). An additional comparison with methods that do not
+adapt to different cost budgets is provided in the supplemen-
+tary. We use the DSRL (Liu et al. 2024) dataset and envi-
+ronments. We evaluate our approach on all 38 tasks, which
+include three types of environments: SafetyGym, BulletGym,
+and MetaDrive. The evaluation metrics include Normalized-
+Reward and Normalized-Cost, where the cost is normal-
+ized with respect to the cost threshold; that is, Normalized-
+Cost > 1 indicates an unsafe policy. More details on these
+metrics are in the Appendix.
+5.1
+Synthetic CMDPs
+Under deterministic dynamics, our method matches the op-
+timal solution; in stochastic settings, it can be slightly con-
+servative. We test this on a discrete grid world where the
+optimal CMDP policy is computed via Linear Programming
+(LP) solvers. The agent starts at a fixed point and must reach
+a goal (appendix B.7 provides environment details.). Fig-
+ure 3 compares our method with the LP solution and an un-
+constrained baseline. The X-axis is the probability of exe-
+cuting the intended action; lower values introduce more ran-
+domness. When this probability is too low, no feasible pol-
+icy satisfies the budget, so the LP solver yields no solution
+(shown as missing plot segments). For all the cases, both
+methods satisfy the cost constraint, and our approach incurs
+only a small reward gap. As the environment becomes less
+noisy, our solution converges to the LP optimum. This shows
+that even in a highly stochastic setting, BCRL is fairly accu-
+rate.
+5.2
+Offline Safe RL
+Main Results.
+Table 1 reports the main results under
+the standard DSRL evaluation settings. All algorithms are
+trained following the official DSRL benchmark protocols,
+with additional implementation details provided in the Ap-
+pendix. We instantiate BCRL using IQL. In stochastic do-
+mains (e.g., SafetyGym, Bullet-SafetyGym), we use the
+
+
+ADE
+(m) ↓
+Close
+quaters
+Rate ↓
+Avg.
+Acceleration
+(ms−2)
+Avg.
+Speed
+(ms−1)
+Success
+Rate ↑
+EXPERT
+0.0
+0.3
+0.0001
+4.44
+1.0
+CAPS
+87.3 ± 19.82
+0.23 ± 0.05
+0.0034 ± 0.0006
+5.67 ± 0.07
+0.73 ± 0.16
+CCAC
+371.07 ± 26.74
+0.11 ± 0.06
+0.7549 ± 0.1339
+21.41 ± 0.0
+0.0 ± 0.0
+LSPC
+251.61 ± 22.68
+0.17 ± 0.02
+0.0087 ± 0.0157
+8.47 ± 0.37
+0.23 ± 0.1
+BCRL
+52.08 ± 10.64
+0.26 ± 0.03
+-0.0006 ± 0.0003
+3.65 ± 0.14
+0.88 ± 0.03
+Table 2: Performance metrics in the Maritime Navigation Task (section 5.3)
+Figure 4: Expert, learned trajectories in marine naviga-
+tion
+stochastic variant, while for deterministic environments like
+MetaDrive, we report the deterministic version. Both vari-
+ant results are detailed in the Appendix for completeness.
+Overall, the results show BCRL consistently outperforms
+baselines while satisfying safety across all domains. BCRL
+produces safe policies in all 38 out of 38 tasks (indicated
+in bold), outperforming all baselines in 16 out of 38 tasks,
+and achieving strongly consistent results as highlighted in
+blue. BCRL attains highest average performance across
+all three benchmarks.
+Table 1 focuses on baselines capable of adapting to differ-
+ent cost budgets. Additional comparisons with non–budget-
+conditioned baselines such as BC-Safe (Liu et al. 2024),
+BCQ-Lag, COptiDICE (Lee et al. 2022), and CPQ (Xu,
+Zhan, and Zhu 2022) are in the Appendix B. Runtime: Our
+algorithm was tested on an NVIDIA RTX 3090 GPU. As
+shown in Table 9 (in appendix), it completes training and
+evaluation within a few minutes—significantly faster than
+baseline methods that require 2–3 hours under the same con-
+ditions. Although runtime comparisons are approximate, the
+results indicate notable efficiency gains of our method.
+Ablations: Our IQL variant is governed by three hyperpa-
+rameters: the cost critic expectile (τC), the reward critic ex-
+pectile (τR), and the AWR policy temperature (β). Among
+these, the expectile values influence performance more, as
+also noted in (Kostrikov, Nair, and Levine 2022). Expec-
+tile ablation results are in Table 6, appendix B.4. Addition-
+ally, the appendix discusses how the quality of the learned
+cost critic affects overall performance and how inclusive the
+learned persistent safety set is.
+5.3
+Evaluation on Real-World Maritime Data
+We test BCRL on a real-world maritime navigation task,
+learning a policy that imitates expert captains navigating
+congested routes while minimizing collision risk. We use the
+maritime traffic simulator, and the imitation-learning dataset
+from (Pham, Brahmanage, and Kumar 2025), augmented
+with reward and cost signals. The agent receives a sparse
+reward of 100 for reaching the goal, and a cost of 1 for enter-
+ing a close-quarter scenario (getting close to another vessel
+within 555,m (Pham, Brahmanage, and Kumar 2025)).
+The dataset contains ∼2 years of AIS trajectories from
+vessels operating in the Singapore Strait. We simulate a
+multi-agent environment where surrounding vessels replay
+their historical (log-play) paths, while the RL-controlled ego
+agent starts from a historical position but must follow its
+learned policy. The agent observes the past five steps of
+its own and nearby vessels’ states and uses a delta-action
+space (Gulino et al. 2023). We evaluate performance using
+the average displacement error (ADE), the close-quarter
+rate, and the success rate. To model dense traffic, we select
+the top 20% most congested scenarios. We additionally re-
+port average acceleration and speed to assess how closely
+the policy matches real-world maneuvering. Further envi-
+ronment and dataset details appear in Appendix B.3.
+As shown in Table 2, BCRL reduces close-quarter events
+from 30% to 26%—a meaningful improvement given the
+high-risk nature of close encounters involving large cargo
+and tanker vessels. BCRL also achieves the lowest ADE
+(∼52 m) and the highest success rate (88%). Some base-
+lines reduce close-quarter rates further but at the cost of un-
+realistic deviations from expert trajectories or reduced task
+success. In contrast, BCRL maintains expert-like accelera-
+tion and speed profiles. Results are averaged over 3 seeds
+with 100 evaluation episodes each.
+Figure 4 illustrates qualitative behavior: the expert’s
+trajectory (dotted black), neighboring vessels (blue), and
+learned-policy rollouts—BCRL, LSPC, CCAC, and CAPS.
+The red ellipse shows a close-quarter scenario where the ex-
+pert gets too close to a neighbor. BCRL avoids near-misses
+through smooth path and speed adjustments, whereas LSPC
+and CCAC exhibit unrealistic deviations. CAPS performs
+more reasonably but shows higher acceleration and lower
+success than BCRL. Additional results and videos are in-
+cluded in the supplementary material.
+6
+Conclusion
+We introduced Budget-Conditioned Reachability (BCR), a
+novel framework that fundamentally decouples reward max-
+imization from cumulative safety constraints in Constrained
+Markov Decision Processes (CMDPs). By defining a dy-
+namic, safety-conditioned reachability set—tracked through
+a step-wise remaining budget—our approach prunes unsafe
+actions at each timestep and ensures reliable constraint sat-
+isfaction without resorting to unstable min-max adversarial
+optimization or computationally heavy generative models.
+A significant advantage of our framework is its plug-
+and-play compatibility with any standard offline RL algo-
+rithm (e.g., IQL), enabling the cost critics to be learned in-
+dependently of the reward for improved training stability.
+Through extensive cross-domain validation—ranging from
+interpretable grid-worlds and the high-dimensional DSRL
+benchmark to a complex, real-world maritime navigation
+task—BCRL consistently matches or exceeds state-of-the-
+art performance while reliably ensuring safety.
+
+
+References
+Altman, E. 2021. Constrained Markov Decision Processes:
+Stochastic Modeling.
+Boca Raton: Routledge, 1 edition.
+ISBN 978-1-315-14022-3.
+Brahmanage, J. C.; Ling, J.; and Kumar, A. 2023.
+FlowPG: Action-constrained Policy Gradient with Normal-
+izing Flows. In NeurIPS.
+Brahmanage, J. C.; Ling, J.; and Kumar, A. 2024. Lever-
+aging Constraint Violation Signals For Action Constrained
+Reinforcement Learning. In AAAI.
+Chemingui, Y.; Deshwal, A.; Wei, H.; Fern, A.; and Doppa,
+J. R. 2025. Constraint-Adaptive Policy Switching for Offline
+Safe Reinforcement Learning. In AAAI.
+Chen, L.; Lu, K.; Rajeswaran, A.; Lee, K.; Grover, A.;
+Laskin, M.; Abbeel, P.; Srinivas, A.; and Mordatch, I.
+2021. Decision Transformer: Reinforcement Learning via
+Sequence Modeling. In NeurIPS.
+Fawzi, A.; Balog, M.; Huang, A.; Hubert, T.; Romera-
+Paredes, B.; Barekatain, M.; Novikov, A.; R. Ruiz, F. J.;
+Schrittwieser, J.; Swirszcz, G.; Silver, D.; Hassabis, D.; and
+Kohli, P. 2022. Discovering faster matrix multiplication al-
+gorithms with reinforcement learning. Nature, 610: 47–53.
+Fujimoto, S.; and Gu, S. 2021.
+A Minimalist Approach
+to Offline Reinforcement Learning.
+In Beygelzimer, A.;
+Dauphin, Y.; Liang, P.; and Vaughan, J. W., eds., NeurIPS.
+Ganai, M.; Gao, S.; and Herbert, S. L. 2024.
+Hamilton-
+Jacobi Reachability in Reinforcement Learning: A Survey.
+IEEE OJ-CS, 3: 310–324.
+Ganai, M.; Gong, Z.; Yu, C.; Herbert, S. L.; and Gao, S.
+2023. Iterative Reachability Estimation for Safe Reinforce-
+ment Learning. In NeurIPS.
+Garg, D.; Hejna, J.; Geist, M.; and Ermon, S. 2023. Extreme
+Q-Learning: MaxEnt RL without Entropy. In ICLR.
+Gu, S.; Yang, L.; Du, Y.; Chen, G.; Walter, F.; Wang, J.; and
+Knoll, A. 2024. A Review of Safe Reinforcement Learning:
+Methods, Theory and Applications. In IEEE TPAMI.
+Gulino, C.; Fu, J.; Luo, W.; Tucker, G.; Bronstein, E.; Lu,
+Y.; Harb, J.; Pan, X.; Wang, Y.; Chen, X.; Co-Reyes, J. D.;
+Agarwal, R.; Roelofs, R.; Lu, Y.; Montali, N.; Mougin, P.;
+Yang, Z.; White, B.; Faust, A.; McAllister, R.; Anguelov, D.;
+and Sapp, B. 2023. Waymax: An Accelerated, Data-Driven
+Simulator for Large-Scale Autonomous Driving Research.
+In NeurIPS.
+Guo, Z.; Zhou, W.; Wang, S.; and Li, W. 2025. Constraint-
+Conditioned Actor-Critic for Offline Safe Reinforcement
+Learning. In ICLR.
+Jang, Y.; Kim, G.-H.; Lee, J.; Sohn, S.; Kim, B.; Lee, H.; and
+Lee, M. 2023. SafeDICE: Offline Safe Imitation Learning
+with Non-Preferred Demonstrations. In NeurIPS.
+Kim, G.-H.; Seo, S.; Lee, J.; Jeon, W.; Hwang, H.; Yang,
+H.; and Kim, K.-E. 2022.
+DemoDICE: Offline Imitation
+Learning with Supplementary Imperfect Demonstrations. In
+ICLR.
+Kingma, D. P.; Welling, M.; et al. 2019. An introduction
+to variational autoencoders. Foundations and Trends® in
+Machine Learning, 12(4): 307–392.
+Koirala, P.; Jiang, Z.; Sarkar, S.; and Fleming, C. 2025. La-
+tent Safety-Constrained Policy Approach for Safe Offline
+Reinforcement Learning. In ICLR.
+Kostrikov, I.; Nair, A.; and Levine, S. 2022. Offline Rein-
+forcement Learning with Implicit Q-Learning. In ICLR.
+Kumar, A.; Zhou, A.; Tucker, G.; and Levine, S. 2020. Con-
+servative q-learning for offline reinforcement learning. Ad-
+vances in NeurIPS, 33: 1179–1191.
+Lee, J.; Jeon, W.; Lee, B.-J.; Pineau, J.; and Kim, K.-E. 2021.
+OptiDICE: Offline Policy Optimization via Stationary Dis-
+tribution Correction Estimation. In ICML.
+Lee, J.; Paduraru, C.; Mankowitz, D. J.; Heess, N.; Precup,
+D.; Kim, K.-E.; and Guez, A. 2022. COptiDICE: Offline
+Constrained Reinforcement Learning via Stationary Distri-
+bution Correction Estimation. In ICLR.
+Lin, J.-L.; Hung, W.; Yang, S.-H.; Hsieh, P.-C.; and Liu,
+X. 2021. Escaping from zero gradient: Revisiting action-
+constrained reinforcement learning via Frank-Wolfe policy
+optimization. In UAI, 397–407. PMLR.
+Liu, Z.; Guo, Z.; Lin, H.; Yao, Y.; Zhu, J.; Cen, Z.; Hu, H.;
+Yu, W.; Zhang, T.; Tan, J.; and Zhao, D. 2024.
+Datasets
+and Benchmarks for Offline Safe Reinforcement Learning.
+JMLR.
+Liu, Z.; Guo, Z.; Yao, Y.; Cen, Z.; Yu, W.; Zhang, T.; and
+Zhao, D. 2023. Constrained Decision Transformer for Of-
+fline Safe Reinforcement Learning. In ICML.
+Mnih, V.; Kavukcuoglu, K.; Silver, D.; Graves, A.;
+Antonoglou, I.; Wierstra, D.; and Riedmiller, M. 2013. Play-
+ing Atari with Deep Reinforcement Learning.
+Nachum, O.; Chow, Y.; Dai, B.; and Li, L. 2019. Dualdice:
+Behavior-agnostic estimation of discounted stationary dis-
+tribution corrections. Advances in NeurIPS, 32.
+Newey, W. K.; and Powell, J. L. 1987. Asymmetric Least
+Squares Estimation and Testing. Econometrica, 55: 819–
+847.
+Peng, X. B.; Kumar, A.; Zhang, G.; and Levine, S. 2019.
+Advantage-Weighted Regression: Simple and Scalable Off-
+Policy Reinforcement Learning.
+Pham, Q. A.; Brahmanage, J. C.; and Kumar, A. 2025. Ship-
+NaviSim: Data-Driven Simulation for Real-World Maritime
+Navigation. In AAMAS, 1641–1649.
+Pham, Q. A.; Brahmanage, J. C.; Mai, T. A.; and Kumar, A.
+2025. IOSTOM: Offline Imitation Learning from Observa-
+tions via State Transition Occupancy Matching. In NeurIPS.
+Silver, D.; Huang, A.; Maddison, C. J.; Guez, A.; Sifre,
+L.; van den Driessche, G.; Schrittwieser, J.; Antonoglou,
+I.; Panneershelvam, V.; Lanctot, M.; Dieleman, S.; Grewe,
+D.; Nham, J.; Kalchbrenner, N.; Sutskever, I.; Lillicrap, T.;
+Leach, M.; Kavukcuoglu, K.; Graepel, T.; and Hassabis, D.
+2016. Mastering the game of Go with deep neural networks
+and tree search. Nature, 529(7587): 484–489.
+Sootla, A.; Cowen-Rivers, A. I.; Jafferjee, T.; Wang, Z.;
+Mguni, D.; Wang, J.; and Bou-Ammar, H. 2022. Saute RL:
+Almost Surely Safe Reinforcement Learning Using State
+Augmentation. In ICML.
+
+
+Tang, C.; Abbatematteo, B.; Hu, J.; Chandra, R.; Mart´ın-
+Mart´ın, R.; and Stone, P. 2024. Deep Reinforcement Learn-
+ing for Robotics: A Survey of Real-World Successes.
+In
+ARCRAS.
+Wang, X.; Xu, H.; Zheng, Y.; and Zhan, X. 2023. Offline
+Multi-Agent Reinforcement Learning with Implicit Global-
+to-Local Value Regularization. In NeurIPS.
+Xu, H.; Jiang, L.; Li, J.; Yang, Z.; Wang, Z.; Chan, V. W. K.;
+and Zhan, X. 2023.
+Offline RL with No OOD Actions:
+In-Sample Learning via Implicit Value Regularization. In
+ICLR.
+Xu, H.; Zhan, X.; and Zhu, X. 2022.
+Constraints Penal-
+ized Q-learning for Safe Offline Reinforcement Learning.
+In NeurIPS.
+Yu, D.; Ma, H.; Li, S. E.; and Chen, J. 2022. Reachability
+Constrained Reinforcement Learning. In ICML.
+Zheng, Y.; Li, J.; Yu, D.; Yang, Y.; Li, S. E.; Zhan, X.; and
+Liu, J. 2024.
+Safe Offline Reinforcement Learning with
+Feasibility-Guided Diffusion Model. In ICLR.
+
+
+A
+Theoretical Results
+A.1
+Budget Update Functions for Fully Deterministic CMDPs
+In fully deterministic CMDPs, where transitions and trajectories are uniquely determined by the policy and environment dy-
+namics, the evolution of the budget can be defined directly through a budget update rules below.
+Definition A.1 (Direct Budget-Tracking). Let ¯
+MD denote the Direct Budget Tracking BAMDP defined by
+¯
+MD(M) := ¯
+M(M, f, g).
+Budget update functions are:
+f(s0, δinit) = δinit,
+g(s, a, s′, δ) = δ −c(s, a)
+γ
+.
+This formulation keeps track of the remaining budget, and the division by γ accounts for the discounting effect of the
+CMDP constraint. In a deterministic environment, tracking such a budget and restricting actions to the persistent safe action
+set AP is both necessary and sufficient for satisfying the original cumulative cost constraint. That is, enforcing π ∈ΠP in
+¯
+MD is equivalent to satisfying the CMDP constraint in Eq. (1). The formal theorem and proof are provided in Appendix A.1.
+Therefore, during training we can restrict the policy to select actions only from the persistent safe action set AP (8), without
+explicitly enforcing the cumulative cost constraint (1).
+Theorem A.2. Let ¯
+MD(M) be the Direct Budget-Tracking BAMDP defined above, and assume the underlying CMDP M is
+deterministic with cost budget δinit ≥V ∗
+C(s0). Then,
+1. Any policy π ∈ΠP induces trajectories that start in and remain entirely within the feasible subspace ¯SP .
+2. Any deterministic policy π satisfying the CMDP cost constraint (Eq. 1) belongs to ΠP .
+3. Conversely, if π ∈ΠP , then it satisfies the cumulative cost constraint of the underlying CMDP M.
+Therefore, in deterministic environments, it is sufficient to enforce π ∈ΠP instead of explicitly enforcing the cumulative cost
+constraint.
+Proof. Let
+¯
+MDet(M) and notation be as above, and assume M is deterministic. Denote by (st, at)t≥0 the state–action se-
+quence induced by a deterministic policy π started at s0, and let ct := c(st, at). Recall the direct budget update δt+1 =
+δt−ct
+γ
+,
+δ0 = δinit.
+(1) Any π ∈ΠP induces trajectories that remain in ¯SP .
+Let π ∈ΠP and consider the trajectory starting from (s0, δ0). By
+assumption, V ∗
+C(s0) ≤δinit, and since δ0 = δinit, it follows that s0 ∈SP (δ0). Since π ∈ΠP we get Q∗
+C(s0, a0) ≤δ0. Using the
+bellman-identity Q∗
+C(s0, a0) = c0 + γV ∗
+C(s1) we obtain
+V ∗
+C(s1) = Q∗
+C(s0, a0) −c0
+γ
+≤δ0 −c0
+γ
+= δ1.
+Since cost is always positive, V ∗
+C(s1) ≥0, which implies δ1 ∈R+ and s1 ∈SP (δ1). Therefore, by definition, (s1, δ1) ∈¯SP .
+Moreover, there exists at least one action at s1 with Q∗
+C(·) ≤δ1. Repeating the same argument at each step shows that all
+subsequent augmented states (st, δt) remain in ¯SP . Thus, trajectories under π never leave ¯SP .
+(2) If π satisfies the cumulative cost constraint then π ∈ΠP .
+Assume the policy π satisfies the cumulative cost constraint
+in M, i.e.
+J(τ) =
+∞
+X
+t=0
+γtct ≤δinit = δ0.
+Unrolling the budget recursion gives the identity
+γtδt = δ0 −
+t−1
+X
+i=0
+γici
+(t ≥1),
+hence, since J(τ) ≤δ0,
+γtδt ≥
+∞
+X
+k=t
+γkck = γt
+∞
+X
+k=t
+γk−tck.
+Dividing by γt yields
+δt ≥
+∞
+X
+k=t
+γk−tck
+(=: Rt),
+
+
+where Rt is the actual remaining discounted cost from time t. For the deterministic MDP we have for the chosen action
+Q∗
+C(st, at) = c(st, at) + γV ∗
+C(st+1),
+and since V ∗
+C(st+1) is the minimal possible remaining cost from st+1, it holds that V ∗
+C(st+1) ≤P∞
+k=t+1 γk−(t+1)c(sk, ak).
+Therefore
+Q∗
+C(st, at) ≤c(st, at) + γ
+∞
+X
+k=t+1
+γk−(t+1)ck = Rt ≤δt.
+Thus at every visited augmented state (st, δt) the chosen action satisfies Q∗
+C(st, at) ≤δt, so π ∈ΠP .
+(3) If π ∈ΠP then π satisfies the cumulative cost constraint.
+Assume π ∈ΠP , i.e. for every t the chosen action satisfies
+Q∗
+C(st, at) ≤δt. By the direct budget update we have equality
+c(st, at) = δt −γδt+1,
+so multiplying by γt and summing over t ≥0 gives the telescoping series
+T
+X
+t=0
+γtc(st, at) =
+T
+X
+t=0
+ γtδt −γt+1δt+1
+
+= δ0 −γT +1δT +1.
+Since δT +1 ≥0 for all T, letting T →∞yields
+∞
+X
+t=0
+γtc(st, at) ≤δ0,
+so the cumulative cost constraint holds.
+Conclusion.
+Combining (1)–(3) we obtain the claimed equivalence in the deterministic setting: enforcing π ∈ΠP is both
+necessary and sufficient for satisfying the cumulative cost constraint, and any policy in ΠP produces trajectories that stay in
+¯SP . Therefore, in deterministic environments it suffices to enforce π ∈ΠP instead of directly enforcing the cumulative cost
+constraint.
+A.2
+Stochastic Case
+Lemma A.3 (Reduction to Deterministic Budget-Tracking). In a fully deterministic setting, the soft budget-tracking BAMDP
+¯
+MS simplifies to the direct budget-tracking BAMDP ¯
+MD.
+Proof. In a deterministic MDP, a well trained cost critic satisfies Q∗
+C(s, a) = c(s, a) + γV ∗
+C(s′) since there is no stochasticity
+and the Bellman equation reduces to the deterministic form. Substituting this into the soft budget-tracking update:
+g(s, a, s′, δ) = V ∗
+C(s′) + δ −Q∗
+C(s, a)
+γ
+= δ −c(s, a)
+γ
+,
+which is exactly the budget update defined in the direct budget-tracking CMDP ¯
+MD.
+Similarly in the deterministic setting V ∗
+C(s0) = Es∼µ0[V ∗
+C(s)]. Therefore, the initial budget:
+f(s0, δinit) = V ∗
+C(s0) + δinit −Es∼µ0[V ∗
+C(s)] = δinit,
+Thus, ¯
+MS reduces to ¯
+MD in the deterministic setting.
+Theorem 3.8. Let ¯
+MS be the soft budget-tracking BAMDP. Assume the CMDP is feasible, i.e., the cost threshold δinit satisfies
+δinit ≥Es∼µ0[V ∗
+C(s)].
+Let π ∈ΠP , and define the expected discounted cumulative cost from an augmented state (s, δ) ∈¯S by
+Jπ
+C((s, δ)) := E
+π
+h ∞
+X
+t=0
+γtc(st, at)
+ (s0, δ0) = (s, δ)
+i
+.
+Then the following properties hold:
+1. Any policy π ∈ΠP induces trajectories that start in and remain entirely within the feasible subspace ¯SP .
+2. For any (s, δ) ∈¯SP and any policy π ∈ΠP , Jπ
+C((s, δ)) ≤δ.
+3. Any policy π ∈ΠP satisfies the CMDP cumulative cost constraint (Eq. 1): JC(π) ≤δinit.
+Proof. We prove each property separately:
+
+
+1. Trajectories remain in ¯SP .
+Consider any policy π ∈ΠP and the augmented state trajectory {(st, δt)}t≥0 it induces. From
+Assumption 12, we have δinit ≥Es∼µ0[V ∗
+C(s)]. Substituting this into the budget initialization function f gives,
+δ0 = V ∗
+C(s0) + δinit −
+E
+s∼µ0[V ∗
+C(s)] ≥V ∗
+C(s0),
+and therefore s0 ∈SP , and (s0, δ0) ∈¯SP .
+At each time step t, the policy selects an action at ∈AP (δt), which ensures Q∗
+C(st, at) ≤δt. The budget update in
+¯
+MS
+gives
+δt+1 = V ∗
+C(st+1) + δt −Q∗
+C(st, at)
+γ
+≥V ∗
+C(st+1),
+so (st+1, δt+1) ∈¯SP .
+By induction, all subsequent augmented states remain in ¯SP . Therefore, trajectories under any π ∈ΠP start in and remain
+entirely within the feasible subspace ¯SP .
+2. Pointwise budget satisfaction.
+Fix an augmented state (s, δ) ∈¯SP and a policy π ∈ΠP . By (s, δ) ∈¯SP we have
+s ∈SP (δ) and δ ≥V ∗
+C(s), and by π ∈ΠP the support condition supp π(· | (s, δ)) ⊆{a : Q∗
+C(s, a) ≤δ} holds.
+Define the finite-horizon truncated action-value in the augmented CMDP:
+Qπ,h
+C ((s, δ), a) := E
+π
+h
+h
+X
+t=0
+γtc(st, at)
+ (s0, δ0) = (s, δ), a0 = a
+i
+,
+and the truncated state-value
+V π,h
+C
+((s, δ)) :=
+E
+a∼π(·|(s,δ))
+
+Qπ,h
+C ((s, δ), a)
+
+.
+We show by induction on the horizon h that for every action a and every h ≥0,
+Qπ,h
+C ((s, δ), a) ≤δ.
+(18)
+Base (h = 0).
+Qπ,0
+C ((s, δ), a) = c(s, a). Since c(s, a) ≤Q∗
+C(s, a) and actions in the support satisfy Q∗
+C(s, a) ≤δ, we get
+Qπ,0
+C ((s, δ), a) ≤δ.
+Inductive step.
+Assume (18) holds for horizon h. Consider horizon h + 1. Using the recursion for truncated values and the
+soft budget update δ′ = V ∗
+C(s′) +
+δ−Q∗
+C(s,a)
+γ
+, we have
+Qπ,h+1
+C
+((s, δ), a) = c(s, a) + γ
+E
+s′∼T (·|s,a)
+
+V π,h
+C
+((s′, δ′))
+
+≤c(s, a) + γ E
+s′
+
+δ′
+(by the inductive hypothesis applied at each (s′, δ′))
+= c(s, a) + γ E
+s′
+h
+V ∗
+C(s′) + δ −Q∗
+C(s, a)
+γ
+i
+= c(s, a) + γ E
+s′[V ∗
+C(s′)] + (δ −Q∗
+C(s, a))
+= Q∗
+C(s, a) + (δ −Q∗
+C(s, a))
+(Bellman equation for Q∗
+C)
+= δ,
+so (18) holds for h + 1.
+Pass to the limit.
+Letting h →∞(justified by γ ∈[0, 1) and nonnegative bounded costs) yields
+Qπ
+C((s, δ), a) ≤δ
+∀a ∈A,
+and therefore
+V π
+C ((s, δ)) =
+E
+a∼π(·|(s,δ))
+
+Qπ
+C((s, δ), a)
+
+≤δ.
+(19)
+By definition Jπ
+C((s, δ)) = V π
+C ((s, δ)), hence Jπ
+C((s, δ)) ≤δ. This holds for every (s, δ) ∈¯SP , proving the theorem.
+
+
+3. Global CMDP feasibility
+Based on the budget initialization function for every s0 the initialized budget
+δ0 = V ∗
+C(s0) + δinit −
+E
+s∼µ0[V ∗
+C(s)]
+Taking expectation over s0 ∼µ0 gives
+JC(π) =
+E
+(s0,δ0)∼¯µ0
+
+Jπ
+C((s0, δ0))
+
+(20)
+=
+E
+(s0,δ0)∼¯µ0
+
+V π
+C ((s0, δ0))
+
+(21)
+≤
+E
+(s0,δ0)∼¯µ0
+[δ0]
+From Eq. 19
+(22)
+=
+E
+s0∼µ0
+
+V ∗
+C(s0) + δinit −
+E
+s∼µ0[V ∗
+C(s)]
+
+(23)
+= δinit.
+(24)
+This completes the proof and shows that π ∈ΠP satisfy the cumulative cost constraint in the underlying CMDP.
+A.3
+Extension to Multiple Cost Objectives
+In many real-world applications, agents must satisfy multiple distinct safety constraints simultaneously (e.g., avoiding collisions
+while maintaining battery levels). Our Budget-Conditioned Reachability (BCRL) framework naturally extends to this setting by
+augmenting the state space with a budget vector. Let there be N distinct cost functions {ci}N
+i=1, where each ci : S × A →R+,
+and a corresponding vector of initial cost thresholds δinit = [δinit,1, . . . , δinit,N]T .
+Augmented State Space
+The augmented state space is defined as ¯S := S × (R+)N. A state is represented as (s, δ), where
+δ ∈RN tracks the remaining budget for each constraint independently.
+Persistent Safety Set Intersection
+The budget-conditioned persistent safety set is defined as the intersection of the feasible
+sets for each individual cost objective. For a budget vector δ, the safe state set is:
+SP (δ) :=
+N
+\
+i=1
+{s ∈S | V ∗
+Ci(s) ≤δi}
+(25)
+Similarly, the safe action set AP (s, δ) is the intersection of actions safe for all objectives:
+AP (s, δ) :=
+N
+\
+i=1
+{a ∈A | Q∗
+Ci(s, a) ≤δi}
+(26)
+Vectorized Budget Initialization and Update
+The budget is initialized and updated using vector-valued functions f and g,
+which generalize the scalar functions from the main text.
+The initialization is given by δ0 = f(s0, δinit), where f : S × (R+)N →(R+)N. Typically, this operates element-wise for
+each objective i:
+δ0,i = fi(s0, δinit,i)
+(27)
+The budget update rule is defined by δ′ = g(s, a, s′, δ), where g : S × A × S × (R+)N →(R+)N. For independent
+constraints, this update is applied element-wise using the scalar update function gi for each cost component:
+δ′
+i = gi(s, a, s′, δi)
+(28)
+Training Considerations
+We learn N independent cost-critics {Q∗
+Ci, V ∗
+Ci}N
+i=1, one for each cost type. Since the persistent
+safety sets are computed independently of the policy, these critics can be trained in parallel. During the policy learning phase,
+we sample a budget vector δ such that δi ∼U[Q∗
+Ci(s,a),δmax,i] for all i, ensuring the augmented transition remains within the
+intersection of all persistent safety sets.
+B
+Additional Experiments
+In additional experiments, we: (1) main results for both stochastic and deterministic approaches; (2) include an additional com-
+parison with algorithms that are not adaptive to different cost budgets; (2) more details on the real-world maritime navigation
+experiment; (4) provide an ablation study on the expectile parameters for reward and cost (τR, τC), the temperature parameter
+β of IQL instantiation and the number of budget samples n used during training; (5) evaluate the quality of the learned feasible
+action set; (6)compare our results with the best policy obtained by LSPC to address the discrepancy discussed in Section B.6.
+
+
+CDT
+CAPS
+CCAC
+LSPC
+BCRL (Ours)
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+PointButton1
+0.53±0.01
+1.68±0.13
+0.04±0.15
+0.58±1.42
+0.68±0.14
+4.31±3.20
+0.09±0.20
+0.69±1.03
+0.07±0.18
+0.79±2.10
+PointButton2
+0.46±0.01
+1.57±0.10
+0.12±0.20
+0.96±2.35
+0.63±0.11
+4.82±3.61
+0.19±0.21
+1.39±2.53
+0.12±0.22
+0.81±1.36
+PointCircle1
+0.59±0.00
+0.69±0.04
+0.50±0.12
+0.68±1.51
+0.58±0.13
+2.22±1.05
+0.56±0.35
+3.49±3.55
+0.55±0.17
+0.86±0.21
+PointCircle2
+0.64±0.01
+1.05±0.08
+0.51±0.21
+0.76±0.47
+0.18±0.50
+1.42±1.09
+0.67±0.24
+4.18±4.56
+0.58±0.10
+0.74±0.34
+PointGoal1
+0.69±0.02
+1.12±0.07
+0.46±0.28
+0.63±0.81
+0.55±0.26
+1.88±1.72
+0.26±0.27
+0.23±0.45
+0.56±0.25
+0.70±0.65
+PointGoal2
+0.59±0.03
+1.34±0.05
+0.34±0.23
+0.80±0.74
+0.41±0.36
+3.60±3.37
+0.23±0.24
+0.50±0.79
+0.38±0.21
+0.77±0.68
+PointPush1
+0.24±0.02
+0.48±0.05
+0.15±0.17
+0.33±0.66
+0.02±0.33
+1.42±5.37
+0.14±0.18
+0.37±0.77
+0.14±0.16
+0.47±0.79
+PointPush2
+0.21±0.04
+0.65±0.03
+0.12±0.19
+0.60±1.12
+-0.18±0.66
+1.00±1.70
+0.12±0.17
+0.80±2.65
+0.14±0.18
+0.71±1.11
+CarButton1
+0.21±0.02
+1.60±0.12
+-0.02±0.17
+0.26±0.53
+0.45±0.26
+11.31±8.91
+-0.03±0.23
+0.59±1.42
+-0.06±0.18
+0.34±0.76
+CarButton2
+0.13±0.01
+1.58±0.02
+-0.07±0.18
+0.59±2.07
+0.53±0.26
+9.82±9.00
+-0.13±0.28
+0.93±2.06
+-0.20±0.26
+0.27±0.62
+CarCircle1
+0.60±0.01
+1.73±0.04
+0.55±0.16
+1.54±1.63
+0.49±0.14
+5.13±3.53
+0.46±0.25
+1.86±3.14
+0.50±0.12
+0.48±0.43
+CarCircle2
+0.66±0.00
+2.53±0.03
+0.50±0.18
+1.56±2.32
+0.54±0.08
+2.75±4.36
+0.43±0.27
+2.40±4.55
+0.48±0.15
+0.44±0.48
+CarGoal1
+0.66±0.01
+1.21±0.17
+0.32±0.26
+0.33±0.53
+0.84±0.08
+1.81±1.91
+0.27±0.26
+0.24±0.44
+0.43±0.27
+0.43±0.58
+CarGoal2
+0.48±0.01
+1.25±0.14
+0.16±0.21
+0.71±1.91
+0.90±0.12
+5.53±5.01
+0.16±0.21
+0.41±0.77
+0.19±0.20
+0.47±0.92
+CarPush1
+0.31±0.01
+0.40±0.10
+0.19±0.13
+0.34±1.09
+-0.12±0.70
+0.59±0.97
+0.18±0.15
+0.41±1.29
+0.19±0.14
+0.24±0.74
+CarPush2
+0.19±0.01
+1.30±0.16
+0.05±0.14
+0.71±1.66
+0.12±0.31
+6.06±9.53
+0.07±0.15
+0.80±1.41
+0.05±0.17
+0.52±1.07
+SwimmerVelocity
+0.66±0.01
+0.96±0.08
+0.44±0.22
+1.66±2.37
+-0.08±0.02
+0.00±0.01
+0.46±0.21
+1.28±2.60
+0.49±0.18
+0.99±0.37
+HopperVelocity
+0.63±0.06
+0.61±0.08
+0.44±0.26
+0.75±0.83
+0.46±0.38
+0.50±0.55
+0.21±0.04
+1.25±1.20
+0.66±0.23
+0.80±0.35
+HalfCheetahVelocity
+1.00±0.01
+0.01±0.01
+0.94±0.04
+0.77±0.13
+0.94±0.04
+0.94±0.07
+0.97±0.02
+1.00±1.04
+0.93±0.07
+0.62±0.27
+Walker2dVelocity
+0.78±0.09
+0.06±0.34
+0.80±0.04
+0.70±0.51
+0.17±0.28
+1.08±1.90
+0.79±0.01
+0.17±0.24
+0.79±0.06
+0.14±0.35
+AntVelocity
+0.98±0.00
+0.39±0.12
+0.95±0.04
+0.64±0.21
+0.51±0.41
+0.59±0.34
+0.97±0.05
+0.14±0.15
+0.97±0.03
+0.34±0.14
+SafetyGym Average (21 tasks)
+0.54±0.21
+1.06±0.59
+0.36±0.34
+0.76±1.43
+0.41±0.46
+3.18±5.24
+0.34±0.19
+1.10±1.75
+0.38±0.17
+0.57±0.68
+BallRun
+0.39±0.09
+1.16±0.19
+0.18±0.09
+0.94±0.73
+0.40±0.12
+0.84±0.31
+0.15±0.01
+0.00±0.00
+0.20±0.02
+0.06±0.10
+CarRun
+0.99±0.01
+0.65±0.31
+0.97±0.01
+0.23±0.25
+0.97±0.04
+0.68±0.22
+0.98±0.01
+0.84±1.04
+0.98±0.01
+0.98±0.72
+DroneRun
+0.63±0.04
+0.79±0.68
+0.45±0.10
+2.91±4.46
+0.46±0.18
+4.36±4.32
+0.59±0.06
+0.93±1.51
+0.58±0.03
+0.54±0.91
+AntRun
+0.72±0.04
+0.91±0.42
+0.61±0.13
+0.78±0.59
+0.12±0.09
+0.04±0.08
+0.66±0.13
+1.43±1.25
+0.68±0.11
+0.95±0.29
+BallCircle
+0.77±0.06
+1.07±0.27
+0.69±0.10
+0.59±0.23
+0.78±0.05
+0.46±0.31
+0.62±0.28
+1.17±1.95
+0.69±0.11
+0.97±0.27
+CarCircle
+0.75±0.06
+0.95±0.61
+0.70±0.10
+0.66±0.27
+0.72±0.04
+0.77±0.44
+0.78±0.12
+1.88±3.23
+0.53±0.17
+0.51±0.51
+DroneCircle
+0.63±0.07
+0.98±0.27
+0.55±0.06
+0.65±0.29
+0.29±0.27
+0.63±0.70
+0.60±0.02
+1.31±0.86
+0.42±0.12
+0.52±0.32
+AntCircle
+0.54±0.20
+1.78±4.33
+0.37±0.18
+0.15±0.25
+0.61±0.14
+0.75±0.90
+0.44±0.14
+0.53±0.93
+0.56±0.17
+0.79±0.60
+BulletGym Average (8 tasks)
+0.68±0.19
+1.04±1.65
+0.57±0.25
+0.86±1.82
+0.54±0.30
+1.07±2.04
+0.60±0.10
+1.01±1.35
+0.58±0.09
+0.67±0.46
+easysparse
+0.17±0.14
+0.23±0.32
+0.12±0.20
+0.37±0.43
+-0.06±0.00
+0.10±0.05
+0.79±0.14
+1.34±1.43
+0.70±0.19
+0.94±0.17
+easymean
+0.45±0.11
+0.54±0.55
+0.02±0.07
+0.21±0.23
+-0.06±0.01
+0.07±0.08
+0.82±0.06
+1.33±0.86
+0.73±0.17
+0.94±0.13
+easydense
+0.32±0.18
+0.62±0.43
+0.11±0.15
+0.16±0.17
+-0.06±0.00
+0.07±0.04
+0.84±0.10
+1.88±1.20
+0.70±0.17
+0.90±0.16
+mediumsparse
+0.87±0.11
+1.10±0.26
+0.59±0.36
+0.74±0.97
+-0.08±0.00
+0.07±0.04
+0.97±0.02
+1.24±0.68
+0.94±0.07
+0.82±0.32
+mediummean
+0.45±0.39
+0.75±0.83
+0.66±0.35
+0.90±0.89
+-0.07±0.01
+0.02±0.03
+0.93±0.12
+0.78±0.51
+0.92±0.11
+0.77±0.16
+mediumdense
+0.88±0.12
+2.41±0.71
+0.75±0.29
+0.65±0.57
+-0.08±0.00
+0.06±0.03
+0.82±0.30
+1.07±0.71
+0.78±0.28
+0.68±0.31
+hardsparse
+0.25±0.08
+0.41±0.33
+0.45±0.15
+0.75±0.56
+-0.05±0.00
+0.07±0.04
+0.54±0.09
+0.91±0.51
+0.49±0.13
+0.76±0.44
+hardmean
+0.33±0.21
+0.97±0.31
+0.29±0.13
+0.28±0.31
+-0.05±0.00
+0.06±0.03
+0.48±0.14
+1.16±1.19
+0.46±0.15
+0.84±0.54
+harddense
+0.08±0.15
+0.21±0.42
+0.36±0.18
+0.66±0.92
+-0.03±0.01
+0.11±0.08
+0.47±0.19
+1.43±0.93
+0.44±0.17
+0.63±0.24
+MetaDrive Average (9 tasks)
+0.42±0.31
+0.80±0.61
+0.38±0.34
+0.54±0.69
+-0.06±0.02
+0.07±0.06
+0.74±0.13
+1.24±0.89
+0.69±0.16
+0.81±0.27
+Table 3: Results for normalized cost and normalized reward: ↑indicates that a higher value is better, while ↓indicates that a lower value
+is preferable.Bold text denotes safe policies, gray indicates unsafe policies, and blue highlights the highest reward among the safe policies
+for each task. Each result is obtained by running three random seeds across three distinct cost thresholds and evaluating over 20 episodes.
+B.1
+Main Results with Stochastic and Deterministic Versions of Our Algorithm
+In Table 4, we present results for both the stochastic and deterministic versions of our algorithm, shown side by side with
+other baselines. The main table in the paper reports results only for the default configuration (either the stochastic or deter-
+ministic variant, depending on the domain), while this section provides a detailed comparison of both. The results indicate
+that the stochastic version performs better in SafetyGym and Bullet-SafetyGym—domains with inherently stochastic dynam-
+ics—whereas the deterministic version achieves superior performance in MetaDrive, which features deterministic transitions.
+B.2
+Comparison with Non-Adaptive Baselines
+In the main results (Main Paper Table 1), we compared our method only with approaches that are capable of generalizing across
+different cost budgets. In Table 5, we compare our results with algorithms that require separate training for each cost budget.
+We use the same cost budgets as those in the DSRL benchmark, as shown in Table 10. The results indicate that our approach
+outperforms baseline methods, even without retraining for each individual budget.
+B.3
+Maritime Navigation task
+The Maritime Navigation task is based entirely on the ShipNaviSim framework (Pham, Brahmanage, and Kumar 2025), which
+was constructed using two years of historical AIS data from a high-traffic hotspot in the Singapore Strait. The planning re-
+gion corresponds to the area with the highest vessel density and collision risk—where many ship routes intersect (Figure 5).
+ShipNaviSim uses AIS records containing both static information (vessel width, length, type, ID) and dynamic information
+(latitude, longitude, speed, heading, course-over-ground). Trajectories were generated from tankers and cargo vessels, which
+
+
+CDT
+CAPS(IQL)
+CCAC
+LSPC-Final (Our-Run)
+BCRL -Deterministic
+BCRL -Stochastic
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+PointButton1
+0.53±0.01
+1.68±0.13
+0.04±0.15
+0.58±1.42
+0.68±0.14
+4.31±3.20
+0.09±0.20
+0.69±1.03
+0.16±0.20
+0.97±1.33
+0.07±0.18
+0.79±2.10
+PointButton2
+0.46±0.01
+1.57±0.10
+0.12±0.20
+0.96±2.35
+0.63±0.11
+4.82±3.61
+0.19±0.21
+1.39±2.53
+0.14±0.21
+0.72±0.84
+0.12±0.22
+0.81±1.36
+PointCircle1
+0.59±0.00
+0.69±0.04
+0.50±0.12
+0.68±1.51
+0.58±0.13
+2.22±1.05
+0.56±0.35
+3.49±3.55
+0.47±0.10
+0.78±0.87
+0.55±0.17
+0.86±0.21
+PointCircle2
+0.64±0.01
+1.05±0.08
+0.51±0.21
+0.76±0.47
+0.18±0.50
+1.42±1.09
+0.67±0.24
+4.18±4.56
+0.45±0.18
+0.76±0.41
+0.58±0.10
+0.74±0.34
+PointGoal1
+0.69±0.02
+1.12±0.07
+0.46±0.28
+0.63±0.81
+0.55±0.26
+1.88±1.72
+0.26±0.27
+0.23±0.45
+0.61±0.21
+0.88±0.65
+0.56±0.25
+0.70±0.65
+PointGoal2
+0.59±0.03
+1.34±0.05
+0.34±0.23
+0.80±0.74
+0.41±0.36
+3.60±3.37
+0.23±0.24
+0.50±0.79
+0.38±0.19
+0.99±0.49
+0.38±0.21
+0.77±0.68
+PointPush1
+0.24±0.02
+0.48±0.05
+0.15±0.17
+0.33±0.66
+0.02±0.33
+1.42±5.37
+0.14±0.18
+0.37±0.77
+0.19±0.16
+0.45±0.65
+0.14±0.16
+0.47±0.79
+PointPush2
+0.21±0.04
+0.65±0.03
+0.12±0.19
+0.60±1.12
+-0.18±0.66
+1.00±1.70
+0.12±0.17
+0.80±2.65
+0.12±0.19
+0.88±2.85
+0.14±0.18
+0.71±1.11
+CarButton1
+0.21±0.02
+1.60±0.12
+-0.02±0.17
+0.26±0.53
+0.45±0.26
+11.31±8.91
+-0.03±0.23
+0.59±1.42
+0.04±0.17
+0.62±0.68
+-0.06±0.18
+0.34±0.76
+CarButton2
+0.13±0.01
+1.58±0.02
+-0.07±0.18
+0.59±2.07
+0.53±0.26
+9.82±9.00
+-0.13±0.28
+0.93±2.06
+-0.16±0.25
+0.36±0.51
+-0.20±0.26
+0.27±0.62
+CarCircle1
+0.60±0.01
+1.73±0.04
+0.55±0.16
+1.54±1.63
+0.49±0.14
+5.13±3.53
+0.46±0.25
+1.86±3.14
+0.37±0.16
+0.54±0.55
+0.50±0.12
+0.48±0.43
+CarCircle2
+0.66±0.00
+2.53±0.03
+0.50±0.18
+1.56±2.32
+0.54±0.08
+2.75±4.36
+0.43±0.27
+2.40±4.55
+0.43±0.18
+0.54±0.72
+0.48±0.15
+0.44±0.48
+CarGoal1
+0.66±0.01
+1.21±0.17
+0.32±0.26
+0.33±0.53
+0.84±0.08
+1.81±1.91
+0.27±0.26
+0.24±0.44
+0.49±0.22
+0.64±0.69
+0.43±0.27
+0.43±0.58
+CarGoal2
+0.48±0.01
+1.25±0.14
+0.16±0.21
+0.71±1.91
+0.90±0.12
+5.53±5.01
+0.16±0.21
+0.41±0.77
+0.25±0.23
+0.89±1.23
+0.19±0.20
+0.47±0.92
+CarPush1
+0.31±0.01
+0.40±0.10
+0.19±0.13
+0.34±1.09
+-0.12±0.70
+0.59±0.97
+0.18±0.15
+0.41±1.29
+0.20±0.12
+0.25±0.50
+0.19±0.14
+0.24±0.74
+CarPush2
+0.19±0.01
+1.30±0.16
+0.05±0.14
+0.71±1.66
+0.12±0.31
+6.06±9.53
+0.07±0.15
+0.80±1.41
+0.08±0.15
+0.53±0.75
+0.05±0.17
+0.52±1.07
+SwimmerVelocity
+0.66±0.01
+0.96±0.08
+0.44±0.22
+1.66±2.37
+-0.08±0.02
+0.00±0.01
+0.46±0.21
+1.28±2.60
+0.38±0.20
+0.93±0.33
+0.49±0.18
+0.99±0.37
+HopperVelocity
+0.63±0.06
+0.61±0.08
+0.44±0.26
+0.75±0.83
+0.46±0.38
+0.50±0.55
+0.21±0.04
+1.25±1.20
+0.32±0.22
+0.51±0.76
+0.66±0.23
+0.80±0.35
+HalfCheetahVelocity
+1.00±0.01
+0.01±0.01
+0.94±0.04
+0.77±0.13
+0.94±0.04
+0.94±0.07
+0.97±0.02
+1.00±1.04
+0.99±0.01
+0.98±0.03
+0.93±0.07
+0.62±0.27
+Walker2dVelocity
+0.78±0.09
+0.06±0.34
+0.80±0.04
+0.70±0.51
+0.17±0.28
+1.08±1.90
+0.79±0.01
+0.17±0.24
+0.77±0.02
+0.08±0.23
+0.79±0.06
+0.14±0.35
+AntVelocity
+0.98±0.00
+0.39±0.12
+0.95±0.04
+0.64±0.21
+0.51±0.41
+0.59±0.34
+0.97±0.05
+0.14±0.15
+0.98±0.05
+0.42±0.24
+0.97±0.03
+0.34±0.14
+SafetyGym Average
+0.54±0.21
+1.06±0.59
+0.36±0.34
+0.76±1.43
+0.41±0.46
+3.18±5.24
+0.34±0.19
+1.10±1.75
+0.36±0.16
+0.65±0.73
+0.38±0.17
+0.57±0.68
+BallRun
+0.39±0.09
+1.16±0.19
+0.18±0.09
+0.94±0.73
+0.40±0.12
+0.84±0.31
+0.15±0.01
+0.00±0.00
+0.22±0.13
+0.87±1.35
+0.20±0.02
+0.06±0.10
+CarRun
+0.99±0.01
+0.65±0.31
+0.97±0.01
+0.23±0.25
+0.97±0.04
+0.68±0.22
+0.98±0.01
+0.84±1.04
+0.99±0.01
+0.34±0.29
+0.98±0.01
+0.98±0.72
+DroneRun
+0.63±0.04
+0.79±0.68
+0.45±0.10
+2.91±4.46
+0.46±0.18
+4.36±4.32
+0.59±0.06
+0.93±1.51
+0.55±0.04
+0.86±1.86
+0.58±0.03
+0.54±0.91
+AntRun
+0.72±0.04
+0.91±0.42
+0.61±0.13
+0.78±0.59
+0.12±0.09
+0.04±0.08
+0.66±0.13
+1.43±1.25
+0.57±0.14
+0.61±0.34
+0.68±0.11
+0.95±0.29
+BallCircle
+0.77±0.06
+1.07±0.27
+0.69±0.10
+0.59±0.23
+0.78±0.05
+0.46±0.31
+0.62±0.28
+1.17±1.95
+0.59±0.12
+0.86±0.15
+0.69±0.11
+0.97±0.27
+CarCircle
+0.75±0.06
+0.95±0.61
+0.70±0.10
+0.66±0.27
+0.72±0.04
+0.77±0.44
+0.78±0.12
+1.88±3.23
+0.42±0.19
+0.88±0.33
+0.53±0.17
+0.51±0.51
+DroneCircle
+0.63±0.07
+0.98±0.27
+0.55±0.06
+0.65±0.29
+0.29±0.27
+0.63±0.70
+0.60±0.02
+1.31±0.86
+0.41±0.10
+0.75±0.31
+0.42±0.12
+0.52±0.32
+AntCircle
+0.54±0.20
+1.78±4.33
+0.37±0.18
+0.15±0.25
+0.61±0.14
+0.75±0.90
+0.44±0.14
+0.53±0.93
+0.40±0.16
+0.59±1.33
+0.56±0.17
+0.79±0.60
+BulletGym Average
+0.68±0.19
+1.04±1.65
+0.57±0.25
+0.86±1.82
+0.54±0.30
+1.07±2.04
+0.60±0.10
+1.01±1.35
+0.52±0.11
+0.72±0.75
+0.58±0.09
+0.67±0.46
+easysparse
+0.17±0.14
+0.23±0.32
+0.12±0.20
+0.37±0.43
+-0.06±0.00
+0.10±0.05
+0.79±0.14
+1.34±1.43
+0.70±0.19
+0.94±0.17
+0.38±0.13
+0.41±0.65
+easymean
+0.45±0.11
+0.54±0.55
+0.02±0.07
+0.21±0.23
+-0.06±0.01
+0.07±0.08
+0.82±0.06
+1.33±0.86
+0.73±0.17
+0.94±0.13
+0.39±0.26
+0.95±1.91
+easydense
+0.32±0.18
+0.62±0.43
+0.11±0.15
+0.16±0.17
+-0.06±0.00
+0.07±0.04
+0.84±0.10
+1.88±1.20
+0.70±0.17
+0.90±0.16
+0.34±0.21
+0.51±1.24
+mediumsparse
+0.87±0.11
+1.10±0.26
+0.59±0.36
+0.74±0.97
+-0.08±0.00
+0.07±0.04
+0.97±0.02
+1.24±0.68
+0.94±0.07
+0.82±0.32
+0.65±0.15
+0.14±0.16
+mediummean
+0.45±0.39
+0.75±0.83
+0.66±0.35
+0.90±0.89
+-0.07±0.01
+0.02±0.03
+0.93±0.12
+0.78±0.51
+0.92±0.11
+0.77±0.16
+0.67±0.19
+0.32±0.37
+mediumdense
+0.88±0.12
+2.41±0.71
+0.75±0.29
+0.65±0.57
+-0.08±0.00
+0.06±0.03
+0.82±0.30
+1.07±0.71
+0.78±0.28
+0.68±0.31
+0.78±0.19
+0.36±0.28
+hardsparse
+0.25±0.08
+0.41±0.33
+0.45±0.15
+0.75±0.56
+-0.05±0.00
+0.07±0.04
+0.54±0.09
+0.91±0.51
+0.49±0.13
+0.76±0.44
+0.40±0.17
+0.83±0.89
+hardmean
+0.33±0.21
+0.97±0.31
+0.29±0.13
+0.28±0.31
+-0.05±0.00
+0.06±0.03
+0.48±0.14
+1.16±1.19
+0.46±0.15
+0.84±0.54
+0.38±0.16
+0.81±0.94
+harddense
+0.08±0.15
+0.21±0.42
+0.36±0.18
+0.66±0.92
+-0.03±0.01
+0.11±0.08
+0.47±0.19
+1.43±0.93
+0.44±0.17
+0.63±0.24
+0.29±0.16
+0.38±0.69
+MetaDrive Average
+0.42±0.31
+0.80±0.61
+0.38±0.34
+0.54±0.69
+-0.06±0.02
+0.07±0.06
+0.74±0.13
+1.24±0.89
+0.69±0.16
+0.81±0.27
+0.48±0.18
+0.52±0.79
+Table 4: Results for normalized cost and normalized reward: ↑indicates that a higher value is better, while ↓indicates that a
+lower value is preferable.Bold text denotes safe policies, gray indicates unsafe policies, and blue highlights the highest reward
+among the safe policies for each task. Each result is obtained by running three random seeds across three distinct cost thresholds
+and evaluating over 20 episodes.
+are considered the riskiest due to their large size (200–300 m) and limited maneuverability. All trajectories were interpolated
+at 10-second intervals. The resulting dataset includes approximately 125,000 trajectories (about 14 million transitions), with
+average lengths of 100–150 steps. ShipNaviSim uses 80% of this data for training and 20% for evaluation.
+Observation Space ShipNaviSim (Pham, Brahmanage, and Kumar 2025) defines the observation space from the perspective
+of the ego vessel. At each timestep, the ego vessel has access to a historical sequence of its own trajectory together with those
+of the 10 nearest surrounding ships, each observed over a configurable number of past steps. For every historical point, the
+available features include the x and y coordinates, speed v, and heading angle h for both the ego and nearby vessels. The
+goal location of the ego vessel is also provided. This historical context is used to capture multi-ship interactions and inform
+navigation decisions. For simplicity, the original implementation processes the flattened observation vector using a standard
+neural network architecture.
+Action Space In ShipNaviSim, the action space is a 3-dimensional continuous “delta” action space, represented as ⟨dx, dy, dh⟩,
+corresponding to changes in x, y, and heading h between consecutive steps. The vessel’s speed at the next timestep is computed
+from the distance traveled, using vt+1 =
+q
+d2x + d2y/δT with a timestep of δT = 10 seconds. Because actions encode differences
+between consecutive states, a simple inverse-kinematics model can be used to infer actions directly from state-only trajectories
+in the dataset.
+Evaluation Metrics We evaluates navigation behavior using several vessel-specific metrics that compare agent trajectories with
+human expert data.
+Goal-Conditioned ADE (GC-ADE) GC-ADE measures the average 2D displacement error between the agent’s trajectory and
+
+
+BC-Safe
+BCQ-Lag
+COptiDICE
+CPQ
+BCRL (Ours)
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+PointButton1
+0.06±0.04
+0.52±0.21
+0.24±0.04
+1.73±1.11
+0.13±0.02
+1.35±0.91
+0.69±0.05
+3.20±1.57
+0.07±0.18
+0.79±2.10
+PointButton2
+0.16±0.04
+1.10±0.84
+0.40±0.03
+2.66±1.47
+0.15±0.03
+1.51±0.96
+0.58±0.07
+4.30±2.35
+0.12±0.22
+0.81±1.36
+PointCircle1
+0.41±0.08
+0.16±0.11
+0.54±0.17
+2.38±1.30
+0.86±0.01
+5.51±2.93
+0.43±0.07
+0.75±1.86
+0.55±0.17
+0.86±0.21
+PointCircle2
+0.48±0.08
+0.99±0.35
+0.66±0.13
+2.60±0.71
+0.85±0.01
+8.61±4.62
+0.24±0.40
+3.58±3.09
+0.58±0.10
+0.74±0.34
+PointGoal1
+0.43±0.12
+0.54±0.24
+0.71±0.02
+0.98±0.46
+0.49±0.05
+1.66±1.05
+0.57±0.08
+0.35±0.37
+0.56±0.25
+0.70±0.65
+PointGoal2
+0.29±0.09
+0.78±0.27
+0.67±0.06
+3.18±1.79
+0.38±0.03
+1.92±1.15
+0.40±0.15
+1.31±0.71
+0.38±0.21
+0.77±0.68
+PointPush1
+0.13±0.05
+0.43±0.29
+0.33±0.04
+0.86±0.45
+0.13±0.02
+0.83±0.52
+0.20±0.08
+0.83±0.44
+0.14±0.16
+0.47±0.79
+PointPush2
+0.11±0.04
+0.80±0.59
+0.23±0.03
+0.99±0.57
+0.02±0.07
+1.18±0.74
+0.11±0.14
+1.04±0.61
+0.14±0.18
+0.71±1.11
+CarButton1
+0.07±0.03
+0.85±0.39
+0.04±0.05
+1.63±0.59
+-0.08±0.09
+1.68±1.29
+0.42±0.05
+9.66±5.71
+-0.06±0.18
+0.34±0.76
+CarButton2
+-0.01±0.02
+0.63±0.30
+0.06±0.05
+2.13±1.19
+-0.07±0.06
+1.59±1.10
+0.37±0.11
+12.51±8.54
+-0.20±0.26
+0.27±0.62
+CarCircle1
+0.37±0.10
+1.38±0.44
+0.73±0.02
+5.25±2.76
+0.70±0.02
+5.72±3.04
+0.02±0.15
+2.29±2.13
+0.50±0.12
+0.48±0.43
+CarCircle2
+0.54±0.08
+3.38±1.30
+0.72±0.04
+6.58±3.02
+0.77±0.03
+7.99±4.23
+0.44±0.10
+2.69±2.61
+0.48±0.15
+0.44±0.48
+CarGoal1
+0.24±0.08
+0.28±0.11
+0.47±0.05
+0.78±0.50
+0.35±0.06
+0.54±0.33
+0.79±0.07
+1.42±0.81
+0.43±0.27
+0.43±0.58
+CarGoal2
+0.14±0.05
+0.51±0.26
+0.30±0.05
+1.44±0.99
+0.25±0.04
+0.91±0.41
+0.65±0.20
+3.75±2.00
+0.19±0.20
+0.47±0.92
+CarPush1
+0.14±0.03
+0.33±0.23
+0.23±0.03
+0.43±0.19
+0.23±0.04
+0.50±0.40
+-0.03±0.24
+0.95±0.53
+0.19±0.14
+0.24±0.74
+CarPush2
+0.05±0.02
+0.45±0.19
+0.15±0.02
+1.38±0.68
+0.09±0.02
+1.07±0.69
+0.24±0.06
+4.25±2.44
+0.05±0.17
+0.52±1.07
+SwimmerVelocity
+0.51±0.20
+1.07±0.07
+0.48±0.33
+6.58±3.95
+0.63±0.06
+7.58±1.77
+0.13±0.06
+2.66±0.96
+0.49±0.18
+0.99±0.37
+HopperVelocity
+0.36±0.13
+0.67±0.27
+0.78±0.09
+5.02±3.43
+0.13±0.06
+1.51±1.54
+0.14±0.09
+2.11±2.29
+0.66±0.23
+0.80±0.35
+HalfCheetahVelocity
+0.88±0.03
+0.54±0.63
+1.05±0.07
+18.21±8.29
+0.65±0.01
+0.00±0.00
+0.29±0.14
+0.74±0.19
+0.93±0.07
+0.62±0.27
+Walker2dVelocity
+0.79±0.05
+0.04±0.32
+0.79±0.01
+0.17±0.06
+0.12±0.01
+0.74±0.07
+0.04±0.05
+0.21±0.09
+0.79±0.06
+0.14±0.35
+AntVelocity
+0.98±0.01
+0.29±0.10
+1.02±0.01
+4.15±1.63
+1.00±0.00
+3.28±2.01
+-1.01±0.00
+0.00±0.00
+0.97±0.03
+0.34±0.14
+SafetyGym Average
+0.34±0.31
+0.75±0.80
+0.50±0.32
+3.29±4.97
+0.37±0.32
+2.65±3.24
+0.27±0.37
+2.79±3.86
+0.38±0.17
+0.57±0.68
+BallRun
+0.27±0.14
+1.46±0.39
+0.76±0.01
+3.91±0.35
+0.59±0.00
+3.52±0.00
+0.22±0.00
+1.27±0.12
+0.20±0.02
+0.06±0.10
+CarRun
+0.94±0.00
+0.22±0.02
+0.94±0.01
+0.15±0.91
+0.87±0.00
+0.00±0.00
+0.95±0.01
+1.79±0.18
+0.98±0.01
+0.98±0.72
+DroneRun
+0.28±0.25
+0.74±0.97
+0.72±0.12
+5.54±0.81
+0.67±0.02
+4.15±0.10
+0.33±0.10
+3.52±0.58
+0.58±0.03
+0.54±0.91
+AntRun
+0.65±0.15
+1.09±0.84
+0.76±0.07
+5.11±2.39
+0.61±0.01
+0.94±0.69
+0.03±0.02
+0.02±0.09
+0.68±0.11
+0.95±0.29
+BallCircle
+0.52±0.08
+0.65±0.17
+0.69±0.11
+2.36±1.04
+0.70±0.04
+2.61±0.79
+0.64±0.01
+0.76±0.00
+0.69±0.11
+0.97±0.27
+CarCircle
+0.50±0.22
+0.84±0.67
+0.63±0.19
+1.89±1.37
+0.49±0.05
+3.14±2.98
+0.71±0.02
+0.33±0.00
+0.53±0.17
+0.51±0.51
+DroneCircle
+0.56±0.18
+0.57±0.27
+0.80±0.07
+3.07±0.89
+0.26±0.03
+1.02±0.46
+-0.22±0.05
+1.28±0.97
+0.42±0.12
+0.52±0.32
+AntCircle
+0.40±0.16
+0.96±2.67
+0.58±0.25
+2.87±3.08
+0.17±0.10
+5.04±6.70
+-
+-
+0.56±0.17
+0.79±0.60
+BulletGym Average
+0.52±0.27
+0.82±1.27
+0.74±0.25
+3.11±3.55
+0.55±0.24
+2.55±3.62
+0.33±0.29
+1.12±1.85
+0.58±0.09
+0.67±0.46
+easysparse
+0.11±0.08
+0.21±0.02
+0.78±0.00
+5.01±0.06
+0.96±0.02
+5.44±0.27
+-0.06±0.00
+0.07±0.02
+0.70±0.19
+0.94±0.17
+easymean
+0.04±0.03
+0.29±0.02
+0.71±0.06
+3.44±0.35
+0.66±0.16
+3.97±1.47
+-0.07±0.00
+0.07±0.01
+0.73±0.17
+0.94±0.13
+easydense
+0.11±0.07
+0.14±0.01
+0.26±0.00
+0.47±0.01
+0.50±0.10
+2.54±0.53
+-0.06±0.00
+0.03±0.01
+0.70±0.17
+0.90±0.16
+mediumsparse
+0.33±0.34
+0.30±0.32
+0.44±0.00
+1.16±0.02
+0.71±0.37
+2.49±1.90
+-0.08±0.02
+0.07±0.03
+0.94±0.07
+0.82±0.32
+mediummean
+0.31±0.06
+0.21±0.00
+0.78±0.12
+1.53±0.21
+0.76±0.34
+2.05±0.92
+-0.08±0.00
+0.05±0.02
+0.92±0.11
+0.77±0.16
+mediumdense
+0.24±0.00
+0.17±0.00
+0.58±0.21
+1.89±1.19
+0.69±0.13
+2.24±0.65
+-0.07±0.00
+0.07±0.01
+0.78±0.28
+0.68±0.31
+hardsparse
+0.17±0.05
+3.25±0.10
+0.50±0.04
+1.02±0.05
+0.37±0.10
+2.05±0.27
+-0.05±0.00
+0.06±0.01
+0.49±0.13
+0.76±0.44
+hardmean
+0.13±0.00
+0.40±0.00
+0.47±0.13
+2.56±0.72
+0.32±0.19
+2.47±2.00
+-0.05±0.00
+0.06±0.02
+0.46±0.15
+0.84±0.54
+harddense
+0.15±0.06
+0.22±0.01
+0.35±0.03
+1.40±0.14
+0.24±0.21
+1.68±2.15
+-0.04±0.01
+0.08±0.01
+0.44±0.17
+0.63±0.24
+MetaDrive Average
+0.18±0.27
+0.58±0.35
+0.54±0.35
+2.05±2.70
+0.58±0.32
+2.77±2.87
+-0.06±0.01
+0.06±0.04
+0.69±0.16
+0.81±0.27
+Table 5: Comparison with Non-Adaptive Baselines: This table presents results similar to our main results table (Table 1), but
+includes additional baseline methods that do not generalize to varying cost budgets. The results for these baselines are taken
+from the DSRL benchmark (Liu et al. 2024).
+the historical trajectory. For trajectories τm and τp of lengths Tm and Tp, the metric is computed over min(Tm, Tp) steps:
+GC-ADE =
+1
+min(Tm, Tp)
+v
+u
+u
+t
+min(Tm,Tp)
+X
+t=1
+(xm
+t −xp
+t )2 + (ym
+t −yp
+t )2
+Success Rate Success rate is defined as the percentage of episodes in which the ego vessel reaches its assigned goal, with
+success determined by entering a 200-meter radius around the goal.
+Close-quarters Rate Close-quarters rate measures the proportion of timesteps in an episode where the ego vessel comes within
+3 cable lengths (555 meters) of another vessel—a distance regarded by domain experts as a close-quarters situation. This metric
+serves as a coarse indicator of traffic density and potential navigational risk; it does not necessarily imply that a collision was
+imminent.
+Reward. The reward function is defined as a sparse signal: the agent receives a reward of 100 only when it successfully reaches
+the goal. No intermediate rewards are provided, which encourages the agent to focus on completing the task while avoiding
+unsafe situations.
+Cost. The cost function is defined to capture close-quarters situations. Specifically, for each transition, if the next state s′
+results in the agent coming too close to another vessel (i.e., a close-quarters scenario), the cost is set to c(s, a) = 1; otherwise,
+c(s, a) = 0. This formulation directly penalizes unsafe maneuvers and encourages the agent to maintain safe distances from
+other vessels throughout its trajectory.
+
+
+Figure 5: The red region is used as the environment area. The gray areas indicate anchorage zones, the green areas represent
+landmasses, and the arrows and regions with dark blue borders represent the Maritime Traffic Separation Scheme (TSS). The
+high density of crossing points in the red area makes it a more challenging region for navigation, providing a suitable setting
+for testing advanced planning techniques.
+B.4
+Ablations on Key Hyperparameters
+In our approach, the IQL instantiation is primarily governed by three hyperparameters: the expectile for training the cost critic
+(τC), the expectile for the reward critic (τR), and the policy extraction temperature associated with AWR (β). Among these,
+the expectile values are particularly important for performance, as also observed in the original IQL work (Kostrikov, Nair, and
+Levine 2022). A lower cost critic expectile (τC ≤0.5) encourages a more conservative cost estimate that prioritizes minimizing
+cost, and our experiments indicate that better results are achieved with smaller τC. Conversely, the reward critic expectile is
+chosen to be τR ≥0.5, aligning with the recommendations from the IQL paper (Kostrikov, Nair, and Levine 2022). Ablation
+results for these expectile values are presented in Table 6.
+B.5
+Feasible Action Set Analysis
+In Figure 6 we present the persentatage of feasible actions to evaluate how restrictive or inclusive our learned feasible action
+space ie. Using the learned cost critic, we estimate the percentage of (s, a) pairs from the dataset that are feasible based on the
+remaining budget δ, given by
+P
+(s,a)∈D I[Q∗
+C(s,a)≤δ]
+|D|
+. If the remaining budget is ≥15, almost all the samples becomes feasible
+for most of the environments. For example, CarPush1 and MataDrive-mediummean, feasibility reaches 99% by budget 5, and
+65% of the actions become feasible in AntCircle. This indicate the feasible action set is not over conservative.
+B.6
+Compare our results with the best policy obtained by LSPC
+Table 7 reports results using the best policy selected during training. In the original LSPC (Koirala et al. 2025) work, policies
+were evaluated every 20k steps over a 1M-step training run, which allows selection of a high-performing policy but assumes
+access to a simulator—often unavailable in offline RL settings. To ensure a fair comparison, we reproduced this evaluation
+strategy for both our approach and LSPC, selecting and reporting the best-performing policy during training. As shown in the
+table, our method remains competitive under these conditions, with blue indicating the best results. All environments exhibit
+safe policies under this evaluation protocol.
+B.7
+Grid World Environment
+Figure 7 shows the grid-world environment used for the results in Figure 3. The action space consists of moving left, right, up,
+or down. The transition probability of the intended movement p is the probability of moving in the chosen direction, with the
+Expectile τr
+0.5
+0.6
+0.7
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+HopperVelocityGymnasium
+0.83
+0.79
+0.80
+0.66
+0.85
+0.60
+PointPush1Gymnasium
+0.40
+0.17
+0.46
+0.14
+0.34
+0.17
+PointPush2Gymnasium
+0.66
+0.12
+0.71
+0.14
+0.68
+0.12
+SwimmerVelocityGymnasium
+0.82
+0.36
+0.98
+0.49
+0.99
+0.38
+AntRun
+0.95
+0.68
+1.00
+0.69
+0.98
+0.68
+BallRun
+0.07
+0.20
+3.30
+0.24
+2.43
+0.22
+CarRun
+0.98
+0.98
+0.30
+0.98
+0.26
+0.98
+DroneRun
+0.54
+0.58
+2.75
+0.66
+0.66
+0.60
+Cost Expectile τc
+0.2
+0.3
+0.4
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+reward ↑
+HopperVelocityGymnasium
+1.19
+0.39
+0.80
+0.66
+0.21
+0.43
+PointPush1Gymnasium
+0.72
+0.21
+0.46
+0.14
+0.25
+0.11
+PointPush2Gymnasium
+1.07
+0.15
+0.71
+0.14
+0.58
+0.12
+SwimmerVelocityGymnasium
+2.19
+0.30
+0.98
+0.49
+1.19
+0.57
+AntRun
+0.95
+0.68
+0.47
+0.62
+0.33
+0.62
+BallRun
+0.07
+0.20
+3.09
+0.06
+3.79
+0.01
+CarRun
+0.98
+0.98
+0.58
+0.98
+0.21
+0.90
+DroneRun
+0.54
+0.58
+0.11
+0.16
+0.00
+-0.01
+Table 6: Ablation on the Reward Expectile τR Cost Expectile τC
+
+
+remaining probability distributed among the other three actions. We vary p and the budget to evaluate our method.
+B.8
+Approximated Persistent Safety
+In this section, we examine how sensitive our approach is to the quality of the learned persistent safety set. We approximate this
+set by learning the cost critic (cost-value function). In this experiment, we early-stop cost-critic training at 20%, 50%, 80%, and
+100% of the training steps, then evaluate the results shown in Figure 8. The results show that reducing the cost-critic quality
+leads to slightly higher constraint violations, but the effect is minor.
+C
+Extended Related Work
+Constrained Markov decision processes (CMDPs) (Altman 2021) are among the most widely adopted frameworks for safe RL.
+Numerous methods have been proposed to address the CMDP setting in offline RL. A simple approach is behavior cloning using
+only safe trajectories (Liu et al. 2024); CDT (Liu et al. 2023) extends the Decision Transformer (Chen et al. 2021) to handle
+action constraints. The DSRL benchmark (Liu et al. 2024) provides standardized datasets, benchmarks, and implementations.
+BCQ-Lagrangian (Liu et al. 2024) employs a Lagrangian approach to solve constrained problems; however, this method suffers
+from instability due to the difficulty of tuning the Lagrange multiplier, as it jointly optimizes both reward and cost objectives.
+The DICE (Distribution Correction Estimation) framework has gained significant traction in offline learning due to its ability
+to directly estimate stationary distribution corrections, avoiding the compounding errors in value-based bootstrapping. This
+approach was initially developed for off-policy evaluation and offline policy optimization, with notable algorithms such as
+DualDICE (Nachum et al. 2019) and OptiDICE (Lee et al. 2021). Beyond standard offline RL, matching state-transition oc-
+cupancies has proven highly effective in offline imitation learning (IL), enabling robust policy learning from demonstrations
+without explicit reward signals. Methods like DemoDICE (Kim et al. 2022) and SafeDICE (Jang et al. 2023) leverage this frame-
+work for IL, and more recently, IOSTOM (Pham et al. 2025) introduced transition occupancy matching specifically for imitation
+learning from observations. Building upon these principles for the constrained RL setting, the COptiDICE algorithm (Lee et al.
+2022) tackles the offline CMDP problem via stationary distribution correction estimation. Meanwhile, Constrained Penalized
+Q-learning (CPQ) (Xu, Zhan, and Zhu 2022) formulates the problem as a min-max objective, which also leads to optimization
+instability. Despite their theoretical motivation, these methods have not demonstrated strong performance in prior safe offline
+RL benchmarks (Liu et al. 2024). Recently proposed CAPS algorithm (Chemingui et al. 2025) learns multiple policies and
+switches between them based on the remaining cost budget.
+Recent work (Koirala et al. 2025) learns a variational autoencoder (VAE) (Kingma, Welling et al. 2019) to approximate the
+most conservative policy, and then trains a separate policy in the VAE’s latent space to maximize the reward. (Guo et al. 2025)
+improves upon this by conditioning the VAE on the remaining budget and sampling from it during training. Both approaches
+utilize variational autoencoders to learn generative models as a pre-training step, which incurs significant computational over-
+head.
+Hamilton-Jacobi (HJ) reachable sets are useful for safety verification and policy supervision (Ganai, Gao, and Herbert 2024).
+In RL, feasible sets depend on the policy and change during training, causing instability. RCRL (Yu et al. 2022) uses a La-
+grangian approach, while FISOR (Zheng et al. 2024) enforces hard constraints independently of the policy. Our method condi-
+tions feasibility on discounted future costs, enabling policy-independent estimation while handling cumulative soft constraints
+in CMDPs. Alternatively, action-constrained RL enforces per-step feasibility using optimization solvers (Lin et al. 2021) or
+generative models (Brahmanage, Ling, and Kumar 2023, 2024).
+A related approach is Saute RL (Sootla et al. 2022), which enforces hard per-step constraints to satisfy the total cost limit.
+Instead of estimating future costs to select feasible actions, it labels timesteps by cumulative cost and requires an online RL
+setting to track the remaining budget during rollouts. In contrast, our approach prunes unsafe actions offline without requiring
+online samples.
+D
+Implementation Details
+D.1
+Implementation Details CMDP
+Given a CMDP, we first solve the MDP to minimize the budget and obtain solutions for V ∗
+C and Q∗
+C. These solutions are then
+used to construct BAMDP. To keep the state space finite and discrete, we discretize the budget and add it as an additional
+dimension to the state space. The transition function is updated based on the BAMDP transition function ¯T. The budget update
+functions f, g are real-valued functions, which must be discretized to be compatible with the discrete budget, in that case we
+can round the real budget to the nearest budget-bin. States outside the persistent safety set ¯SP are masked, and the action space
+is restricted to the support of ΠP . The resulting extended MDP can then be solved using a standard LP solver. In the policy
+extraction, we can only include the actions in the persistently safe actions AP (s, δ). Also, we will learn the policy for states
+outside the persistent safety set s /∈¯SP to minimize the cost in case the agent leaves the persistent state set ¯SP , mainly because
+of the approximation errors caused by discretization.
+
+
+Algorithm 2: Construction and LP Solution of the Extended MDP
+Require: CMDP M := ⟨S, A, T, r, c, γ, µ0, δinit⟩, budget update function g
+1: Compute cost value functions V ∗
+C and Q∗
+C by minimizing cost in M (Standard LP formulation)
+2: Construct discrete budget space B via binning over [0, δmax]
+3: Modified state space of BDMDP ¯S := S × B and persistent state space ¯SP := {(s, δ) ∈¯S|V ∗
+C(s) ≤δ}
+4: Define the persistent action space AP (s, δ) := {a ∈A|Q∗
+C(s, a) ≤δ}
+∀(s, δ) ∈¯S
+5: Define the extended transition function: ¯T
+ (s′, δ′) | (s, δ), a
+
+:= T(s′ | s, a) · 1{δ′=g(s,a,s′,δ)}
+6: Solve the extended MDP via LP, only considering the persistent state set ¯SP and persistent action set AP to obtain Q∗
+R
+7: Extract policy: π(s, δ) ←
+
+
+
+arg
+max
+a∈AP (s,δ) Q∗
+R(s, a),
+if s ∈¯SP
+arg min
+a Q∗
+C(s, a),
+s /∈¯SP
+8: return π
+D.2
+Implementation Details Offlien RL
+In the main results, we include CDT, CAPS, LSPC, and CCAC as baselines. All baselines are evaluated using the same cost
+thresholds and trained with the same number of gradient steps (SafetyGym and BulletGym: 100k steps; MetaDrive: 200k steps)
+as proposed in the DSRL benchmark and the final policy is used for evaluation. Details are specified in Table 10. For baselines
+where standard deviation is not reported in the published paper (CAPS), or they are not tested on some DSRL instances (CCAC),
+we run them again using their author provided code and hyperparams. The CDT results are taken from the published paper as
+it is tested on all domains with standard deviations.
+For LSPC, we use the official source code and hyper-parameters from the original authors (Koirala et al. 2025). The original
+work trained the model for 1M steps, evaluated policy every 20k steps, and reported the best policy’s results after 1M training
+steps. However, this training method is not standard, as during policy training, access to simulator is not assumed in standard
+DSRL baselines. To ensure a fair comparisons across all the methods, instead we train the LSPC model with the same number
+of gradient steps as the other baselines and report results from the final policy in the Main Paper Table 1. For completeness
+sake, we also compare the best policies of both LSPC and our method over 1M training in Table 7.
+Our Algorithm Details
+Our algorithm was trained for the same number of gradient steps, using the exact hyperparameters
+listed in Table 10. These hyperparameters were selected through manual experimentation, guided by Bayesian hyperparameter
+search, over value ranges explored in the ablation study presented in the experimental section. The complete implementation
+of our algorithm is available in the Supplementary Material. Hyperparameters for different domains are presented in Table 10,
+and the training algorithm is detailed in Algorithm 1. Though our algorithm consists of three isolated loops (cost critic learning,
+reward critic learning, and policy extraction), since each loop depends only on its own previous steps, they can be implemented
+in a single loop with gradient updates. We follow this approach to keep things simple since it allow us to evaluate the policy
+while training.
+Metrics. We use the standard metrics proposed in the DSRL benchmark (Liu et al. 2024), namely normalized reward and
+normalized cost. These are computed using the following formulas:
+Rnormalized =
+Rπ −Rmin
+Rmax −Rmin
+,
+Cnormalized =
+Cπ −Cmin
+Cmax −Cmin
+(29)
+Here, Rmin and Rmax denote the minimum and maximum empirical returns, respectively, while Cmin and Cmax denote the
+minimum and maximum empirical costs of the particular task.
+Evaluation: The algorithm for evaluating a policy using the trained budget-conditioned policy is provided in Algorithm 3.
+Since the task is in-practice finite horizon, we adjust the cost budget based on the maximum horizon as in the Algo-
+rithm 3. It calculates the budget required based on the remaining steps and remaining budget. This idea was used in previous
+works (Chemingui et al. 2025).
+Run Time. We benchmarked the training and evaluation time of our algorithm on a server equipped with an NVIDIA GeForce
+RTX 3090 GPU. The results are reported in Table 9. Our method completes in just a few minutes, offering a noticeable speed-up
+compared to several baseline methods, which may take 2–3 hours to train under identical hardware and conditions. While we
+acknowledge that runtime comparisons are inherently approximate, the results suggest that our approach has the potential for
+substantial improvements in efficiency.
+
+
+Algorithm 3: BCRL: Execution (for finite horizon)
+Input: environment Env, cost threshold δinit and maximum episode length of the environment H
+c ←0
+▷Initialize total cost to zero
+t ←0
+▷Initialize total timesteps to zero
+s ←Env.reset() ; done ←False
+repeat
+δ ←δinit−c
+(1−γ)
+1−γH−t
+H−t
+▷Calculate the dynamic budget constraint to enforce based on the remaining steps and remaining budget for finite
+horizon tasks
+a ∼π((s, δ))
+s′, r(s, a), c(s, a), done ←Env.step(a)
+s ←s′
+until done
+Figure 6: Percentage of Feasible Action Samples:
+0
+10
+20
+30
+Remaining Budget ( )
+0
+20
+40
+60
+80
+100
+Feasible %
+SafetyGym-CarGoal1
+0
+10
+20
+30
+Remaining Budget ( )
+0
+20
+40
+60
+80
+100
+Feasible %
+SafetyGym-CarPush1
+0
+10
+20
+30
+Remaining Budget ( )
+0
+20
+40
+60
+80
+100
+Feasible %
+SafetyGym-CarPush2
+0
+10
+20
+30
+Remaining Budget ( )
+0
+20
+40
+60
+80
+100
+Feasible %
+MetaDrive-mediumdense
+0
+10
+20
+30
+Remaining Budget ( )
+0
+20
+40
+60
+80
+100
+Feasible %
+MetaDrive-mediummean
+0
+10
+20
+30
+Remaining Budget ( )
+0
+20
+40
+60
+80
+100
+Feasible %
+MetaDrive-easymean
+0
+10
+20
+30
+Remaining Budget ( )
+0
+20
+40
+60
+80
+100
+Feasible %
+BulletGym-AntCircle
+0
+10
+20
+30
+Remaining Budget ( )
+0
+20
+40
+60
+80
+100
+Feasible %
+BulletGym-CarCircle
+0
+10
+20
+30
+Remaining Budget ( )
+0
+20
+40
+60
+80
+100
+Feasible %
+BulletGym-DroneCircle
+
+
+LSPC-Best-Policy
+BCAP-Best-Policy(ours)
+Task
+reward ↑
+cost ↓
+reward ↑
+cost ↓
+PointButton1
+0.10±0.19
+0.72±1.17
+0.16±0.21
+0.81±1.07
+PointButton2
+0.17±0.20
+1.01±1.52
+0.23±0.26
+0.89±1.06
+PointCircle1
+0.32±0.18
+0.01±0.07
+0.47±0.19
+0.97±0.84
+PointCircle2
+0.44±0.21
+0.00±0.00
+0.54±0.19
+0.81±0.82
+PointGoal1
+0.41±0.31
+0.46±0.76
+0.68±0.17
+0.98±0.93
+PointGoal2
+0.21±0.23
+0.58±0.95
+0.16±0.38
+0.92±1.11
+PointPush1
+0.14±0.17
+0.42±0.79
+0.24±0.17
+0.45±0.59
+PointPush2
+0.13±0.16
+0.56±1.30
+0.20±0.17
+0.72±0.95
+CarButton1
+-0.05±0.19
+0.58±1.48
+0.07±0.15
+0.70±1.05
+CarButton2
+-0.13±0.24
+0.84±1.89
+-0.07±0.25
+0.72±1.23
+CarCircle1
+0.34±0.14
+0.22±0.52
+0.38±0.16
+0.53±0.55
+CarCircle2
+0.36±0.21
+0.59±1.49
+0.51±0.16
+0.98±1.02
+CarGoal1
+0.29±0.27
+0.36±0.64
+0.50±0.24
+0.73±0.97
+CarGoal2
+0.15±0.21
+0.53±1.20
+0.30±0.22
+0.89±1.00
+CarPush1
+0.20±0.13
+0.29±0.73
+0.26±0.14
+0.39±0.94
+CarPush2
+0.09±0.16
+0.66±1.09
+0.13±0.16
+0.73±1.00
+SwimmerVelocity
+0.56±0.13
+0.26±0.63
+0.31±0.25
+0.86±1.88
+HopperVelocity
+0.24±0.02
+0.34±0.39
+0.72±0.16
+0.61±0.45
+HalfCheetahVelocity
+0.99±0.02
+0.59±0.73
+0.96±0.02
+0.87±0.85
+Walker2dVelocity
+0.80±0.05
+0.29±0.45
+0.80±0.01
+0.06±0.16
+AntVelocity
+0.98±0.05
+0.29±0.23
+0.99±0.01
+0.68±0.40
+BallRun
+0.21±0.03
+0.00±0.00
+0.19±0.23
+0.32±0.67
+CarRun
+0.98±0.00
+0.44±0.46
+0.99±0.00
+0.72±0.43
+DroneRun
+0.59±0.03
+0.40±1.16
+0.58±0.01
+0.31±0.60
+AntRun
+0.43±0.13
+0.48±0.49
+0.72±0.01
+0.59±0.42
+BallCircle
+0.49±0.16
+0.04±0.09
+0.76±0.05
+0.93±0.43
+CarCircle
+0.73±0.03
+0.13±0.32
+0.72±0.05
+0.68±0.62
+DroneCircle
+0.54±0.04
+0.72±0.61
+0.54±0.04
+0.69±0.51
+AntCircle
+0.44±0.14
+0.45±0.82
+0.60±0.12
+0.77±0.77
+easysparse
+0.72±0.00
+0.54±0.29
+0.70±0.19
+0.94±0.17
+easymean
+0.72±0.01
+0.53±0.29
+0.73±0.17
+0.94±0.13
+easydense
+0.71±0.02
+0.53±0.29
+0.70±0.17
+0.90±0.16
+mediumsparse
+0.95±0.07
+0.10±0.07
+0.94±0.07
+0.82±0.32
+mediummean
+0.91±0.11
+0.44±0.29
+0.92±0.11
+0.77±0.16
+mediumdense
+0.90±0.12
+0.37±0.35
+0.78±0.28
+0.68±0.31
+hardsparse
+0.53±0.10
+0.46±0.29
+0.49±0.13
+0.76±0.44
+hardmean
+0.52±0.09
+0.30±0.19
+0.46±0.15
+0.84±0.54
+harddense
+0.52±0.10
+0.37±0.23
+0.44±0.17
+0.63±0.24
+Table 7: Performance of the best policy evaluated during training.
+% of cost critic learning
+task
+20%
+50%
+80%
+100%
+CarCircle1
+reward
+0.68
+0.55
+0.58
+0.50
+cost
+2.79
+1.22
+1.72
+0.50
+CarCircle2
+reward
+0.59
+0.60
+0.51
+0.47
+cost
+2.49
+3.36
+1.03
+0.53
+CarGoal1
+reward
+0.45
+0.39
+0.36
+0.39
+cost
+0.60
+0.49
+0.45
+0.39
+CarGoal2
+reward
+0.21
+0.17
+0.16
+0.17
+cost
+0.74
+0.61
+0.55
+0.49
+HalfCheetahVelocity
+reward
+0.97
+0.94
+0.92
+0.92
+cost
+0.70
+0.64
+0.77
+0.63
+HopperVelocity
+reward
+0.47
+0.67
+0.47
+0.61
+cost
+1.09
+0.95
+0.86
+0.75
+Table 8: Ablation by partially learning cost critic
+
+
+Figure 7: Grid-World Environment: The agent starts at the green cell and receives a reward of −1 per step. Reaching the
+target green cell terminates the episode. We vary the transition probability of the intended movement to make navigation more
+difficult and stochastic, resulting in a non-zero expected cost.
+BulletGym
+SafetGym
+MetaDrive
+Average Training Time
+7.1 minutes
+8.5 minutes
+18.4 minutes
+Evaluation Time
+1.1 minute
+4.1 minutes
+10.8 minutes
+Training Steps
+100k
+100k
+200k
+Table 9: Average Training and evaluation time per instance (by evaluating on 3 distinct cost thresholds, 20 episodes)
+Hyperparameters
+BulletGym
+SafetGym
+MetaDrive
+Common
+Training Steps
+100k
+100k
+200k
+Policy network architecture
+[512, 512] MLP
+[512, 512] MLP
+[512, 512] MLP
+Cost thresholds for main results
+(10, 20, 40)
+(20, 40, 80)
+(10, 20, 40)
+Seeds for main results
+(0, 10, 20)
+(0, 10, 20)
+(0, 10, 20)
+BCR
+Algorithm Version
+Stochastic
+Stochastic
+Deterministic
+Batch Size
+512
+512
+512
+Optimizer
+Adam
+Adam
+Adam
+Learning Rates λC
+Q, λC
+V , λR
+Q, λR
+V , λπC, λπR
+0.0003
+0.0003
+0.0003
+Target Update α
+0.005
+0.005
+0.005
+Discount factors for cost and reward γC, γ
+0.99
+0.99
+0.99
+Expectile for cost (IQL) τC
+0.2
+0.3
+0.4
+Expectile for reward (IQL) τR
+0.5
+0.6
+0.6
+Budget sample count n
+1
+1
+1
+Policy dropout
+0.1
+0.1
+0.1
+AWR Temperature for both cost and reward (IQL) β
+3
+3
+8
+Table 10: Default Hyperparameters of BCRL for tasks in three environments.

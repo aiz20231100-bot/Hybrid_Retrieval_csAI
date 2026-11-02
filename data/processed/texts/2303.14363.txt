@@ -1,0 +1,1931 @@
+Heuristic Search for Multi-Objective Probabilistic Planning
+Dillon Z. Chen,1 Felipe Trevizan,1 Sylvie Thi´ebaux1,2
+1School of Computing, The Australian National University
+2LAAS-CNRS, ANITI, Universit´e de Toulouse
+{Dillon.Chen, Felipe.Trevizan, Sylvie.Thiebaux}@anu.edu.au
+Abstract
+Heuristic search is a powerful approach that has successfully
+been applied to a broad class of planning problems, including
+classical planning, multi-objective planning, and probabilistic
+planning modelled as a stochastic shortest path (SSP) prob-
+lem. Here, we extend the reach of heuristic search to a more
+expressive class of problems, namely multi-objective stochas-
+tic shortest paths (MOSSPs), which require computing a cov-
+erage set of non-dominated policies. We design new heuristic
+search algorithms MOLAO* and MOLRTDP, which extend
+well-known SSP algorithms to the multi-objective case. We
+further construct a spectrum of domain-independent heuris-
+tic functions differing in their ability to take into account
+the stochastic and multi-objective features of the problem to
+guide the search. Our experiments demonstrate the beneﬁts
+of these algorithms and the relative merits of the heuristics.
+1
+Introduction
+Stochastic shortest path problems (SSPs) are the de facto
+model for planning under uncertainty. Solving an SSP in-
+volves computing a policy which maps states to actions so
+as to minimise the expected (scalar) cost to reach the goal
+from a given initial state. Multi-objective stochastic short-
+est path problems (MOSSPs) are a useful generalisation of
+SSPs where multiple objectives (e.g. time, fuel, risk) need to
+be optimised without the user being able to a priori weigh
+these objectives against each other (Roijers and Whiteson
+2017). In this more complex case, we now aim to compute
+a set of non-dominated policies whose vector-valued costs
+represent all the possible trade-offs between the objectives.
+There exist two approaches to solving MOMDPs (Roi-
+jers and Whiteson 2017), a special case of MOSSPs: inner
+loop planning which consists in extending SSP solvers by
+generalising single objective operators to the multi-objective
+(MO) case, and outer loop planning which consists in solv-
+ing a scalarised MOSSP multiple times with an SSP solver.
+We focus on the former. The canonical inner loop method,
+MO Value Iteration (MOVI) (White 1982) and its variants
+(Wiering and de Jong 2007; Barrett and Narayanan 2008;
+Roijers and Whiteson 2017), require enumerating the entire
+state space of the problem and are unable to scale to the huge
+state spaces typically found in automated planning.
+Copyright © 2023, Association for the Advancement of Artiﬁcial
+Intelligence (www.aaai.org). All rights reserved.
+Therefore, this paper focuses on heuristic search meth-
+ods which explore only a small fraction of the state space
+when guided with informative heuristics. Heuristic search
+has been successfully applied to a range of optimal plan-
+ning settings, including single objective (SO) or constrained
+SSPs (Hansen and Zilberstein 2001; Bonet and Geffner
+2003; Trevizan et al. 2017), and MO deterministic plan-
+ning (Mandow and P´erez-de-la-Cruz 2010; Khouadjia et al.
+2013; Ulloa et al. 2020). Moreover, a technical report by
+Bryce et al. (2007) advocated the need for heuristic search
+and outlined an extension of LAO* (Hansen and Zilberstein
+2001) for ﬁnite horizon problems involving multiple ob-
+jectives and partial observability. Convex Hull Monte-Carlo
+Tree-Search (Painter, Lacerda, and Hawes 2020) extends the
+Trial-Based Heuristic Tree Search framework (Keller and
+Helmert 2013) to the MO setting but applies only to ﬁnite-
+horizon MOMDPs. Yet to the best of our knowledge there is
+no investigation of heuristic search for MOSSPs.
+This paper ﬁlls this gap in heuristic search for MOSSPs.
+First, we characterise the necessary conditions for MOVI to
+converge in the general case of MOSSPs. We then extend the
+well-known SSP heuristic search algorithms LAO* (Hansen
+and Zilberstein 2001) and LRTDP (Bonet and Geffner 2003)
+to the multi-objective case, leading to two new MOSSP al-
+gorithms, MOLAO* and MOLRTDP, which we describe
+along with sufﬁcient conditions for their convergence. We
+also consider the problem of guiding the search of these al-
+gorithms with domain-independent heuristics. A plethora of
+domain-independent heuristics exist for classical planning,
+but works on constructing heuristics for (single objective)
+probabilistic or multi-objective (deterministic) planning are
+much more recent (Trevizan, Thi´ebaux, and Haslum 2017;
+Kl¨oßner and Hoffmann 2021; Geißer et al. 2022). Building
+on these recent works, we investigate a spectrum of heuris-
+tics for MOSSPs differing in their ability to account for the
+probabilistic and multi-objective features of the problem.
+Finally, we conduct an experimental comparison of these
+algorithms and of the guidance obtained via these heuristics.
+We observe the superiority of heuristic search over value it-
+eration methods for MOSSPs, and of heuristics that are able
+to account for the tradeoffs between competing objectives.
+arXiv:2303.14363v1  [cs.AI]  25 Mar 2023
+
+
+2
+Background
+A multi-objective stochastic shortest path problem (MOSSP)
+is a tuple (S, s0, G, A, P,⃗C) where: S is a ﬁnite set of states,
+one of which is the initial state s0, G ⊆S is a set of
+goal states, A is a ﬁnite set of actions, P(s′ | s, a) is the
+probability of reaching s′ after applying action a in s, and⃗
+C(a) ∈Rn
+≥0 is the n-dimensional vector representing the
+cost of action a. Two special cases of MOSSPs are stochastic
+shortest path problems (SSPs) and bi-objective SSPs which
+are obtained when n equals 1 and 2, respectively.
+A solution for an SSP is a deterministic policy π, i.e.,
+a mapping from states to actions. A policy π is proper or
+closed w.r.t. s0 if the probability of reaching G when follow-
+ing π from s0 is 1; if this probability of reaching G is less
+than 1, then π is an improper policy. We denote by Sπ ⊆S
+the set of states visited when following a policy π from s0.
+The expected cost of reaching G when using a proper policy
+π from a state s ∈Sπ is given by the policy value function
+deﬁned as
+V π(s) = C(π(s)) +
+X
+s′∈S
+P(s′|s, π(s))V π(s′)
+(1)
+for s ∈Sπ \G and V π(g) = 0 for g ∈G. An optimal policy
+for an SSP is any proper policy π∗such that V π∗(s0) ≤
+V π′(s0) for all proper policies π′. Although π∗might not be
+unique, the optimal value function V ∗is unique and equals
+V π∗for any π∗.
+Stochastic policies are a generalisation of deterministic
+policies which map states to probability distributions of ac-
+tions. The deﬁnitions of proper, improper and policy value
+function are trivially generalised to stochastic policies. A
+key result for SSPs is that at least one of its optimal policies
+is deterministic (Bertsekas and Tsitsiklis 1991); thus it suf-
+ﬁces to search for deterministic policies when solving SSPs.
+Coverage sets and solutions for MOSSPs
+In the context of MOSSPs, given a policy π, we denote by⃗
+V π : S →Rn
+≥0 the vector value function for π. The function⃗
+V π is computed by replacing V and C by⃗V and⃗C in (1),
+respectively. In order to deﬁne the solution of an MOSSP, we
+need to ﬁrst deﬁne how to compare two different vectors: a
+cost vector⃗v dominates⃗u, denoted as⃗v ⪯⃗u, if⃗vi ≤⃗ui for
+i = 1, . . . , n. A coverage set for a set of vectors V, denoted
+as CS(V), is any set satisfying ∀⃗v ∈CS(V), ∄⃗u ∈CS(V)
+s.t.⃗u ⪯⃗v and⃗u̸ =⃗v.1 An example of a coverage set is
+the Pareto coverage set (PCS) which is the largest possible
+coverage set. For the remainder of the paper we focus on the
+convex coverage set (CCS) (Barrett and Narayanan 2008;
+Roijers and Whiteson 2017) which is deﬁned as the convex
+hull of the PCS. Details for computing the CCS of a set
+V with a linear program (LP) can be found in (Roijers and
+Whiteson 2017, Sec. 4.1.3). We say that a set of vectors U
+dominates another set of vectors V, denoted by U ⪯V, if
+for all⃗v ∈V there exists⃗u ∈U such that⃗u ⪯⃗v.
+1We will denote sets of vectors or functions which map to sets
+of vectors with bold face, e.g. V, and single vectors or functions
+which map to single vectors with vector notation, e.g.⃗V .
+s0
+g1
+g2
+a1
+a2
+0.5
+0.5
+0.5
+0.5
+Figure 1: A MOSSP with action costs given by⃗C(a1) =
+[1, 0] and⃗C(a2) = [0, 1].
+Given an MOSSP deﬁne the optimal value function V∗
+by V∗(s) = CCS({⃗V π(s) | π is a proper policy}). Then
+we deﬁne a solution to the MOSSP to be any set of proper
+policies Π such that the function ϕ : Π →V∗(s0) with
+ϕ(π) =⃗V π(s0) is a bijection. By choosing CCS as our
+coverage set operator, we may focus our attention to only
+non-dominated deterministic policies, where non-dominated
+stochastic policies are implicitly given by the points on the
+surface of the polyhedron drawn out by the CCS. In this
+way, we avoid having to explicitly compute inﬁnitely many
+non-dominated stochastic policies.
+To illustrate this statement, consider the MOSSP in
+Fig. 1 with actions a1 and a2 where P(s0|s0, a1)
+=
+P(g1|s0, a1) = P(s0|s0, a2) = P(g2|s0, a2) = 0.5 and⃗
+C(a1) = [1, 0] and⃗C(a2) = [0, 1]. One solution con-
+sists of only two deterministic policies π1(s0) = a1 and
+π2(s0) = a2 with corresponding expected costs [2, 0] and
+[0, 2]. Notice that there are uncountably many stochastic
+policies obtained by the convex combinations of π1 and π2,
+i.e., πt(a1|s0) = 1 −t, πt(a2|s0) = t for t ∈[0, 1]. The
+expected cost of each πt is [2 −2t, 2t] and these stochastic
+policies do not dominate each other. Therefore, if the PCS
+is used instead of the CCS in the deﬁnition of optimal value
+function, then V∗(s0) would be {[2 −2t, 2t] | t ∈[0, 1]}
+and the corresponding solution would be {πt | t ∈[0, 1]}.
+The CCS allows us to compactly represent the potentially
+inﬁnite PCS by storing only the deterministic policies: in
+this example, the actual solution is {π1, π2} and the optimal
+value function is V∗(s0) = {[2, 0], [0, 2]}.
+Value Iteration for SSPs
+We ﬁnish this section by reviewing how to compute the op-
+timal value function V ∗for SSPs and extend these results
+to MOSSPs in the next section. The optimal (scalar) value
+function V ∗for an SSP can be computed using the Value
+Iteration (VI) algorithm (Bertsekas and Tsitsiklis 1996):
+given an initial value function V 0 it computes the sequence
+V 1, . . . , V k where V t+1 is obtained by applying a Bellman
+backup, that is V t+1(g) = 0 if g ∈G and, for s ∈S \ G,
+V t+1(s) = min
+a∈A Qt+1(s, a)
+(2)
+Qt+1(s, a) = C(a) +
+X
+s′∈S
+P(s′|s, a)V t(s′).
+(3)
+VI guarantees that V k converges to V ∗as k →∞under
+the following conditions: (i) for all s ∈S, there exists a
+proper policy w.r.t. s; and (ii) all improper policies have
+inﬁnite cost for at least one state. The former condition is
+known as the reachability assumption and it is equivalent
+
+
+Algorithm 1: MOVI
+Data: MOSSP problem P = (S, s0, G, A, P,⃗C),
+initial values V(s) for each state s (default to
+V(s) = {⃗0}), and consistency threshold ε.
+1 while maxs∈S res(s) < ε do
+2
+for s ∈S do
+3
+if s ∈G then Vnew(s) ←{⃗0} ;
+4
+else Vnew(s) ←BellmanBackup(s) ;
+5
+res(s) ←D(V, Vnew)
+6
+V ←Vnew
+7 return V
+to requiring that no dead ends exist, while the latter con-
+dition can be seen as preventing cycles with 0 cost. Notice
+that ﬁnite-horizon Markov Decision Processes (MDPs) and
+inﬁnite-horizon discounted MDPs are special cases of SSPs
+in which all policies are guaranteed to be proper (Bertsekas
+and Tsitsiklis 1996).
+3
+Value Iteration for MOSSPs
+Value Iteration has been extended to the MO setting
+in special cases of SSPs, e.g. inﬁnite-horizon discounted
+MDPs (White 1982). In this section, we present the MO ver-
+sion of Value Iteration for the general MOSSP case. While
+the changes in the algorithm are minimal, the key contribu-
+tion of this section is the generalisation of the assumptions
+needed for convergence. We start by generalising the Bell-
+man backup operation from the SO, i.e. (2) and (3), to the
+MO case. For s ∈S \ G we have
+Vt+1(s) = CS
+ [
+a∈A
+Qt+1(s, a)
+
+(4)
+Qt+1(s, a) = {⃗C(a)} ⊕
+ M
+s′∈S
+P(s′|s, a)Vt(s′)
+
+,
+(5)
+and Vt+1(g) = {⃗0} for g ∈G where ⊕denotes the sum of
+two sets of vectors V and U deﬁned as {⃗u +⃗v |⃗u ∈U,⃗v ∈
+V}, and L is the generalised version of ⊕to several sets.
+Alg. 1 illustrates the MO version of Value Iteration
+(MOVI) which is very similar to the single-objective VI al-
+gorithm with the notable difference that the convergence cri-
+terion is generalised to handle sets of vectors. The Hausdorff
+distance between two sets of vectors U and V is given by
+D(U, V) = max
+
+max⃗
+u∈U min⃗
+v∈V d(⃗u,⃗v), max⃗
+u∈V min⃗
+v∈U d(⃗u,⃗v)
+	
+(6)
+for some choice of metric d such as the Euclidean metric.
+We use this distance to deﬁne residuals in line 5. As with
+VI, MOVI converges to the optimal value function at the
+limit (White 1982; Barrett and Narayanan 2008) under cer-
+tain strong assumptions presented in the next section. We
+can extract policies with the choice of a scalarising weight⃗
+w from the value function (Barrett and Narayanan 2008).
+Assumptions for the convergence of MOVI
+Similarly to the SO version of VI, MOVI requires that the
+reachability assumption holds; however, the assumption that
+Algorithm 2: MOVI under Assumption 1
+Data: MOSSP problem P = (S, s0, G, A, P,⃗C),
+initial values V(s) for each state s (default to
+V(s) = {⃗0}), consistency threshold ε and
+upper bound⃗b.
+1 while maxs∈S res(s) < ε do
+2
+for s ∈S do
+3
+if s ∈G then Vnew(s) ←{⃗0} ;
+4
+else Vnew(s) ←BellmanBackupB(s) ;
+5
+res(s) ←D(V, Vnew)
+6
+V ←Vnew
+7 for s ∈S do V(s) = V(s) \ {⃗b} ;
+8 return V
+improper policies have inﬁnite cost needs to be generalised
+to the MO case. One option is to require that all improper
+policies cost⃗∞which we call the strong improper pol-
+icy assumption and, if it holds with the reachability as-
+sumption, then MOVI (Alg. 1) is sound and complete for
+MOSSPs. The strong assumption is very restrictive because
+it implies that any cycle in an MOSSP must have a cost
+greater than zero in all dimensions; however, it is common
+for MOSSPs to have zero-cost cycles in one or more dimen-
+sions. For instance, in navigation domains where some ac-
+tions such as wait, load and unload do not consume fuel and
+can be used to generate zero-fuel-cost loops.
+Another possible generalisation for the cost of improper
+policies is that they cost inﬁnity in at least one dimension.
+This requirement is not enough as illustrated by the (deter-
+ministic) MOSSP in Fig. 2. The only deterministic proper
+policy is π(s0) = ag with cost [0, 1], and the other determin-
+istic policy is π′(s0) = a1, π′(s1) = a2 which is improper
+and costs [∞, 0]. Since neither [0, 1] or [∞, 0] dominate each
+other, two issues arise: MOVI tries to converge to inﬁnity
+and thus never terminates; and even if it did, the cost of an
+improper policy would be wrongly added to the CCS.
+These issues stem from VI and its generalisations not ex-
+plicitly pruning improper policies. Instead they rely on the
+assumption that improper policies have inﬁnite cost to im-
+plicitly prune them. This approach is enough in the SO case
+because any proper policy dominates all improper policies
+since domination is reduced to the ‘≤’ operator; however,
+as shown in this example, the implicit pruning approach for
+improper policies is not correct for the MO case.
+We address these issues by providing a version of MOVI
+that explicitly prunes improper policies and to do so we need
+a new assumption:
+s0
+s1
+g
+a2
+a1
+ag
+Figure 2: An MOSSP with action costs given by⃗C(a1) =
+[1, 0],⃗C(a2) = [1, 0],⃗C(ag) = [0, 1].
+
+
+Assumption 1 (Weak Improper Policy Assumption). There
+exists a vector⃗b ∈Rn
+≥0 such that for every improper policy
+π and s ∈S,⃗V π(s)̸ ⪯⃗b, and for every proper policy π and
+s ∈S,⃗V π(s) ⪯⃗b and⃗V π(s)̸ =⃗b.
+The weak assumption allows improper policies to have
+ﬁnite cost in some but not all dimensions at the expense of
+knowing an upper bound⃗b on the cost of all proper policies.
+This upper bound⃗b lets us infer that a policy π is improper
+whenever⃗V π(s)̸ ⪯⃗b, i.e., that⃗V π(s) is greater than⃗b in at
+least one dimension.
+Alg. 2 outlines the new MOVI where the differences can
+be found in lines 4 and 7. In line 4, we use a modiﬁed Bell-
+man backup which detects vectors associated to improper
+policies and assigns them the upper bound⃗b given by the
+weak improper policy assumption. The modiﬁed backup is
+given by
+Vt+1(s) = CSB
+ [
+a∈A
+Qt+1
+B (s, a)
+
+(7)
+Qt+1
+B (s, a) = {⃗C(a)} ⊕B
+ M
+s′∈S
+BP(s′|s, a)Vt(s′)
+
+(8)
+where ⊕B is a modiﬁed set addition operator deﬁned on
+pairwise vectors⃗u and⃗v by⃗
+u ⊕B⃗v =
+(⃗
+b
+if⃗u ⊕⃗v̸ ⪯⃗b⃗
+u ⊕⃗v
+otherwise,
+(9)
+and similarly for the generalised version L
+B. Also deﬁne
+CSB to be the modiﬁed coverage set operator which does
+not prune away⃗b if it is in the input set. The modiﬁed backup
+(7) enforces a cap on value functions (i.e., Vt(s) ⪯{⃗b})
+through the operator ⊕B (9). This guarantees that a ﬁnite
+ﬁxed point exists for all⃗V π(s) and, as a result, that Alg. 2
+terminates. Once the algorithm converges, we need to ex-
+plicitly prune the expected cost of improper policies which
+is done in line 7. By Assumption 1, we have that no proper
+policy costs⃗b thus we can safely remove⃗b from the solution.
+Note that the overhead in applying this modiﬁed backup and
+post-processing pruning is negligible. Theorem 3.1 shows
+that MOVI converges to the correct solution.
+Theorem 3.1. Given an MOSSP in which the reachability
+and weak improper policy assumptions hold for an upper
+bound⃗b, and given a set of vectors V0 such that V0 ⪯V∗,
+the sequence V1, . . . , Vk computed by MOVI converges to
+the MOSSP solution V∗as k →∞.
+Proof sketch. By the assumption that V0 ⪯V∗, we have
+that MOVI will not prune away vectors associated with
+proper policies which contribute to a solution. If V0̸ ⪯V∗,
+e.g., V0(s) = {⃗b} for all s, then Alg. 2 is not guaranteed
+to ﬁnd the optimal value function since it will incorrectly
+prune proper policies. Otherwise, we have that V1, . . . , Vk
+converges to V† = V∗∪{⃗b} if the original MOVI in Alg.
+1 does not converge, and V† = V∗otherwise. For ex-
+ample, V∗= {[0, 1]} in the example seen in Fig. 2 but
+V† = {[2, 2], [0, 1]} if we choose⃗b = [2, 2].
+This convergence result follows by noticing that, by def-
+inition of the modiﬁed backup in (7), every vector in Vt(s)
+for all t dominates⃗b. We may then apply the proof for the
+convergence of MOVI with convex coverage sets by Bar-
+rett and Narayanan (2008) which reduces to the convergence
+of scalarised SSPs using VI in the limit, of which there are
+ﬁnitely many since the number of deterministic policies is
+ﬁnite. Here, we have for every⃗w that⃗w ·⃗b is an upper bound
+for the problem scalarised by⃗w. Finally, we have that line 7
+removes⃗b from V† such that we correctly return V∗.
+Note that the original proof for MOMDPs by Barrett and
+Narayanan (2008) does not directly work for MOSSPs as
+some of the scalarised SSPs have a solution of inﬁnite ex-
+pected cost such that VI never converges. The upper bound⃗
+b we introduce solves this issue as achieving this bound is the
+same as detecting improper policies. The proof remains cor-
+rect in the original setting applied to discounted MOMDPs
+in which there are no improper policies.
+Relaxing the reachability assumption
+The reachability assumption can also be relaxed by
+transforming an MOSSP with dead ends into a new
+MOSSP without dead ends. Formally, given an MOSSP
+(S, s0, G, A, P,⃗C) with dead ends, let A′ = A ∪{give-up};
+P(sg|give-up, s) = 1 for all s ∈S and any sg ∈G;⃗
+C′(a) = [⃗C(a) : 0] for all a ∈A; and⃗C′(give-up) = [⃗0 : 1].
+Then the MOSSP (S, s0, G, A′, P,⃗C′) does not have dead
+ends (i.e., the reachability assumption holds) since the give-
+up action is applicable in all states s ∈S. This transfor-
+mation is similar to the ﬁnite-penalty transformation for
+SSPs (Trevizan, Teichteil-K¨onigsbuch, and Thi´ebaux 2017);
+however it does not require a large penalty constant. Instead,
+the MOSSP transformation uses an extra cost dimension to
+encode the cost of giving up and the value of the n+1-th di-
+mension of⃗C′(give-up) is irrelevant as long as it is greater
+than 0. Since the give-up action can only be applied once,
+deﬁning the cost of give-up as 1 let us interpret the n+1-
+th dimension of any⃗V π(s) as the probability of giving up
+when following π from s.
+4
+Heuristic search
+Value iteration gives us one method for solving MOSSPs
+but is limited by the fact that it requires enumerating over the
+whole state space. This is impractical for planning problems,
+as their state space grows exponentially with the size of
+the problem encoding. This motivates the need for heuristic
+search algorithms in the vein of LAO∗and LRTDP for SSPs
+(Hansen and Zilberstein 2001; Bonet and Geffner 2003),
+which perform backups on a promising subset of states at
+each iteration. To guide the choice of the states to expand
+and explore at each iteration, they use heuristic estimates of
+state values initialised when the state is ﬁrst encountered.
+In this section, we extend the concept of heuristics to the
+more general MOSSP setting, discuss a range of ways these
+heuristics can be constructed, and provide multi-objective
+versions of LAO∗and LRTDP.
+
+
+Heuristics
+For the remainder of the paper, we will call a set of vectors
+a value. Thus, a heuristic value for a state is a set of vectors
+H(s) ⊂Rn
+≥0. We implicitly assume that any heuristic value
+H(s) has already been pruned with some coverage set oper-
+ator. The deﬁnition of an admissible heuristic for MOSSPs
+should be at most as strong as the deﬁnition for deterministic
+MO search (Mandow and P´erez-de-la-Cruz 2010).
+Deﬁnition 4.1. A heuristic H for an MOSSP is admissible
+if ∀s ∈S \G, H(s) ⪯V∗(s) where V∗is the optimal value
+function, and ∀g ∈G, H(g) = {⃗0}.
+For example, if for some MOSSP we have V∗(s) =
+{[0, 2]} for a state s, then H(s) = {[0, 1], [3, 0]} and
+H(s′) = {⃗0} for all other s′ is an admissible heuristic. As in
+the single-objective case, admissible heuristics ensure that
+the algorithms below converge to near optimal value func-
+tions for ε > 0 with ﬁnitely many iterations and to opti-
+mal value functions with possibly inﬁnitely many iterations
+when ε = 0.
+Deﬁnition 4.2. A heuristic H for an MOSSP is consistent
+if we have for all s ∈S, a ∈A that H(s) ⪯{⃗C(a)} ⊕
+(L
+s′∈S P(s′|s, a)H(s′)).
+The deﬁnition of consistent heuristic is derived and gen-
+eralised from the deﬁnition of consistent heuristics for deter-
+ministic search: h(s) ≤c(s, a, s′) + h(s′). The main idea is
+that assuming non-negative costs, state costs increase mono-
+tonically which results in no re-expansions of nodes in A∗
+search. Similarly, we desire monotonically increasing value
+functions for faster convergence.
+We now turn to the question of constructing domain-
+independent heuristics satisfying these properties from the
+encoding of a planning domain. This question has only re-
+cently been addressed in the deterministic multi-objective
+planning setting (Geißer et al. 2022): with the exception
+of this latter work, MO heuristic search algorithms have
+been evaluated using “ideal-point” heuristics, which apply
+a single-objective heuristic hi to each objective in isolation,
+resulting in a single vector Hideal(s) = {[h1(s), . . . hn(s)]}.
+Moreover, informative domain-independent heuristics for
+single objective SSPs are also relatively new (Trevizan,
+Thi´ebaux, and Haslum 2017; Kl¨oßner and Hoffmann 2021):
+a common practice was to resort to classical planning heuris-
+tics obtained after determinisation of the SSP (Jimenez,
+Coles, and Smith 2006).
+We consider a spectrum of options when constructing
+domain-independent heuristics for MOSSPs, which we in-
+stantiate using the most promising families of heuristics
+identiﬁed in (Geißer et al. 2022) for the deterministic case:
+critical paths and abstraction heuristics. All heuristics are
+consistent and admissible unless otherwise mentioned.
+• The baseline option is to ignore both the MO and stochas-
+tic aspects of the problem, and resort to an ideal-point
+heuristic constructed from the determinised problem.
+In our experiments below, we apply the classical hmax
+heuristic (Bonet and Geffner 2001) to each objective and
+call this Hmax
+ideal.
+• A more elaborate option is to consider only the stochas-
+tic aspects of the problem, resulting in an ideal-point
+SSP heuristic. In our experiments, we apply the recent
+SSP canonical PDB abstraction heuristic by Kl¨oßner and
+Hoffmann (2021) to each objective which we call Hpdb2
+ideal
+and Hpdb3
+ideal for patterns of size 2 and 3, respectively.
+• Alternatively, one might consider only the multi-
+objective aspects, by applying some of the MO deter-
+ministic heuristics (Geißer et al. 2022) to the deter-
+minised SSP. The heuristics we consider in our experi-
+ments are the MO extension of hmax and canonical PDBs:
+Hcomax
+mo
+, Hpdb2
+mo , and Hpdb3
+mo . These extend classical plan-
+ning heuristics by using MO deterministic search to solve
+subproblems and combining solutions by taking the max-
+imum of two sets of vectors with the admissibility pre-
+serving operator comax (Geißer et al. 2022).
+• The best option is to combine the power of SSP and MO
+heuristics. We do so with a novel heuristic Hpdb
+mossp which
+extends the SSP PDB abstraction heuristic (Kl¨oßner and
+Hoffmann 2021) to the MO case by using an MO exten-
+sion of topological VI (TVI) (Dai et al. 2014) to solve
+each projection and the comax operator to combine the
+results. Our experiments use Hpdb2
+mossp and Hpdb3
+mossp.
+(i)MOLAO∗
+Readers familiar with the LAO∗heuristic search algorithm
+and the multi-objective backup can convince themselves that
+an extension of LAO∗to the multi-objective case can be
+obtained by replacing the backup operator with the multi-
+objective version. This idea was ﬁrst outlined by Bryce,
+Cushing, and Kambhampati (2007) for ﬁnite-horizon MDPs
+which is a special case of SSPs without improper policies. In
+the same vein as (Hansen and Zilberstein 2001), we provide
+MOLAO∗alongside an ‘improved’ version, iMOLAO∗, in
+Alg. 3 and 4 respectively.
+MOLAO∗begins in line 1 by lazily assigning an initial
+value function V to each state with the heuristic function, as
+opposed to explicitly initialising all initial values at once. Π
+is a dictionary representing our partial solution which maps
+states to sets of optimal actions corresponding to their cur-
+rent value function. The main while loop of the algorithm
+terminates once there are no nongoal states on the frontier
+as described in line 2, at which point we have achieved a set
+of closed policies.
+The loop begins with lines 3-5 by removing a nongoal
+state s from the frontier representing a state on the boundary
+of the partial solution graph, and adding it to the interior set
+I. The nodes of the partial solution graph are partial solution
+states, and the edges are the probabilistic transitions under
+all partial solution actions. Next in line 6 we add the set of
+yet unexplored successors of s to the frontier: any state s′ ∈
+S \ I such that ∃a ∈A, P(s′|s, a) > 0. Then we extract
+the set Z of all ancestor states of s in the partial solution Π
+using graph search in line 7. We run MOVI to ε-consistency
+on the MOSSP problem restricted to the set of states Z and
+update the value functions for the corresponding states in
+line 8. The partial solution is updated in line 9 by extracting
+
+
+Algorithm 3: MOLAO∗
+Data: MOSSP problem P = (S, s0, G, A, P,⃗C),
+heuristic H, and consistency threshold ε
+1 V ←H; Π ←∅; F ←{s0} ; I ←∅; N ←{s0}
+2 while (F ∩N) \ G̸ = ∅do
+3
+s ←any element from (F ∩N) \ G
+4
+F ←F \ {s}
+5
+I ←I ∪{s}
+6
+F ←F ∪(successors(s) \ I)
+7
+Z ←ancestorStates(s, Π)
+8
+V|Z ←MOVI(P|Z, V|Z, ε)
+9
+for s ∈Z do Π(s) ←getActions(s, V) ;
+10
+N ←solutionGraph(sI, Π)
+11 return V
+Algorithm 4: IMOLAO∗
+Data: MOSSP problem P = (S, s0, G, A, P,⃗C),
+heuristic H, and consistency threshold ε
+1 V ←H; Π ←∅; F ←{s0} ; I ←∅; N ←{s0}
+2 while ((F ∩N) \ G̸ = ∅) ∧(maxs∈N res(s) < ε) do
+3
+F = ∅
+4
+N ←postorderTraversalDFS(sI, Π)
+5
+for s ∈N in the computed order do
+6
+V(s) ←BellmanBackup(s)
+7
+Π(s) = getActions(s, V)
+8
+if s /∈I then F = F ∪{s} ;
+9
+I = I ∪{s}
+10 return V
+the actions corresponding to the value function with
+getActions(s, V) = {a ∈A | Q(s, a) ∩V(s)̸ = ∅} . (10)
+This function can be seen as a generalisation of arg min to
+the MO case where here we select the actions whose Q value
+at s contribute to the current value V(s). Next, we extract
+the set of states N corresponding to all states reachable from
+s0 by the partial solution Π in line 10.
+The completeness and correctness of MOLAO∗follows
+from the same reasoning as LAO∗extended to the MO case.
+Speciﬁcally, we have that given an admissible heuristic the
+algorithm achieves ε-consistency upon termination.
+One potential issue with MOLAO∗is that we may waste a
+lot of backups while running MOVI to convergence several
+times on partial solution graphs which do not end up con-
+tributing to the ﬁnal solution. The original authors of LAO∗
+proposed the iLAO∗algorithm to deal with this. We provide
+the MO extension, namely iMOLAO∗. The main idea with
+iMOLAO∗is that we only run one set of backups every time
+we (re-)expand a state instead of running VI to convergence
+in the loop in lines 5 to 9. Backups are also performed asyn-
+chronously using DFS postorder traversal of the states in the
+partial solution graph computed in line 4, allowing for faster
+convergence times.
+To summarise, the two main changes required to extend
+Algorithm 5: MOLRTDP
+Data: MOSSP problem P = (S, s0, G, A, P,⃗C),
+heuristic H, and consistency threshold ε
+procedure MOLRTDP(P, ε, H)
+1
+V ←H
+2
+while ¬s0.solved do
+3
+visited ←∅
+4
+s ←s0
+5
+while ¬s.solved do
+6
+visited.push(s)
+7
+if s ∈G then break ;
+8
+V(s) ←BellmanBackup(s)
+9
+a ←sampleUnsolvedGreedyAction(s)
+10
+s ←sampleUnsolvedNextState(s, a)
+11
+while ¬visited.empty() do
+12
+s ←visited.pop()
+13
+if ¬checkSolved(s) then break ;
+14
+return V
+routine checkSolved(s)
+1
+rv ←true; open ←∅; closed ←∅
+2
+if ¬s.solved then open.push(s) ;
+3
+while ¬open.empty() do
+4
+s ←open.pop()
+5
+if res(s) > ε then
+6
+rv ←false
+7
+continue
+8
+for a ∈getActions(s, V) do
+9
+for s′ ∈successors(s, a) do
+10
+if ¬s′.solved ∧s′ /∈open ∪closed
+then open.push(s′) ;
+11
+if rv then for s ∈closed do s.solved = true ;
+12
+else
+13
+while closed̸ = ∅do
+14
+s ←closed.pop()
+15
+V(s) ←BellmanBackup(s)
+16
+return rv
+(i)LAO∗to the MO case are (1) replacing the backup opera-
+tor with the MO version, and (2) storing possibly more than
+one greedy action at each state corresponding to incompa-
+rable vector Q-values, resulting in a larger set of successors
+associated to each state. These ideas can be applied to other
+asynchronous VI methods such as Prioritised VI (Wingate
+and Seppi 2005) and Topological VI (Dai et al. 2014).
+MOLRTDP
+LRTDP (Bonet and Geffner 2003) is another heuristic search
+algorithm for solving SSPs. The idea of LRTDP is to per-
+form random trials using greedy actions based on the current
+value function or heuristic for performing backups, and la-
+belling states as solved when the consistency threshold has
+been reached in order to gradually narrow down the search
+space and achieve a convergence criterion. A multi-objective
+
+
+extension of LRTDP is not as straightforward as extending
+the backup operator given that each state has possibly more
+than one greedy action to account for. The two main changes
+from the original LRTDP are (1) the sampling of a random
+greedy action before sampling successor states in the main
+loop, and (2) deﬁning the descendants of a state by consider-
+ing successors of all greedy actions (as opposed to just one
+in LRDTP). Alg. 5 outlines the MO extension of LRTDP.
+MOLRTDP consists of repeatedly trialing paths through
+the state space and performing backups until the initial state
+is marked as solved. Trials are run by randomly sampling a
+greedy action a from getActions(s, V) at each state s fol-
+lowed by a next state sampled from the probability distribu-
+tion of a until a goal state is reached as in the ﬁrst inner loop
+from lines 5 to 10. The second inner loop from lines 11 to
+13 calls the checkSolved routine in the reverse trial order to
+label states as solved by checking whether the residual of all
+its descendant states under greedy actions are less than the
+convergence criterion.
+The checkSolved routine begins with inserting s into the
+open set if it has not been solved, and returns true other-
+wise due to line 2. The main loop in lines 3 to 10 collects
+the descendent states under all greedy actions (lines 8-10)
+and checks whether the residual of all the descendent states
+are small (lines 5-7). If true, all descendents are labelled as
+solved as in line 11. Otherwise, backups are performed in
+the reverse order of explored states as in lines 12 to 15.
+The completeness and correctness of MOLRTDP follows
+similarly from its single objective ancestor. We note specif-
+ically that the labelling feature works similarly in the sense
+that whenever a state is marked as solved, it is known for
+certain that all its descendents’ values are ε-consistent and
+remain unchanged when backups are performed elsewhere.
+5
+Experiments
+In this section we empirically evaluate the different algo-
+rithms and heuristics for MOSSPs in several domains. Since
+no benchmark domains for MOSSPs exist, we adapt do-
+mains from a variety of sources to capture challenging fea-
+tures of both SSPs and MO deterministic planning. Our
+benchmark set is introduced in the next section and it is fol-
+lowed by our experiments setup and analysis of the results.
+Benchmarks
+k-d
+Exploding
+Blocksworld
+Exploding
+Blocksworld
+(ExBw) was ﬁrst introduced by Younes et al. (2005) and
+later slightly modiﬁed for the IPPC’08 (Bryce and Buffet
+2008). In ExBw, a robot has to pick up and stack blocks on
+top of each other to get a target tower conﬁguration. Blocks
+have a chance of detonating and destroying blocks under-
+neath or the table. We consider a version with no dead ends
+using an action to repair the table (Trevizan et al. 2017).
+We extend ExBw to contain multi-objective costs. ExBw-2d
+has two objectives: the number of actions required to stack
+the blocks and number of times we need to repair the table.
+ExBw-3d has an additional action to repair blocks with an
+objective to minimise the number of block repairs.
+MO Search and Rescue
+Search and Rescue (SAR-n) was
+ﬁrst introduced by Trevizan et al. (2017) as a Constrained
+SSP. The goal is to ﬁnd, board and escort to a safe loca-
+tion any one survivor in an n × n grid as quickly as possi-
+ble, constrained by a fuel limit. Probabilities are introduced
+when modelling fuel consumption and partial observability
+of whether a survivor exists in a given location. The location
+of only one survivor is known for certain. We extend the
+problem by making fuel consumption as an additional ob-
+jective instead of a constraint. A solution for a SAR MOSSP
+is a set of policies with different trade-offs between fuel and
+time.
+MO Triangle Tireworld
+Triangle Tireworld, introduced
+by Little and Thi´ebaux (2007) as a probabilistically interest-
+ing problem, consists of a triangular grid of locations. The
+goal is to travel from an initial to a target location where
+each location has a probability of getting a ﬂat tire. Some
+locations contain a spare tire which the agent can load into
+the car for future use. These problems have dead ends and
+they occur when a tire is ﬂat and no spare is available. We
+apply the give-up transformation from Section 3 resulting in
+an MOSSP with two objectives: total number of actions and
+probability of using the give-up action.
+Probabilistic
+VisitAll
+The
+deterministic
+MO
+Visi-
+tAll (Geißer et al. 2022) is a TSP problem on a grid, where
+the agents must collectively visit all locations, and each
+agent’s objective is to minimise its own number of moves.
+This problem is considered MO interesting because any
+admissible ideal-point heuristic returns the zero vector
+for all states since it is possible for a single agent to visit
+all locations while no actions are performed by the other
+agents. We extend this domain by adding a probabilistic
+action move-risky which has probability 0.5 of acting as the
+regular move action and 0.5 of teleporting the agent back to
+its initial location. The cost of the original move action was
+changed to 2 while the cost of the move-risky action is 1.
+VisitAllTire
+This domain combines features of both the
+probabilistic Tireworld and the deterministic MO VisitAll
+domains into one that is probabilistically and MO interest-
+ing. The underlying structure and dynamics is the same as
+the deterministic MO VisitAll except that the move action
+now can result in a ﬂat tire with probability 0.5. We also
+added the actions for loading and changing tires for each
+of the agents. Similarly to Triangle Tireworld, the problems
+in this domain can have dead ends when a ﬂat tire occurs
+and no spare tire is available. Applying the give-up transfor-
+mation from Section 3 to this domain results in k + 1 cost
+functions where k is the number of agents.
+Setup
+We implemented the MO versions of the VI, TVI, (i)LAO∗
+and LRTDP algorithms and the MO version of the PDB
+abstraction heuristics (Hpdb
+mossp) in C++.2 PDB heuristics are
+computed using TVI, ε = 0.001 and⃗b =⃗100. We include
+in our experiments the following heuristics for deterministic
+2Code at https://github.com/DillonZChen/cpp-mossp-planner
+
+
+0
+5
+10
+15
+20
+SAR-4 (107/120)
+SAR-5 (101/120)
+ExBw-2d (56/155)
+ExBw-3d (52/155)
+Tireworld (4/10)
+VisitAll (19/26)
+VisitAllTire (5/24)
+Figure 3: Boxplot of CCS size of instances across domains
+which have been solved at least once. Number of solved and
+total instances for each domain is indicated in parentheses.
+MO planning from (Geißer et al. 2022): the ideal-point ver-
+sion of hmax (Hmax
+ideal); the MO extension of hmax (Hcomax
+mo
+);
+and the MO canonical PDBs of size 2 and 3 (Hpdb2
+mo
+and
+Hpdb3
+mo ). The SO PDB heuristics for SSPs from (Kl¨oßner and
+Hoffmann 2021) of size 2 and 3 (Hpdb2
+ideal and Hpdb3
+ideal) are also
+included in our experiments. All problem conﬁgurations are
+run with a timeout of 1800 seconds, memory limit of 4GB,
+and a single CPU core. The experiments are run on a cluster
+with Intel Xeon 3.2 GHz CPUs. We used CPLEX version
+22.1 as the LP solver for computing CCS. The consistency
+threshold is set to ε = 0.001 and we set⃗b =⃗100. Each
+experimental conﬁguration is run 6 times and averages are
+taken to reduce variance in the data.
+We also modify the inequality constraint in Alg. 4.3
+from Roijers and Whiteson 2017 for computing CCS to⃗
+w · (⃗v −⃗v′) + x ≤−λ, ∀⃗v′ ∈V with λ = 0.01 to deal
+with inevitable numerical precision errors when solving the
+LP. If the λ term is not added, the function may fail to prune
+unnecessary points such as those corresponding to stochastic
+policies in the CCS, resulting in slower convergence. How-
+ever, an overly large λ may return incorrect results by dis-
+carding important points in the CCS. One may alternatively
+consider the term as an MO parameter for trading off solu-
+tion accuracy and search time, similarly to the ε parameter.
+Fig. 3 shows the distribution of CCS sizes for different
+domains. Recall that the CCS implicitly represents a poten-
+tially inﬁnite set of stochastic policies and their value func-
+tions. As a result, a small CCS is sufﬁcient to dominate a
+large number of solutions, for instance, in Triangle Tire-
+world, a CCS of size 3 to 4 is enough to dominate all other
+policies even though the number of deterministic policies for
+this domain is double exponential in its parameter n.
+Results
+Fig. 4 summarises our results by showing the cumulative
+coverage of different planners and heuristics across all con-
+sidered problems. The following is a summary of our ﬁnd-
+ings (we omit the MO in the planner names for simplicity):
+What is the best planner and heuristic combination?
+Referring to the overall cumulative coverage plot in Fig. 4a
+and coverage tables in Tab. 1, we notice that LRTDP+Hpdb2
+mossp
+performs best followed by LRDTP+Hpdb2
+mo , LRTDP+Hpdb3
+mo
+0
+200
+400
+600
+800
+1000
+1200
+1400
+1600
+1800
+200
+225
+250
+275
+300
+(a) Cumulative Coverage per Planner+Heuristic
+LRTDP-Hpdb2
+mossp
+LRTDP-Hpdb2
+mo
+LRTDP-Hpdb3
+mo
+iLAO∗-Hpdb3
+mossp
+iLAO∗-Hpdb3
+mo
+LRTDP-Hpdb3
+mossp
+LRTDP-Hmax
+ideal
+iLAO∗-Hpdb2
+mossp
+0
+200
+400
+600
+800
+1000
+1200
+1400
+1600
+1800
+0
+500
+1000
+1500
+2000
+2500
+(b) Cumulative Coverage per Planner
+LRTDP
+iLAO∗
+LAO∗
+TVI
+VI
+0
+200
+400
+600
+800
+1000
+1200
+1400
+1600
+1800
+500
+600
+700
+800
+900
+(c) Cumulative Coverage per Heuristic
+Hpdb3
+mossp
+Hpdb2
+mossp
+Hpdb3
+mo
+Hpdb2
+mo
+Hpdb3
+ideal
+Hmax
+ideal
+Hpdb2
+ideal
+blind
+Hcomax
+mo
+0
+200
+400
+600
+800
+1000
+1200
+1400
+1600
+1800
+1000
+1200
+1400
+1600
+1800
+2000
+(d) Cumulative Coverage per PDB type
+Hpdb
+mossp
+Hpdb
+mo
+Hpdb
+ideal
+Figure 4: Cumulative coverage of: (a) planners and heuris-
+tics combinations (low-performing planners omitted); (b)
+planners only, i.e., summation across different heuristics;
+(c) heuristics only, i.e. summation across different planners;
+(d) PDB approaches considered, i.e., summation across the
+ideal-point, MO, and MOSSP approaches. Notice that the x-
+axis is the same for all plots but the y-axis is different and
+might not start at 0.
+and iLAO∗+Hpdb3
+mossp. The ranking of the top 3 planners re-
+main the same if we normalise the coverage by domain.
+We note that the considered Exbw3 problems had several
+improper policies resulting in slow convergence of TVI for
+solving PDBs of size 3. This is due to Assumption 1 and the
+
+
+planner + heuristic
+coverage
+heuristic
+coverage
+LRTDP
+Hpdb2
+mossp
+307.6 ± 2.7
+Hpdb3
+mossp
+893.5 ± 1.9
+LRTDP
+Hpdb2
+mo
+302.8 ± 2.1
+Hpdb2
+mossp
+893.3 ± 3.2
+LRTDP
+Hpdb3
+mo
+291.2 ± 1.3
+Hpdb3
+mo
+871.2 ± 1.8
+iLAO∗
+Hpdb3
+mossp
+276.7 ± 0.7
+Hpdb2
+mo
+851.8 ± 2.1
+iLAO∗
+Hpdb3
+mo
+272.0 ± 0.0
+Hpdb3
+ideal
+768.7 ± 0.7
+LRTDP
+Hpdb3
+mossp
+271.2 ± 1.7
+Hmax
+ideal
+755.2 ± 0.7
+LRTDP
+Hmax
+ideal
+263.2 ± 0.7
+Hpdb2
+ideal
+737.2 ± 1.2
+iLAO∗
+Hpdb2
+mo
+262.0 ± 0.0
+blind
+572.9 ± 1.4
+planner
+coverage
+PDB
+coverage
+LRTDP
+2297.3±3.0
+Hpdb
+mossp
+1786.8±1.6
+iLAO∗
+2111.7±0.7
+Hpdb
+mo
+1723.0±2.0
+LAO∗
+1529.0±1.2
+Hpdb
+ideal
+1505.8±1.9
+TVI
+460.0 ± 0.5
+VI
+450.3 ± 0.7
+Table 1: Average marginalised cumulative coverages with
+95% conﬁdence intervals. Higher values are better.
+chosen⃗b =⃗100 for our experiments which that requires the
+cost of improper policies in each PDB to cost at least 100 in
+one of its dimensions. Ignoring the Exbw3 domain, the top
+3 conﬁgurations are LRTDP+Hpdb3
+mossp, LRTDP+Hpdb2
+mossp and
+iLAO∗+Hpdb3
+mossp and their 95% conﬁdence intervals all over-
+lap. The ranking of the top few planners remain the same if
+the coverage is normalised.
+What planner is best?
+To answer this question, we look at
+the cumulative coverage marginalised over heuristics, that is,
+we sum the coverage of a planner across the different heuris-
+tics. The results are shown in Fig. 4b and Tab. 1 and the
+best three planners in order are LRTDP, iLAO∗and LAO∗.
+Notice that the difference in coverage between LRTDP and
+iLAO∗is at 185.6 solved instances while the difference be-
+tween TVI and VI is only 9.7. The ranking between planners
+remains the same when the coverage is normalised per do-
+main. Considering domains individually, LRTDP is the best
+planner for Exbw and VisitAllTire while for iLAO∗is the
+best planner for SAR and Probabilistic VisitAll. For MO
+Tireworld, both LRTDP and iLAO∗are tied in ﬁrst place.
+What
+heuristic
+is
+best?
+The
+cumulative
+coverage
+marginalised over planners for selected heuristics is shown
+in Fig. 4c and Tab. 1. The MOSSP PDB heuristic of size 3
+(Hpdb3
+mossp) has the best performance followed by Hpdb2
+mossp, Hpdb3
+mo
+and Hpdb2
+mo . We note there is a large overlap in the 95% con-
+ﬁdence intervals of Hpdb2
+mossp and Hpdb3
+mossp due to the slow com-
+putation of Hpdb3
+mossp on Exbw3. The overlap disappears when
+we remove the Exbw3 results with coverage and conﬁdence
+intervals given by 862.9 ± 3.0 and 807.6 ± 2.9 for Hpdb3
+mossp
+and Hpdb2
+mossp, respectively. We further quantify heuristic accu-
+racy using the directed Hausdorff distance between heuristic
+and optimal values in Tab. 2. We notice that Hcomax
+mo
+achieves
+strong accuracy relative to other heuristics but has the worst
+coverage of 504.5 due to its high computation time.
+Crit. Path
+Abstractions
+blind
+Hmax
+ideal
+Hcomax
+mo
+Hpdb2
+ideal
+Hpdb3
+ideal
+Hpdb2
+mo
+Hpdb3
+mo
+Hpdb2
+mossp
+Hpdb3
+mossp
+SAR-4
+100
+97
+44
+93
+92
+44
+44
+38
+26
+SAR-5
+100
+97
+43
+93
+92
+43
+43
+37
+27
+ExBw-2d
+100
+59
+22
+51
+45
+51
+45
+51
+45
+ExBw-3d
+100
+58
+22
+52
+44
+52
+44
+52
+44
+Tireworld
+100
+100
+68
+100
+100
+68
+68
+57
+13
+VisitAll
+100
+100
+54
+100
+100
+61
+53
+22
+12
+VisitAllTire
+100
+100
+50
+100
+100
+66
+45
+66
+45
+Table 2: The mean relative error (%) of the heuristic
+value relative to the optimal value at the initial state
+computed with the directed Hausdorff distance divided
+by the norm of the largest vector in the optimal value:
+max⃗v∈V∗min⃗u∈H d(⃗v,⃗u)/ max⃗v∈V∗∥⃗v∥. Only solved in-
+stances for which all heuristics were computed for the initial
+state within the time limit were considered. Cells ranked ﬁrst
+to third are shaded. Lower values are better.
+What feature of MOSSPs is more important to capture in
+a heuristic?
+To answer this question, consider the perfor-
+mance of the 3 classes of PDB heuristics: probabilistic-only
+PDBs (Hpdb
+ideal), MO only PDBs (Hpdb
+mo ), and MO probabilistic
+PDBs (Hpdb
+mossp). The cumulative coverage marginalised over
+the different PDB heuristics shown in Fig. 4d and Tab. 1
+highlights the effectiveness of MO PDBs. Hpdb
+mossp is able to
+solve 63.8 and 281 more instances than Hpdb
+mo and Hpdb
+ideal, re-
+spectively. The ranking remains the same when the coverage
+is normalised per domain. Moreover, notice in Tab. 2 that
+Hpdb
+mo heuristics are at least as informative as Hpdb
+ideal heuristics
+on all domains. Lastly, we note that an admissible ideal point
+heuristic is upper bounded by {⃗u} where⃗ui = min⃗v∈V∗⃗vi
+for i = 1, . . . , n. These results suggest that it is more im-
+portant for a heuristic to maintain the MO cost structure of
+MOSSPs than the stochastic structure of actions.
+6
+Conclusion
+In this work we deﬁne a new general class of problems,
+namely multi-objective stochastic shortest path problems
+(MOSSPs). We adapt MOVI which was originally con-
+structed for solving multi-objective Markov Decision Pro-
+cesses to our MOSSP setting with conditions for conver-
+gence. We further design new, more powerful heuristic
+search algorithms (i)MOLAO∗and MOLRTDP for solv-
+ing MOSSPs. The algorithms are complemented by a range
+of MOSSP heuristics and an extensive set of experiments
+on several benchmarks with varying difﬁculty and features.
+Through our evaluation, we can conclude that MOLRTDP is
+the best performing MOSSP solver, and abstraction heuris-
+tics which consider both the MO and probabilistic aspects of
+MOSSPs the best performing MOSSP heuristic. Our future
+work includes adding probabilistic LTL constraints as addi-
+tional multi-objectives in order to compute solutions to MO-
+PLTL SSPs (Baumgartner, Thi´ebaux, and Trevizan 2018)
+that are robust to the choice of probability thresholds.
+
+
+Acknowledgements
+This work was supported by ARC project DP180103446,
+On-line planning for constrained autonomous agents in
+an uncertain world. The computational resources for
+this project were provided by the Australian Government
+through the National Computational Infrastructure (NCI)
+under the ANU Startup Scheme.
+References
+Barrett, L.; and Narayanan, S. 2008. Learning All Optimal
+Policies with Multiple Criteria. In Proc. 25th International
+Conference on Machine Learning (ICML), 41–47.
+Baumgartner, P.; Thi´ebaux, S.; and Trevizan, F. 2018.
+Heuristic Search Planning With Multi-Objective Probabilis-
+tic LTL Constraints. In Proc. of 16th Int. Conf. on Principles
+of Knowledge Representation and Reasoning (KR).
+Bertsekas, D. P.; and Tsitsiklis, J. N. 1991. An Analysis of
+Stochastic Shortest Path Problems. Mathematics of Opera-
+tions Research, 16(3): 580–595.
+Bertsekas, D. P.; and Tsitsiklis, J. N. 1996. Neuro-Dynamic
+Programming, volume 3 of Optimization and neural compu-
+tation series. Athena scientiﬁc.
+Bonet, B.; and Geffner, H. 2001.
+Planning as Heuristic
+Search. Artif. Intell., 129(1-2): 5–33.
+Bonet, B.; and Geffner, H. 2003. Labeled RTDP: Improving
+the Convergence of Real-Time Dynamic Programming. In
+Proc. 13th International Conference on Automated Planning
+and Scheduling (ICAPS), 12–21.
+Bryce, D.; and Buffet, O. 2008. 6th Int. Planning Compe-
+tition: Uncertainty Track. 3rd Int. Probabilistic Planning
+Competition.
+Bryce, D.; Cushing, W.; and Kambhampati, S. 2007. Prob-
+abilistic Planning is Multi-Objective. Technical Report 07-
+006, ASU CSE.
+Dai, P.; Mausam; Weld, D. S.; and Goldsmith, J. 2014. Topo-
+logical Value Iteration Algorithms. J. Artif. Intell. Res., 42:
+181–209.
+Geißer, F.; Haslum, P.; Thi´ebaux, S.; and Trevizan, F. 2022.
+Admissible Heuristics for Multi-Objective Planning.
+In
+Proc. 32nd International Conference on Automated Plan-
+ning and Scheduling (ICAPS), 100–109.
+Hansen, E. A.; and Zilberstein, S. 2001. LAO*: A Heuristic
+search algorithm that ﬁnds solutions with loops. Artif. Intell.,
+129(1-2): 35–62.
+Jimenez, S.; Coles, A.; and Smith, A. 2006.
+Planning in
+Probabilistic Domains using a Deterministic Numeric Plan-
+ner.
+In Proc. 25th Workshop of the UK Planning and
+Scheduling Special Interest Group (PLANSIG), 74–79.
+Keller, T.; and Helmert, M. 2013. Trial-Based Heuristic Tree
+Search for Finite Horizon MDPs.
+In Proc. 23rd Interna-
+tional Conference on Automated Planning and Scheduling
+(ICAPS). AAAI.
+Khouadjia, M.; Schoenauer, M.; Vidal, V.; Dr´eo, J.; and
+Sav´eant, P. 2013. Pareto-Based Multiobjective AI Planning.
+In Proc. 23rd International Joint Conference on Artiﬁcial
+Intelligence (IJCAI), 2321–2327.
+Kl¨oßner, T.; and Hoffmann, J. 2021. Pattern Databases for
+Stochastic Shortest Path Problems. In Ma, H.; and Serina, I.,
+eds., Proc. 14th International Symposium on Combinatorial
+Search (SOCS), 131–135.
+Little, I.; and Thi´ebaux, S. 2007. Probabilistic Planning vs
+Replanning. In Proc. ICAPS Workshop International Plan-
+ning Competition: Past, Present and Future.
+Mandow, L.; and P´erez-de-la-Cruz, J. 2010. Multiobjective
+A∗search with consistent heuristics. J. ACM, 57(5): 27:1–
+27:25.
+Painter, M.; Lacerda, B.; and Hawes, N. 2020. Convex Hull
+Monte-Carlo Tree-Search. In Proc. 30th International Con-
+ference on Automated Planning and Scheduling (ICAPS),
+217–225.
+Roijers, D. M.; and Whiteson, S. 2017. Multi-Objective De-
+cision Making. Synthesis Lectures on Artiﬁcial Intelligence
+and Machine Learning. Morgan & Claypool Publishers.
+Trevizan, F.; Teichteil-K¨onigsbuch, F.; and Thi´ebaux, S.
+2017. Efﬁcient Solutions for Stochastic Shortest Path Prob-
+lems with Dead Ends. In Proc. 33rd International Confer-
+ence on Uncertainty in Artiﬁcial Intelligence (UAI).
+Trevizan, F.; Thi´ebaux, S.; Santana, P.; and Williams, B.
+2017. I-dual: Solving Constrained SSPs via Heuristic Search
+in the Dual Space. In Proc. 26th International Joint Confer-
+ence on Artiﬁcial Intelligence (IJCAI).
+Trevizan, F. W.; Thi´ebaux, S.; and Haslum, P. 2017. Occupa-
+tion Measure Heuristics for Probabilistic Planning. In Proc.
+27th International Conference on Automated Planning and
+Scheduling (ICAPS), 306–315.
+Ulloa, C. H.; Yeoh, W.; Baier, J. A.; Zhang, H.; Suazo, L.;
+and Koenig, S. 2020. A Simple and Fast Bi-Objective Search
+Algorithm. In Proc. 30th International Conference on Auto-
+mated Planning and Scheduling (ICAPS), 143–151.
+White, D. J. 1982.
+Multi-objective inﬁnite-horizon dis-
+counted Markov decision processes. Journal of Mathemati-
+cal Analysis and Applications, 89(2): 639–647.
+Wiering, M. A.; and de Jong, E. D. 2007. Computing Op-
+timal Stationary Policies for Multi-Objective Markov Deci-
+sion Processes. In Proc. 1st IEEE International Symposium
+on Approximate Dynamic Programming and Reinforcement
+Learning, 158–165.
+Wingate, D.; and Seppi, K. D. 2005. Prioritization Meth-
+ods for Accelerating MDP Solvers. J. Mach. Learn. Res., 6:
+851–881.
+Younes, H. L. S.; Littman, M. L.; Weissman, D.; and As-
+muth, J. 2005. The First Probabilistic Track of the Interna-
+tional Planning Competition. J. Artif. Intell. Res., 24: 851–
+887.
+
+
+Appendix
+Critical Path
+Abstractions
+blind
+Hmax
+ideal
+Hcomax
+mo
+Hpdb2
+ideal
+Hpdb3
+ideal
+Hpdb2
+mo
+Hpdb3
+mo
+Hpdb2
+mossp
+Hpdb3
+mossp
+Sum
+SAR-4
+(120)
+VI
+39.7
+39.0
+-
+39.0
+39.0
+35.0
+38.0
+39.0
+39.0
+307.7
+TVI
+40.0
+40.0
+-
+40.0
+40.0
+40.0
+40.0
+40.0
+40.0
+320.0
+LAO∗
+51.0
+54.0
+83.0
+62.0
+66.0
+76.0
+77.0
+84.3
+91.0
+644.3
+ILAO∗
+80.0
+90.0
+75.0
+94.0 100.0
+90.0
+97.0
+93.0
+104.0
+823.0
+LRTDP
+72.2
+90.8
+80.8
+93.8
+95.8
+91.0
+93.6
+98.2
+99.4
+815.5
+SAR-5
+(120)
+VI
+-
+-
+-
+-
+-
+-
+-
+-
+0.7
+0.7
+TVI
+-
+-
+-
+-
+-
+-
+-
+-
+0.7
+0.7
+LAO∗
+42.0
+38.0
+54.0
+54.0
+58.0
+71.0
+76.7
+82.0
+87.7
+563.3
+ILAO∗
+65.0
+81.0
+43.0
+84.0
+97.0
+88.0
+96.0
+94.0
+100.0
+748.0
+LRTDP
+55.5
+80.8
+41.2
+86.0
+89.5
+88.0
+91.0
+91.2
+93.8
+717.0
+ExBw-2d
+(155)
+VI
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+TVI
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+LAO∗
+4.0
+29.0
+10.0
+7.7
+11.7
+18.0
+20.3
+16.3
+22.3
+139.3
+ILAO∗
+5.0
+26.0
+8.0
+17.0
+21.0
+31.0
+32.0
+30.0
+32.0
+202.0
+LRTDP
+22.0
+39.8
+11.5
+33.0
+27.0
+52.8
+44.2
+47.6
+42.2
+320.1
+ExBw-3d
+(155)
+VI
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+TVI
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+LAO∗
+2.0
+21.0
+9.0
+10.0
+9.0
+15.0
+17.3
+14.7
+7.3
+105.3
+ILAO∗
+5.0
+21.0
+8.0
+16.0
+20.0
+28.0
+27.0
+26.0
+14.7
+165.7
+LRTDP
+20.0
+36.0
+11.0
+31.5
+26.0
+50.0
+41.4
+45.0
+8.6
+269.5
+Tireworld
+(10)
+VI
+3.0
+3.0
+2.0
+3.0
+3.0
+3.0
+3.0
+3.0
+3.0
+26.0
+TVI
+2.0
+2.0
+2.0
+3.0
+3.0
+3.0
+2.7
+3.0
+3.0
+23.7
+LAO∗
+2.0
+2.0
+2.0
+2.0
+2.0
+2.0
+2.0
+2.0
+3.0
+19.0
+ILAO∗
+3.0
+3.0
+2.0
+3.0
+3.0
+3.0
+3.0
+3.0
+4.0
+27.0
+LRTDP
+3.0
+3.0
+2.0
+3.0
+3.0
+3.0
+3.0
+3.0
+4.0
+27.0
+Pr. VisitAll
+(26)
+VI
+13.0
+13.0
+12.0
+13.0
+13.0
+12.0
+12.0
+13.0
+15.0
+116.0
+TVI
+13.0
+13.0
+12.0
+13.0
+13.0
+12.0
+12.0
+13.7
+14.0
+115.7
+LAO∗
+2.0
+2.0
+6.0
+1.0
+1.0
+5.0
+6.0
+11.7
+18.0
+52.7
+ILAO∗
+14.0
+14.0
+14.0
+14.0
+14.0
+15.0
+14.0
+15.0
+19.0
+133.0
+LRTDP
+10.5
+10.2
+13.0
+10.2
+9.8
+13.0
+13.0
+17.6
+18.2
+115.5
+VisitAllTire
+(24)
+VI
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+TVI
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+LAO∗
+-
+-
+1.0
+-
+-
+1.0
+1.0
+1.0
+1.0
+5.0
+ILAO∗
+1.0
+1.0
+1.0
+1.0
+1.0
+1.0
+3.0
+1.0
+3.0
+13.0
+LRTDP
+3.0
+2.8
+1.0
+3.0
+3.0
+5.0
+5.0
+5.0
+5.0
+32.8
+Sum
+(610)
+VI
+55.7
+55.0
+14.0
+55.0
+55.0
+50.0
+53.0
+55.0
+57.7
+450.3
+TVI
+55.0
+55.0
+14.0
+56.0
+56.0
+55.0
+54.7
+56.7
+57.7
+460.0
+LAO∗
+103.0
+146.0
+165.0 136.7 147.7 188.0 200.3
+212.0
+230.3 1529.0
+ILAO∗
+173.0
+236.0
+151.0 229.0 256.0 256.0 272.0
+262.0
+276.7 2111.7
+LRTDP
+186.2
+263.2
+160.5 260.5 254.0 302.8 291.2
+307.6
+271.2 2297.3
+Table 3: Number of tasks solved with different MOSSP solvers and heuristics. SAR-5 increases in difﬁculty from SAR-4 with
+the increase in search space size. ExBw-3d increases in difﬁculty from ExBw-2d in the number of objectives. The rightmost
+sum column marginalises over heuristics, whereas the bottom sum rows marginalises over domains.

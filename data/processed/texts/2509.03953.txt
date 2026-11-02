@@ -1,0 +1,998 @@
+Handling Infinite Domain Parameters in Planning Through Best-First Search with
+Delayed Partial Expansions
+´Angel Aso-Mollar1 , Diego Aineto2 , Enrico Scala2 and Eva Onaindia1
+1Valencian Research Institute for Artificial Intelligence (VRAIN), Universitat Polit`ecnica de Val`encia
+2Universit`a degli Studi di Brescia
+{aaso,onaindia}@vrain.upv.es, {diego.ainetogarcia,enrico.scala}@unibs.it
+Abstract
+In automated planning, control parameters extend
+standard action representations through the intro-
+duction of continuous numeric decision variables.
+Existing state-of-the-art approaches have primar-
+ily handled control parameters as embedded con-
+straints alongside other temporal and numeric re-
+strictions, and thus have implicitly treated them as
+additional constraints rather than as decision points
+in the search space. In this paper, we propose an ef-
+ficient alternative that explicitly handles control pa-
+rameters as true decision points within a systematic
+search scheme. We develop a best-first, heuristic
+search algorithm that operates over infinite decision
+spaces defined by control parameters and prove a
+notion of completeness in the limit under certain
+conditions. Our algorithm leverages the concept of
+delayed partial expansion, where a state is not fully
+expanded but instead incrementally expands a sub-
+set of its successors. Our results demonstrate that
+this novel search algorithm is a competitive alter-
+native to existing approaches for solving planning
+problems involving control parameters.
+1
+Introduction
+In classical planning, the number of instantiated actions is
+determined by the finite number of objects in the world. The
+first infinite-domain variables introduced in PDDL (Planning
+Domain Description Language) were the variable time and
+numeric variables (fluents) to represent numeric resources in
+PDDL2.1 [Fox and Long, 2003]. The semantics of PDDL2.1,
+however, explicitly rule out number-valued arguments in ac-
+tions in order to keep the logical state space finite. Years later,
+a proposal was made to extend PDDL2.1 to allow actions with
+continuous numeric parameters called control parameters.
+Control parameters are intended to represent physical
+quantities that a planner might choose to make an action have
+a desired effect. They were introduced by the POPCORN
+planner [Savas¸ et al., 2016; Savas¸, 2018], and have been also
+recently incorporated into the temporal and numeric plan-
+ner NextFLAP [Sapena et al., 2024]. In both planners, con-
+trol parameters are implicitly handled using Linear Program-
+ming and Satisfying Modulo Theory solvers, respectively,
+by jointly formulating temporal and control parameter con-
+straints. Other methods use Neural Networks to concretize
+an abstract plan, determining the control parameters of the
+actions and the feasibility of the input-output evaluations via
+optimization of the input [Heesch et al., 2024]. This latter
+approach circumvents search by handling control parameters
+as black boxes.
+In this work, we aim to explore an approach that treats
+control parameters as explicit elements in the decision space
+rather than as constraints to be satisfied. We define a sys-
+tematic search algorithm for planning problems with con-
+trol parameters that (1) defines control parameters as nu-
+meric decision points; and (2) guarantees a notion of com-
+pleteness.
+Our algorithm, Sampling Best-First Search (S-
+BFS), enables systematic search in structured infinite deci-
+sion spaces. This is achieved through delayed partial expan-
+sions, where nodes are partially expanded by sampling suc-
+cessors and re-expanding them if they appear promising in
+future evaluations.
+This paper is structured as follows. In Section 2, we present
+the formalization of a planning problem with control param-
+eters.
+Section 3 provides a detailed description of the S-
+BFS algorithm, while Section 4 introduces a notion of com-
+pleteness under specific conditions, along with other rele-
+vant properties. Section 5 reviews related work on resolu-
+tion strategies for problems that involve continuous numeric
+variables. Finally, Section 6 presents the experimental eval-
+uation and we compare the performance of S-BFS to other
+approaches that manage numeric control parameters.
+2
+Problem Formalization
+We adopt the numeric planning formalization from [Scala et
+al., 2020a] and adapt it to our needs. We consider a set of
+numeric variables, X, and a set of Boolean variables, F, re-
+ferred to as numeric state variables and Boolean state vari-
+ables, respectively. We define V = X ∪F as the union of
+these sets. A valuation v : V →Dom maps each vari-
+able λ ∈V to a value in its domain Dom, denoted as v[λ].
+A numeric expression is a polynomial expression over X,
+Expr(X) being the set of all numeric expressions. A con-
+straint involves equalities f = b for variables f ∈F, where
+b ∈B (B = {⊤, ⊥}), and inequalities ξ ▷◁0, such that
+▷◁∈{<, ≤, =, ≥, >}, where ξ ∈Expr(X), combined with
+logical operations ∧, ∨, ¬. The set of constraints over V is
+arXiv:2509.03953v2  [cs.AI]  22 Sep 2025
+
+
+defined as Constr(V ). Propositional assignments, defined
+as AssignP (F), consist of assignments f := b, where f ∈F
+and b ∈B, while numeric assignments, AssignN(X1, X2),
+are of the form x := ξ, where x ∈X1 and ξ ∈Expr(X2).
+We propose an alternative yet equivalent formulation to the
+control parameters approach proposed in [Savas¸, 2018], as it
+offers a more convenient framework for the theoretical devel-
+opments introduced later in this work. Specifically, we define
+a new set of numeric variables, referred to as control vari-
+ables, U, in addition to the existing set of numeric state vari-
+ables, X. Control variables are unconstrained in their evo-
+lution and can assume any value within their (bounded) infi-
+nite domain, i.e., an interval. Rather than making decisions
+by directly evaluating a numeric parameter within an action,
+we evaluate fluents that will subsequently be used in actions.
+This subtle difference transforms the decision space into pairs
+of actions and values, but is fundamentally equivalent to the
+notion of control parameters, whose decision space is defined
+as actions with grounded numeric values.
+In a numeric planning problem with control variables,
+the values of the state variables X change after the execu-
+tion of actions, based on the assignments explicitly defined
+in their effects, which now incorporate control variables:
+AssignN(X, X ∪U). For example, we can model increments
+x := x + u, such that u takes any value on an associated in-
+terval, say u ∈[1, 2]. Moreover, control variables also appear
+in action preconditions. This definition removes the need to
+define control parameters explicitly for each action.
+Definition 1. A numeric planning problem with control
+variables is a tuple P = ⟨F, X ∪U, A, I, G⟩, where:
+• F is a finite set of Boolean state variables;
+• X is a finite set of numeric state variables over R;
+• U is a finite set of bounded numeric control variables
+over [l, u], l, u ∈Z;
+• A is a finite set of actions a
+=
+(Pre(a), Eff(a)),
+where Pre(a) ∈Constr(X ∪F ∪U) and Eff(a) ⊆
+AssignP (F) ∪AssignN(X, X ∪U);
+• s0 is a valuation over X ∪F, the initial state;
+• G ∈Constr(X ∪F) is the goal condition.
+The value range of the control variables need not be con-
+tinuous; it can be discretized according to a chosen precision,
+as discussed in [Aso-Mollar et al., 2025]. Next, we character-
+ize the semantics of a numeric planning problem with control
+variables as a transition system.
+Definition 2. The semantics of a numeric planning problem
+with control variables P is the transition system defined as
+T (P) = ⟨S, U, s0, SG, →⟩where:
+• S = ⟨B|F | × R|X|⟩is the state space; a state s ∈S is a
+valuation over X ∪F;
+• U = ⟨[l1, u1]×. . .×[ln, un]⟩is the control space; µ ∈U
+is a valuation over U;
+• s0 ∈S is the initial state described by I, s0 = I[X∪F];
+• SG = {s ∈S | s |= G} are the goal states
+• →is the transition relation. A transition (s, ⟨a, µ⟩, s′) ∈
+S × A × U × S belongs to →iff (s, µ) |= Pre(a) and,
+∀v ∈X ∪F,
+s′[v] =
+s[ξ]
+if (v := ξ) ∈Eff(a)
+s[v]
+otherwise
+The decision space of a state s is defined as D(s) :=
+{⟨a, µ⟩∈A × U : ∃s′ ∈S such that (s, ⟨a, µ⟩, s′) ∈→}.
+This decision space is infinite, since µ takes values in an in-
+finite set (an interval). A plan in this setting is no longer a
+sequence of actions, but a sequence of pairs action-valuation
+of control variables:
+Definition 3. Let P be a numeric planning problem with con-
+trol variables and let T (P) = ⟨S, U, s0, SG, →⟩be its asso-
+ciated transition system. A plan π = (⟨ai, µi⟩)n
+i=1 for P is a
+solution iff (s0, ⟨a0, µ0⟩, s1), . . . , (sn−1, ⟨an, µn⟩, sn) ∈→
+and sn ∈SG. We denote the set of all solutions of P as ΠP.
+We will say that P is solvable if ΠP̸ = ∅.
+3
+Sampling Best-First Search
+We approach our problem using Best-First Search (BFS), a
+widely used strategy for finite decision spaces. BFS explores
+a decision tree, where states are nodes, and selects nodes for
+expansion based on a node evaluation criterion (NEC), de-
+noted as f; selection is managed through an open list, typi-
+cally a priority queue ordered by f. This criterion is usually
+a heuristic function, f = h, or a combination of heuristic
+and accumulated cost, f = g + h. Once selected, a node
+is expanded by generating its successors, linking them to the
+parent, and inserting them into the open list. BFS is consid-
+ered a systematic search strategy as it explores all choices.
+However, in the infinite decision space induced by control
+variables, a node may have infinitely many successors, pre-
+venting full expansion. As a result, standard BFS algorithms
+are not directly applicable to our problem. To overcome this
+limitation, we propose two modifications to the conventional
+BFS framework.
+Firstly, since we cannot fully expand a node as it has in-
+finitely many successors, we use delayed partial expansions
+to incrementally generate subsets of a state’s successors via a
+sampling function ϕ.
+Definition 4. A sampling function ϕ for a problem P =
+⟨F, X ∪U, A, s0, G⟩with transition system T (P)
+=
+⟨S, U, s0, SG, →⟩is a function ϕ : S →S
+s∈S Pd(D(s))
+that defines a probability density for every s ∈S, with do-
+main in its decision space D(s) = {⟨a, µ⟩∈A × U : ∃s′ ∈
+S such that (s, ⟨a, µ⟩, s′) ∈→}, where Pd(X) denotes the set
+of all probability density functions with domain X:
+ϕ(s) : D(s) →[0, 1]
+In other words, ϕ assigns a probability density function to
+every state s, and each density function ϕ(s) is defined over
+the decision space of s, D(s).
+Secondly, partially expanded states cannot be closed,
+meaning they will be re-added to the open list for potential
+(partial) expansion in subsequent iterations. However, their
+NEC value will be adjusted based on a rectification function
+
+
+Algorithm 1 S-BFSϕ,rh
+Input: Transition system T (P) = ⟨S, U, s0, SG, →⟩, sam-
+pling function ϕ, rectification function rh and NEC f
+Output: Goal reached
+1: Open := {(f(s0), s0)}
+2: while Open̸ = ∅do
+3:
+Extract node (f(s), s) with lowest f-value
+4:
+if s ∈SG then
+5:
+return true
+6:
+else
+7:
+Sample ⟨a, µ⟩from ϕ(s)
+8:
+Apply ⟨a, µ⟩to s and generate s′
+9:
+Insert (f(s′), s′) in Open
+10:
+Rectify f(s) using rh
+11:
+Insert (f(s), s) in Open
+12: return false
+rh, which is defined based on a heuristic function h. Such
+functions are generalizations of heuristic functions that de-
+pend on the number of delayed partial expansions.
+Definition 5. Given a problem P that defines the transition
+system T (P) = ⟨S, U, s0, SG, →⟩, a rectification function
+rh, where h is a heuristic function h : S →R, is a function
+rh : Z+ × S →R such that
+rh(0, s) = h(s), ∀s ∈S
+Using these two components, we define the Sampling
+Best-First Search (S-BFS) schema. S-BFS denotes a family
+of algorithms that integrate delayed partial expansions guided
+by a sampling function ϕ and NEC corrections determined by
+a rectification function rh. We will address specific instances
+of this algorithm as S-BFSϕ,rh. Concretely, f = rh wil be
+referred as S-Gϕ,rh, and f = g + rh as S-Aϕ,rh.
+Algorithm 1 outlines S-BFSϕ,rh. It starts by initializing a
+priority queue Open with the initial state s0 and its f-value
+(line 1). As long as the list is not empty (line 2), the state with
+the lowest NEC value is selected (line 3). If it is a goal state
+(line 4), the algorithm returns that the goal has been reached
+(line 5). If not (line 6), s is partially expanded by sampling
+from the density function ϕ(s) and generating one successor
+s′ (line 7-8). It is inserted to Open (line 9), and the original
+state s is reinserted with its rectified value (line 10-11).
+While the algorithm is designed for infinite decision spaces
+where the probability of re-sampling a successor is zero, it
+can be seamlessly extended to hybrid scenarios in which ac-
+tions with control variables and actions without control vari-
+ables are interleaved, by checking if the sampled node has
+already been visited.
+4
+Properties of S-BFS Algorithms
+In this section, we use a relaxed notion of completeness that
+works for infinite decision spaces: probabilistic complete-
+ness. Then, we outline the essential properties that the sam-
+pling function ϕ and the rectification function rh must sat-
+isfy to ensure the probabilistic completeness of S-BFS. After
+that, we demonstrate the probabilistic completeness of S-BFS
+given those function properties.
+4.1
+On the Completeness of Algorithms for Infinite
+Decision Spaces
+Since the decision space of a numeric planning problem with
+control variables is infinite, we need to define a specialized
+notion of completeness for systematic search algorithms that
+applies to infinite decision spaces. One might question how
+an algorithm with a finite number of steps can solve problems
+involving an infinite number of successors. To address this,
+we introduce the concept of probabilistic completeness, as
+defined in [Valenzano and Xie, 2016]. This definition is more
+relaxed than the traditional definition of completeness, since
+it only requires that an algorithm finds a solution in the limit
+with probability 1:
+Definition 6. A search algorithm is probabilistically com-
+plete if, for every solvable problem P, i.e., for which the set of
+all solutions ΠP = {π : π is a solution for P} is not empty,
+the probability of finding a solution π ∈ΠP in n steps is 1
+when n →∞.
+4.2
+Properties of S-BFS
+First of all, we need to define the support of an arbitrary func-
+tion:
+Definition 7. The support of any function f : X →R is
+defined as the set of points where f is strictly positive.
+supp(f) := {x ∈X : f(x) > 0}
+With this, we can define our distributions of interest. We
+are interested in sampling functions ϕ that define probability
+densities ϕ(s), ∀s ∈S, such that ϕ(s) has support within its
+whole domain D(s). This is needed because, when sampling
+a new successor state, any possible successor should have a
+non-negative probability of being sampled. An example of
+this could be the uniform sampling function, ϕu, defined such
+that ϕ(s) is a uniform distribution U(D(s)) for every s ∈S.
+Next, we must define a subset of rectification functions
+that possess a crucial property. This property ensures that re-
+inserted nodes do not dominate the search, thereby preventing
+infinite loops.
+Definition 8. Given a rectification function rh : Z+ × S →
+R, where h is a heuristic function h : S →R, rh is a proper
+rectification function iff ∃n0 ∈Z+ such that, after n0, rh is
+monotonically increasing with respect to the first variable
+rh(n1, s) < rh(n2, s), ∀n1, n2 : n0 ≤n1 < n2
+Given a heuristic function h, the rectification function
+rh(n, s) = h(s) + n is dominated by h. This property of
+rectification functions allows distinct balance of exploration
+and exploitation in the algorithm, while ensuring its proba-
+bilistic completeness. With these two considerations, we can
+now prove the probabilistic completeness of S-BFS.
+Theorem 1. Let P = ⟨F, X∪U, A, s0, G⟩be a numeric plan-
+ning problem with control variables that induces the transi-
+tion system T (P) = ⟨S, U, s0, SG, →⟩. Let ϕ be a sampling
+function such that supp(ϕ(s)) = D(s) ∀s ∈S and let rh be a
+proper rectification function, where h is a heuristic function.
+Then, the probability of S-BFSϕ,rh finding a solution π ∈ΠP
+at step n, if ΠP̸ = ∅, is 1 as n →∞.
+
+
+Proof. There are two aspects to prove for this theorem. The
+first is that (1) any state in the search space can be sampled
+and inserted into the priority queue. The second is that (2)
+the priority queue ensures every state is eventually selected.
+Once these two conditions have been proven, it can be stated
+that (3) the S-BFSϕ,rh algorithm will be able to reach a solu-
+tion, if any, since every state will eventually be visited.
+(1) First, we have to prove that every successor state will
+eventually be sampled to enter the priority queue.
+Since
+supp(ϕ(s)) = D(s), ∀s ∈S, every successor state has a
+strictly positive probability of being sampled. Let us consider
+an arbitrary current state s ∈S; we define Pϕ(s)(s′|s) =
+p > 0 as the probability of sampling a successor state s′ (i.e.,
+(s, ⟨a, µ⟩, s′) ∈→for some ⟨a, µ⟩∈D(s)) given state s.
+This probability is strictly positive, as stated before, because
+supp(ϕ(s)) = D(s) ∀s ∈S. Let us define the following
+probabilistic event:
+Ak = {Given s, the state s′ is not sampled after k trials}
+The probability of the event Ak can be determined using p:
+Pϕ(s)(Ak) = (1 −p)k
+Since p > 0, |1 −p| < 1. We can characterize the infinite
+sum of Pϕ(s)(Ak), which turns to be a geometric series
+∞
+X
+k=1
+Pϕ(s)(Ak) =
+∞
+X
+k=1
+(1 −p)k =
+1
+1 −(1 −p) = 1
+p < ∞
+And if we apply the Borel-Cantelli Lemma:
+Lemma 1. (Borel-Cantelli Lemma).
+Let P be a proba-
+bility distribution, and let {Ak} be a sequence of prob-
+abilistic events such that P∞
+k=1 P(Ak)
+<
+∞,
+then
+P(lim supk→∞Ak) = 0.
+We prove that Pϕ(s)(lim supk→∞Ak) = 0, i.e., the prob-
+ability of never sampling an arbitrary successor state is zero,
+so every successor will eventually be sampled, q.e.d.
+(2) Second, we have to prove that every state inside the
+priority queue will eventually be first in priority. Since rh
+is a proper rectification function, there exists a n0 that, for
+all n ≥n0, rh is monotonically increasing with respect to
+its first variable.
+This condition ensures that no state re-
+inserted into the queue will dominate in priority indefinitely.
+Let s be a state that has not yet been expanded, with NEC
+f(0, s) = g(s) + rh(0, s) = g(s) + h(s). If it currently
+has the minimum NEC in the priority list, it will be selected.
+If not, other finite number of states with smaller NEC values
+will be selected; for every such state, its NEC value will even-
+tually increase and surpass g(s) + h(s). This process ensures
+that no state can indefinitely block another state from being
+selected. Consequently, every state in the priority queue will
+eventually become the first in priority, q.e.d.
+(3) Finally, for a problem P, S-BFSϕ,rh will start from the
+initial state and will eventually be able to reach every state
+in the transition system, as it is ensured that every succes-
+sor state can be sampled with probability 1 in the limit, and
+that every sampled successor can be selected from the priority
+queue, preventing the algorithm from entering infinite loops.
+Thus, it will be able to reach every possible transition in →
+and eventually reach a final state s ∈SG, if ΠP̸ = ∅.
+Figure 1: Figure to support the demonstration of Proposition 1. Ex-
+isting nodes are marked blue, sampled nodes are marked yellow and
+selected nodes are marked with an arrow.
+The convergence of S-G algorithms can be expected to be
+faster than that of S-A algorithms. However, S-A algorithms
+are expected to yield higher-quality solutions since they in-
+clude information about the current cost. In the following,
+we characterize a theoretical property of the search in S-BFS
+algorithms that will eventually let us bound the quality of the
+solution for S-A algorithms.
+Proposition 1. Let ϕ be a sampling function and rh a rectifi-
+cation function, both satisfying the conditions stated in The-
+orem 1. For a given node s in the current search tree, S-
+BFSϕ,rh ensures that the f-value of every non-leaf node in
+the current subtree rooted at s is bounded by f(s).
+Proof. This property will be proven by induction, specify-
+ing the number of nodes in the subtree as N. In Figure 1, we
+present illustrative diagrams to exemplify the demonstration.
+1. Base case N=1. If s is a leaf node, then when a successor
+s′ of s is sampled it will produce a subtree with only one
+leaf node s′. See Figure 1-(1).
+2. Base case N=2. If s is a node whose subtree consists of
+only a leaf successor s′, then:
+(a) If s′ is selected, it is because f(s′) ≤f(s). In this
+case, a new node s′′ will be sampled, which will
+become a leaf node, and s′ will become a non-leaf
+node such that f(s′) ≤f(s). See Figure 1-(2a).
+(b) If s is selected instead, it is because f(s′) > f(s),
+and then a new leaf s′′ will be generated, resulting
+in a subtree with two leaves, s′ and s′′, as in (1).
+See Figure 1-(2b).
+3. Inductive step. If s is a node such that the f-value of
+every non-leaf node in the current subtree rooted at s is
+bounded by f(s), then:
+(a) If a leaf node s′ is selected, it is because f(s′) ≤
+f(s). In this case, a new node s′′ will be sampled,
+which will become a leaf node, and s′ will become
+a non-leaf node such that f(s′) ≤f(s), as in (2a).
+See Figure 1-(3a).
+(b) If a non-leaf node s′ is selected instead, whose f-
+value already guarantees the desired property, it
+will only produce a new leaf node as in (2b). See
+Figure 1-(3b).
+
+
+By induction, the f-value of every non-leaf node in the
+subtree rooted at s is bounded by the current f-value of s.
+With this property we can guarantee an optimality bound
+for S-A algorithms. When a solution is found, its cost will be
+bounded by the current f-value of the initial state.
+Theorem 2. Let P = ⟨F, X∪U, A, s0, G⟩be a numeric plan-
+ning problem with control variables that induces the transi-
+tion system T (P) = ⟨S, U, s0, SG, →⟩. Let ϕ be a sampling
+function such that supp(ϕ(s)) = D(s) ∀s ∈S and let rh be
+a proper rectification function, where h is a heuristic func-
+tion such that h(sG) = 0 ∀sG ∈SG, i.e., h is a goal-aware
+heuristic. Whenever S-Aϕ,rh finds a solution π ∈ΠP, its cost
+is bounded by rh(n, s0), where n ∈Z+ is the number of times
+s0 has been re-expanded.
+Proof. If a solution π is found, it means that a state sG ∈SG
+is part of the (sub)tree rooted at s0. That means that f(sG) ≤
+f(s0). But f(sG) = g(sG) + rh(0, sG) = g(sG) + h(sG),
+and since sG is a goal state, h(sG) = 0. Thus:
+g(sG) ≤f(s0) = g(s0) + rh(n, s0) = rh(n, s0)
+Since s0 is the initial state, its cost is zero.
+With this, it
+has been proved that the cost of the solution found g(sG) is
+bounded by rh(n, s0).
+The outcome of this theorem enables us to ensure a certain
+degree of solution quality through the thoughtful definition of
+the rectification functions. However, it does not offer guaran-
+tees of optimality, as the rectification functions must be de-
+fined to increase without bound in the limit. Nonetheless, in
+the absence of optimality guarantees, the rate of growth can
+be adjusted to any desired pace, thereby controlling the num-
+ber of re-expansions and, consequently, the extent of explo-
+ration at each depth level before progressing to the next.
+5
+Related Work
+In this section, we describe different approaches that involve
+or make use of continuous numeric variables or control pa-
+rameters. We present the related work on resolution strategies
+prior to the experimentation of Section 6 to help understand
+the comparative evaluation in this section.
+Existing planners.
+As discussed in the introduction, the
+planners POPCORN and NextFLAP handle control param-
+eters implicitly alongside the temporal and numeric plan-
+ning constraints.
+These two planners address the infinite
+decision space caused by the continuous numeric variables
+through discrete forward Partial Order Planning search com-
+bined with a constraint-based formulation. Control param-
+eters remain lifted during the search, constrained within an
+interval, and are periodically optimized. POPCORN inher-
+its the use of linear programming from the COLIN planner
+[Coles et al., 2012] to optimize the control variables while
+NextFLAP uses Satisfiability Modulo Theories (SMT). Both
+linear programming and SMT solutions aim to obtain strong
+variable bounds, thus narrowing down the decision space de-
+limited by the control parameters. Therefore, these planners
+do not treat control parameters as decision points but as con-
+straints inherent to the problem. A former planning frame-
+work, TM-LPSAT [Shin and Davis, 2005], was able to handle
+actions with real or interval-valued parameters among other
+features like exogenous events, processes, reusable metric or
+interval resources, in an extended version of the PDDL+ lan-
+guage [Fox and Long, 2006]. TM-LPSTAT uses a SAT-based
+arithmetic constraint solver to find a solution to the system
+constraints and proves it is sound and complete for a sub-
+set of the aforementioned features. TM-LPSAT contributes
+with the theoretical grounds to demonstrate that a SAT-based
+planning framework can be extended to deal with problems
+involving continuous change to numeric quantities.
+Hybrid systems.
+Continuous numeric variables have also
+been used in hybrid systems that involve a mixed discrete-
+continuous formulation. In this setting, actions are commonly
+hybrid with bounded continuous control variables to repre-
+sent the dynamics and evolution of the system state over time
+while decision variables are still discrete. In hybrid plan-
+ning, the parameters that control the system are intended to
+represent the margins of control of the processes during ex-
+ecution, and they are typically interpreted as rates of change
+[Fern´andez-Gonz´alez et al., 2015; Li and Williams, 2008].
+This concept aligns with the processes formalized in PDDL+
+[Fox and Long, 2006] and has recently been exploited to ex-
+plain the behavior of hybrid systems [Aineto et al., 2022].
+This line of work falls outside the scope of this paper, which
+focuses on efficiently handling continuous parameters.
+Rapidly-Exploring Random Trees.
+When working with
+control parameters, one may consider continuous-space
+search algorithms, such as Rapidly-Exploring Random Trees
+(RRT) [LaValle, 1998], which are well-suited for navigat-
+ing infinite decision spaces. Although RRT has proven ef-
+fective in motion and path planning problems [Xu, 2024], it
+is less suitable for structured action spaces that require ap-
+plicability analysis. The application of RRT in Automated
+Planning is sparsely explored in the literature. To the best of
+our knowledge, the only framework that addresses this chal-
+lenge is RRT-Plan [Alc´azar et al., 2021], though it is limited
+to propositional planning.
+Trial-Based Heuristic Tree Search.
+In the literature, a
+reformulation of the popular UCT algorithm [Kocsis and
+Szepesv´ari, 2006] of Monte-Carlo Tree Search (MCTS)
+[Browne et al., 2012] for classical planning problems has
+been explored under the framework of Trial-Based Heuristic
+Search (THTS) [Keller and Helmert, 2013]. This approach
+uses a heuristic function that resembles the Monte-Carlo sam-
+pling rollout of the simulation phase of MCTS and allows
+to model any MCTS algorithm within the framework. A re-
+cent investigation highlights that the action selection method
+UCB1 of UCT is inadequate for solving classical planning
+problems in THTS, and addresses this limitation by propos-
+ing an alternative criterion called UCB1-Normal2 [Wissow
+and Asai, 2024]. We will, however, use a standard UCT with
+UCB1 criteria for our experimental evaluation, since the as-
+sumptions underpinning UCB1-Normal2 do not hold for in-
+finite decision spaces, e.g., a very high likelihood relative to
+the variance estimator of the successors’ heuristic values.
+
+
+Search with partial expansions.
+Some algorithms such
+as Partial Expansion A* (PEA*) [Felner et al., 2012] han-
+dle search with partial expansions for problems with large
+branching factors. While the branching factor in PEA* is
+large, it is finite, whereas we cannot generate the infinite suc-
+cessors of a node to determine which ones to discard. In-
+stead, we rely on the sampling strategy to generate succes-
+sors iteratively, which presents an additional challenge as we
+do not have access to the f-values of the non-generated chil-
+dren. The idea of Enhanced PEA [Goldenberg et al., 2014],
+which generates only nodes that satisfy a condition on their
+f-value, is an interesting direction if it could be adapted to
+work with domain-specific operator information in our sam-
+pling process.
+6
+Experiments
+We aim to compare our approach with existing alternative
+techniques that either keep decision points implicit using con-
+straints or rely solely on local search.
+Baselines.
+We have chosen to compare our approach with
+NextFLAP planner [Sapena et al., 2024], as, unfortunately,
+POPCORN has been confirmed to be in a non-compilable
+state after consultation with its authors. Internally, NextFLAP
+discretizes the control parameter values and performs a for-
+ward POP search. Although this results in a discretized prob-
+lem which is not truly infinite, it remains the closest we
+can achieve using a functional planner that works for con-
+trol parameters. To also compare with a search method that
+works for true infinite spaces, we will use a Monte-Carlo Tree
+Search algorithm with UCB1. Specifically, we will employ
+its Progressive Widening version, capable of searching in in-
+finite decision spaces [Sokota et al., 2021].
+Domains.
+We utilize the domains introduced in POP-
+CORN: CASHPOINT (•), PROCUREMENT (•), and TER-
+RARIA (•), along with four domains that are extensions
+of domains from the latest numeric IPC1: COUNTERS (•),
+BLOCKS-GROUPING (•), DRONE (•), and SAILING (•).
+These extensions have been implemented to allow for con-
+tinuous increments/decrements of numeric variables and can
+be found in the supplementary material.
+Algorithm instances.
+We aim to analyze multiple instances
+of the S-BFS algorithm to analyze the impact of different rec-
+tification functions and sampling methods. We will focus on
+additive rectification functions, i.e., rh(n, s) = h(s) + r(n),
+as they will allow us to clearly exemplify various types of
+growth that we are interested in analyzing: linear (rlin(n) =
+n), quadratic (rqua(n) = n2) and logarithmic (rlog(n) =
+log(1 + n)).
+We will also explore several sampling strategies:
+• Systematic sampling: ϕs. We sample at the extremes
+of the interval and then at middle points. For example,
+for [0, 1], we sample 0, 1, 0.5, 0.25, 0.75, etc. We aim to
+test the impact of favoring extreme values.
+• Uniform sampling: ϕu. Each successor has an equal
+probability of being sampled. We aim to test whether
+randomness improves solution quality and/or coverage.
+1https://github.com/ipc2023-numeric
+S-BFS (140)
+ϕs
+ϕu
+ϕh
+rlin
+S-G
+131 (30.16)
+126 (37.69)
+95 (33.87)
+S-A
+18 (71.07)
+13 (49.42)
+11 (57.14)
+rqua
+S-G
+120 (25.30)
+114 (28.19)
+91 (16.77)
+S-A
+16 (59.70)
+12 (63.92)
+9 (51.99)
+rlog
+S-G
+133 (29.13)
+136 (26.53)
+119 (28.55)
+S-A
+30 (73.90)
+31 (76.46)
+28 (67.41)
+Table 1: Coverage and re-expansion rate of S-G and S-A with fixed
+seed, aggregated for every domain.
+• Heuristic-guided sampling: ϕh. We guide sampling
+using the heuristic function, making it more likely to
+sample states with better heuristic values. The sampling
+probability is given by:
+Ph(s′|s) =
+
+1
+h(s′)+ϵ
+β
+P
+s′′∈succ(s)
+
+1
+h(s′′)+ϵ
+β ,
+s′ ∈succ(s)
+where ϵ avoids division by zero and β > 0. The de-
+nominator is too costly to evaluate, making direct sam-
+pling computationally impractical. We will estimate P
+by approximating the denominator using a fixed num-
+ber of uniformly sampled successors, N, rather than us-
+ing methods like Metropolis-Hastings [Hastings, 1970],
+which require a huge burn-in period. We aim to test the
+impact of favoring heuristically promising states.
+Setup.
+We implemented prototype versions of each domain
+in Python using the goal-counting heuristic hGC, as it is inde-
+pendent of the transition system2. Heuristics like hF F [Hoff-
+mann, 2003] or hMRP [Scala et al., 2020b], designed for
+numeric planning, assume finite decision spaces. The use
+or adaptation of informed planning heuristics for continuous
+spaces is beyond the scope of this work. We defined 20 prob-
+lems of various sizes for each domain. We used β = 1 for
+heuristic-guided sampling and α = 0.3 and UCB1 for MCTS
+with PW. All experiments were run with a fixed seed, on a
+12th Gen Intel(R) Core(TM) i9-12900KF CPU and Ubuntu
+22.04 LTS, for 10 minutes and 8 GB memory limit.
+Analysis of S-BFS.
+First, we aim to analyze the behav-
+ior of different algorithm instances and determine whether a
+dominant strategy emerges. To this end, Table 1 presents the
+performance of each specific algorithm instance by domain,
+showing coverage and the percentage of total re-expansions
+in parentheses, aggregated for all domains. Results indicate
+that logarithmic rectification is particularly beneficial for both
+algorithms, leading to a significant improvement in coverage,
+which is expected since optimality is not the objective. Ad-
+ditionally, it is observed that systematic and uniform sam-
+pling functions outperform heuristic-guided sampling. Re-
+expansion rate is higher in S-A algorithms due to the more
+informed NEC. In the supplementary material we show the
+performance of each configuration separated by domain. To
+2Code: https://github.com/aasomol/SBFS-ControlVariables
+
+
+Figure 2: Comparison of S-G versus S-A in number of actions, num-
+ber of expansions and time, per domain.
+Figure 3: Survival plot of four approaches (left) and number of ac-
+tions of S-BFS against NextFLAP per domain (right)
+study the behaviour of S-G and S-A in depth, we select the
+best configuration that minimizes the number of actions and
+compare performance in Figure 2. As expected, S-A achieves
+higher-quality solutions than S-G but generally requires more
+iterations to reach them, and solves much less instances. No
+trend is observed for time.
+Comparison with baselines.
+We want to compare the per-
+formance of S-BFS against baselines. To do so, we first an-
+alyze the coverage of the algorithms over time. For S-G and
+S-A, we use the runs that minimized the number of actions.
+In Figure 3 (left), in which we depict a survival plot, i.e., cov-
+erage over time, for every analyzed strategy, we observe that
+S-G successfully solves all 140 proposed problems, and S-
+A solves more problems than NextFLAP. Monte Carlo Tree
+Search solves very few problems, even when compared to
+NextFLAP. We will focus on NextFLAP for this reason. For
+the plans solved by both NextFLAP and S-BFS, it is observed
+in Figure 3 (right), in which we depict the comparison be-
+tween S-BFS and NextFLAP in terms of number of actions,
+that the number of actions achieved by NextFLAP is lower
+than that of S-BFS in problems solved by both approaches.
+The number of iterations and the time taken by NextFLAP
+in comparison to S-BFS depend on the specific problem in-
+stance being solved and do not follow a clear pattern that war-
+rants further emphasis.
+Discussion.
+In the context of the Analysis of S-BFS, we
+observed a clear trend toward improvement with logarith-
+mic rectification. This suggests that the algorithm benefits
+from emphasizing heuristics rather than high penalties. Given
+that penalization is required to achieve probabilistic com-
+pleteness, the use of heuristics without rectification is infea-
+sible. Among the different forms of rectification, logarithmic
+growth proved to be the most effective, as it allows the heuris-
+tic to contribute most significantly to the search process.
+Our results further indicate that both systematic and uni-
+form sampling strategies yielded the best performance. Inter-
+estingly, the incorporation of the heuristic function to guide
+the sampling did not result in improved search efficiency.
+This can be attributed to the fact that the heuristic function
+employed exhibits numerous plateaus, causing the heuristic-
+guided sampling strategy to behave similarly to a uniform
+sampling strategy, albeit with a higher computational cost.
+On the other hand, the comparison of results with
+NextFLAP and MCTS demonstrates that our algorithm is
+able to solve a significantly higher number of instances. In the
+case of NextFLAP, this could be attributed to its reliance on
+an optimization module and the forward POP search mech-
+anism.
+In contrast, for Monte-Carlo Tree Search, the ad-
+vantage of our approach may stem from the inherent com-
+plexity and the progressive size scaling of the problems ad-
+dressed. However, it is observed that the plans generated by
+NextFLAP outperform those produced by S-BFS for smaller
+problem instances, which could be due to the absence of op-
+timality guarantees in our algorithm that arise from ensuring
+probabilistic completeness. Moreover, NextFLAP conducts a
+minimization of the makespan as a last planning step. How-
+ever, we argue that the substantial differences in coverage
+compensate for this limitation.
+7
+Conclusion
+In this work, we adopted a planning framework with the
+following characteristics: discretized time, instantaneous ac-
+tions, and continuous numeric variables. We deliberately ig-
+nore durative actions in this approach because although we
+view the duration of actions as a kind of a continuous numeric
+parameter, we believe that the semantics associated with the
+use of a control parameter time in actions would require a
+special formalization.
+We intend to lay the foundations for handling control pa-
+rameters via search. For this reason, we have proposed a sys-
+tematic search algorithm for solving problems with control
+parameters; which is based on the concept of delayed par-
+tial expansion, where a state is not fully expanded but instead
+incrementally expands a subset of its successors. We have
+demonstrated interesting properties of this algorithm that hold
+under certain conditions, such as probabilistic completeness
+and a specific notion of solution quality guarantees. Finally,
+we have compared our approach against other methods capa-
+ble of searching in spaces defined with control parameters,
+showing that our algorithm outperforms existing approaches.
+For future work, we aim to integrate our framework within
+the context of temporal planning and extend it to handle
+continuous-time actions as described in PDDL+.
+Additionally, we want to study numeric planning heuris-
+tics that can take infinite decision space into account, too,
+for instance starting from the well studied subgoaling relax-
+ation framework [Scala et al., 2020a; Kuroiwa et al., 2022].
+Overall, this work lays the foundation for a promising line of
+research.
+
+
+Acknowledgements
+This
+work
+was
+partially
+supported
+by
+the
+project
+I+D+i
+AEI
+PID2021-127647NB-C22
+funded
+by
+MI-
+CIU/AEI/10.13039/501100011033 and by FEDER/UE; and
+by the GENERALITAT VALENCIANA project PROM-
+ETEO CIPROM/2023/23.
+This work was also partially
+supported by the projects SERICS (PE00000014) and FAIR
+(B53C22003980006), both under the NRRP MUR program
+funded by the EU - NGEU. Angel Aso-Mollar is partially
+supported by the FPU21/04273.
+References
+[Aineto et al., 2022] Diego Aineto, Eva Onaind´ıa, Miquel
+Ram´ırez, Enrico Scala, and Ivan Serina. Explaining the
+Behaviour of Hybrid Systems with PDDL+ Planning. In
+International Joint Conference on Artificial Intelligence,
+2022.
+[Alc´azar et al., 2021] Vidal Alc´azar, Manuela Veloso, and
+Daniel Borrajo. Adapting a Rapidly-Exploring Random
+Tree for Automated Planning. Proceedings of the Inter-
+national Symposium on Combinatorial Search, 2:2–9, 08
+2021.
+[Aso-Mollar et al., 2025] ´Angel Aso-Mollar, Diego Aineto,
+Enrico Scala, and Eva Onaindia. A Sampling Approach to
+Planning with Infinite Domain Control Variables. In Inter-
+national Conference on Automated Planning and Schedul-
+ing, 2025.
+[Browne et al., 2012] Cameron Browne, Edward Jack Pow-
+ley, Daniel Whitehouse, Simon M. Lucas, Peter I. Cowl-
+ing, Philipp Rohlfshagen, Stephen Tavener, Diego Perez
+Liebana, Spyridon Samothrakis, and Simon Colton.
+A
+Survey of Monte Carlo Tree Search Methods. IEEE Trans.
+Comput. Intell. AI Games, 4(1):1–43, 2012.
+[Coles et al., 2012] A. J. Coles, A. I. Coles, M. Fox, and
+D. Long. COLIN: Planning with Continuous Linear Nu-
+meric Change. Journal of Artificial Intelligence Research,
+44:1–96, 2012.
+[Felner et al., 2012] Ariel Felner, Meir Goldenberg, Guni
+Sharon, Roni Stern, Tal Beja, Nathan Sturtevant, Jonathan
+Schaeffer, and Robert Holte. Partial-Expansion A* with
+Selective Node Generation.
+Proceedings of the AAAI
+Conference on Artificial Intelligence, 26(1):471–477, Sep.
+2012.
+[Fern´andez-Gonz´alez et al., 2015] Enrique
+Fern´andez-
+Gonz´alez, Erez Karpas, and Brian Charles Williams.
+Mixed Discrete-Continuous Heuristic Generative Plan-
+ning Based on Flow Tubes.
+In International Joint
+Conference on Artificial Intelligence 2015, pages 1565–
+1572. AAAI Press, 2015.
+[Fox and Long, 2003] M. Fox and D. Long. PDDL2.1: An
+Extension to PDDL for Expressing Temporal Planning
+Domains.
+Journal of Artificial Intelligence Research,
+20:61–124, December 2003.
+[Fox and Long, 2006] M. Fox and D. Long.
+Modelling
+Mixed Discrete-Continuous Domains for Planning. Jour-
+nal of Artificial Intelligence Research, 27:235–297, Octo-
+ber 2006.
+[Goldenberg et al., 2014] Meir Goldenberg, Ariel Felner,
+Roni Stern, Guni Sharon, Nathan Sturtevant, Robert C.
+Holte, and Jonathan Schaeffer.
+Enhanced partial ex-
+pansion A*. Journal of Artificial Intelligence Research,
+50(1):141–187, May 2014.
+[Hastings, 1970] W. K. Hastings.
+Monte Carlo Sampling
+Methods Using Markov Chains and their Applications.
+Biometrika, 57(1):97–109, 04 1970.
+[Heesch et al., 2024] Ren´e Heesch,
+Alessandro Cimatti,
+Jonas Ehrhardt, Alexander Diedrich, and Oliver Nigge-
+mann. A Lazy Approach to Neural Numerical Planning
+with Control Parameters. In European Conference on Ar-
+tificial Intelligence, 2024.
+[Hoffmann, 2003] J¨org Hoffmann. The Metric-FF Planning
+System: Translating “Ignoring Delete Lists” to Numeric
+State Variables. J. Artif. Intell. Res., 20:291–341, 2003.
+[Keller and Helmert, 2013] Thomas
+Keller
+and
+Malte
+Helmert.
+Trial-Based Heuristic Tree Search for Finite
+Horizon MDPs.
+In International Conference on Au-
+tomated Planning and Scheduling, volume 23, pages
+135–143, Jun. 2013.
+[Kocsis and Szepesv´ari, 2006] Levente Kocsis and Csaba
+Szepesv´ari.
+Bandit
+Based
+Monte-Carlo
+Planning.
+In Johannes F¨urnkranz,
+Tobias Scheffer,
+and Myra
+Spiliopoulou, editors, Machine Learning: ECML 2006,
+17th European Conference on Machine Learning, volume
+4212 of Lecture Notes in Computer Science, pages 282–
+293. Springer, 2006.
+[Kuroiwa et al., 2022] Ryo Kuroiwa, Alexander Shleyfman,
+Chiara Piacentini, Margarita P. Castro, and J. Christopher
+Beck. The LM-Cut Heuristic Family for Optimal Numeric
+Planning with Simple Conditions. Journal of Artificial In-
+telligence Research, 75:1477–1548, 2022.
+[LaValle, 1998] Steven M. LaValle. Rapidly-Exploring Ran-
+dom Trees: a New Tool for Path Planning. Computer Sci-
+ence Dept., Iowa State University, 1998.
+[Li and Williams, 2008] Hui Li and Brian Williams. Gener-
+ative Planning for Hybrid Systems Based on Flow Tubes.
+In International Conference on Automated Planning and
+Scheduling 2008, pages 206–213, 01 2008.
+[Sapena et al., 2024] Oscar Sapena,
+Eva Onaindia,
+and
+Eliseo Marzal. A Hybrid Approach for Expressive Nu-
+meric and Temporal Planning with Control Parameters.
+Expert Systems with Applications, 242:122820, 2024.
+[Savas¸ et al., 2016] Emre Savas¸, Maria Fox, Derek Long,
+and Daniele Magazzeni.
+Planning Using Actions with
+Control Parameters. In European Conference on Artificial
+Intelligence 2016, volume 285 of Frontiers in Artificial In-
+telligence and Applications, pages 1185–1193. IOS Press,
+2016.
+[Savas¸, 2018] Emre Savas¸. Temporal-numeric planning with
+control parameters. PhD thesis, King’s College London,
+2018.
+
+
+[Scala et al., 2020a] Enrico Scala, Patrik Haslum, Sylvie
+Thiebaux, and Miquel Ramirez. Subgoaling Techniques
+for Satisficing and Optimal Numeric Planning. Journal of
+Artificial Intelligence Research, 68:691–752, 08 2020.
+[Scala et al., 2020b] Enrico Scala, Alessandro Saetti, Ivan
+Serina, and Alfonso E. Gerevini. Search-Guidance Mech-
+anisms for Numeric Planning Through Subgoaling Relax-
+ation. In International Conference on Automated Planning
+and Scheduling, volume 30, pages 226–234, Jun. 2020.
+[Shin and Davis, 2005] Ji-Ae Shin and Ernest Davis.
+Pro-
+cesses and Continuous Change in a SAT-based Planner.
+Artificial Intelligence, 166(1):194–253, 2005.
+[Sokota et al., 2021] Samuel Sokota, Caleb Y Ho, Zaheen
+Ahmad, and J. Zico Kolter. Monte Carlo Tree Search With
+Iteratively Refining State Abstractions.
+In M. Ranzato,
+A. Beygelzimer, Y. Dauphin, P.S. Liang, and J. Wortman
+Vaughan, editors, Neural Information Processing Systems
+2021, volume 34, pages 18698–18709. Curran Associates,
+Inc., 2021.
+[Valenzano and Xie, 2016] Richard Valenzano and Fan Xie.
+On the Completeness of Best-First Search Variants That
+Use Random Exploration. Proceedings of the AAAI Con-
+ference on Artificial Intelligence, 30(1), Feb. 2016.
+[Wissow and Asai, 2024] Stephen Wissow and Masataro
+Asai. Scale-Adaptive Balancing of Exploration and Ex-
+ploitation in Classical Planning. In 27th European Con-
+ference on Artificial Intelligence, 2024.
+[Xu, 2024] Tong Xu. Recent advances in Rapidly-exploring
+random tree: A review. Heliyon, 10:e32451, 2024.

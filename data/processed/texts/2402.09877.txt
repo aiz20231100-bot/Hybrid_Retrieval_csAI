@@ -1,0 +1,1148 @@
+On Computing Plans with Uniform Action Costs
+Alberto Pozanco, Daniel Borrajo*, Manuela Veloso
+J.P. Morgan AI Research
+{alberto.pozancolancho,daniel.borrajo,manuela.veloso}@jpmorgan.com
+Abstract
+In many planning applications, agents might be interested in
+finding plans whose actions have costs that are as uniform
+as possible. Such plans provide agents with a sense of stabil-
+ity and predictability, which are key features when humans
+are the agents executing plans suggested by planning tools.
+This paper adapts three uniformity metrics to automated plan-
+ning, and introduces planning-based compilations that allow
+us to lexicographically optimize sum of action costs and ac-
+tion costs uniformity. Experimental results in different bench-
+marks show that the reformulated tasks can be effectively
+solved in practice to generate uniform plans.
+Introduction
+Classical planning is the task of finding a plan, which is a
+sequence of deterministic actions such that, when applied in
+a given initial state, it results in a goal state (Ghallab, Nau,
+and Traverso 2004). Each action is associated with a non-
+negative cost, and the cost of a plan is defined as the sum of
+its actions’ costs. Plans with minimal cost are called optimal,
+and how to efficiently compute them accounts for a large part
+of automated planning research.
+However, the real-world is full of applications where the
+sum of action costs is only one of the objectives that de-
+fine an optimal plan (Stewart and White III 1991; Geißer
+et al. 2022; Salzman et al. 2023). For example, in network
+routing one might be interested in finding widest shortest
+paths or shortest widest paths, in order to reduce bottlenecks
+and provide better service (Sobrinho 2001). Or, in naviga-
+tion domains, one can represent travel time as cost and be
+interested in finding shortest quickest or quickest shortest
+routes (Golledge 1995).
+In this paper we introduce a novel objective that might
+be relevant in many planning applications: that of finding
+plans whose actions have costs that are as uniform as pos-
+sible. Consider the navigation scenario shown in Figure 1,
+where a car driver (located at position 1 0) is interested in
+finding a plan to reach location G (located at 0 4). To do
+so, the car can move in the four cardinal directions. The
+color of each cell depicts the cost (travel time) of travers-
+ing the cell: visiting green, yellow, orange and red cells have
+*On leave from Universidad Carlos III de Madrid
+Copyright © 2024, Association for the Advancement of Artificial
+Intelligence (www.aaai.org). All rights reserved.
+Figure 1: Navigation task where a driver wants to reach lo-
+cation G. The color of each cell depicts the cost (travel time)
+of traversing the cell.
+a cost of 1, 2, 3, and 4 respectively. In this case, there ex-
+ist several cost-optimal plans, all having a cost of 9, but re-
+quiring to traverse a different number of congested areas,
+with each of them having an associated congestion level.
+Arguably, some drivers would prefer plans where they re-
+duce the number or density of the traffic jams, thus being
+able to drive at the same pace. Other drivers might even pre-
+fer longer travel times sacrificing cost-optimality in benefit
+of longer routes where they completely avoid traffic jams.
+Moreover, not only drivers but also traffic authorities would
+prefer vehicles to keep a constant velocity, as this reduces
+congestions and CO2 emissions (Barth and Boriboonsomsin
+2009).
+Financial planning (Pozanco et al. 2023) is yet another
+example where computing plans with uniform actions is rel-
+evant. In financial planning, a person wants to save some
+amount of money (e.g. $1, 000) in a given horizon (e.g. 4
+months). The available actions are to save different quan-
+tities at each month, with increasing costs associated with
+higher savings levels due to the difficulty in saving more
+money. People could prefer plans where they can save the
+same money every month (e.g. $250 each month) rather
+than plans where they should save very different amounts.
+This preference can be justified by several reasons. Firstly,
+a consistent savings plan provides individuals with a sense
+of stability and predictability. Knowing exactly how much
+they need to save each month allows them to budget and
+plan their expenses more effectively. This stability can al-
+leviate financial stress and provide a sense of control over
+one’s financial situation. Secondly, a fixed savings plan pro-
+motes discipline and consistency in saving habits. By com-
+arXiv:2402.09877v3  [cs.AI]  24 May 2024
+
+
+mitting to saving a specific amount each month, individuals
+are more likely to develop a routine and stick to their finan-
+cial goals (Hanna and Lindamood 2010).
+We are interested in lexicographically optimizing both
+objectives (in any order): sum of action costs and action
+costs uniformity. There exist three main approaches to solve
+such multi-objective planning problems in the literature.
+The first one is using cost-algebraic A* (Edelkamp, Jab-
+bar, and Lluch-Lafuente 2005), which proves that A* re-
+turns an optimal solution in any cost algebra (or their pri-
+oritized Cartesian product), not just in the traditional short-
+est path setting. A cost measure is a cost algebra iff it is
+strictly isotone, i.e., a solution that optimizes the cost mea-
+sure is composed of optimal solutions to its subproblems.
+Unfortunately, most uniformity measures do not satisfy this
+property, so we cannot use standard A*. The second ap-
+proach is to use multi-objective search algorithms such as
+NAMOA* (Mandow and De La Cruz 2008) or BOA* (Ul-
+loa et al. 2020; Hern´andez et al. 2023). These algorithms
+extend A* to compute the set of Pareto-optimal paths. How-
+ever, these algorithms are slower and consume more mem-
+ory than standard A*, since they (i) need to explore the
+whole state space to return all the solutions in the Pareto
+front; and (ii) need to perform extra checks to prune dom-
+inated paths. The third approach consists of reformulating
+the original planning task so that plans that optimally solve
+the new task are plans that lexicographically optimize the
+two objectives. This approach allows us to use any planner
+to solve such problems without the need of crafting domain-
+dependent heuristics for each objective. For example, Katz,
+R¨oger, and Helmert (2022) transform the action costs of the
+original planning tasks in order to generate shortest cost-
+optimal plans. Here, we will reformulate the whole planning
+task, and not only its action costs, to generate uniform plans.
+The main contributions of this paper are:
+1. Introduction of a novel bi-objective planning task with
+many real-world applications: finding cost-optimal plans
+whose actions have costs that are as uniform as possible.
+2. Adaptation of three dispersion metrics to automated
+planning.
+3. Three different compilations to produce plans that lexi-
+cographically optimize sum of action costs and the given
+dispersion metric.
+4. New benchmarks for multi-objective planning (Salzman
+et al. 2023).
+Background
+We formally define a planning task as follows:
+Definition 1. A planning task can be defined as a tuple Π =
+⟨F, A, I, G⟩, where F is a set of propositions, A is a set of
+instantiated actions, I ⊆F is an initial state, and G ⊆F is
+a goal state.
+For each proposition p ∈F we introduce the term ¬p
+representing the negation of p. Propositions and their nega-
+tions are called literals L. A (partial) state s is a consistent
+set of literals l ⊆L, i.e., s does not contain a proposition
+and its negation. A complete state is a state which contains
+each proposition or its negation. Each action a ∈A is de-
+scribed by a set of preconditions (pre(a)), which represent
+literals that must be true in a state to execute an action,
+and a set of effects (eff(a)), which are the literals that are
+added (add(a) effects) or removed (del(a) effects) from the
+state after the action execution. The definition of each ac-
+tion might also include a cost c(a) ∈N0 (the default cost
+is one). We denote by c(A), min(c(A)) and max(c(A)) the
+set of action costs, minimum action cost, and maximum ac-
+tion cost in the planning task, respectively. The execution of
+an action a in a state s is defined by a function γ such that
+γ(s, a) = (s \ del(a)) ∪add(a) iff pre(a) ⊆s. The output
+of a planning task is a sequence of actions, called a plan,
+π = (a1, . . . , an). The execution of a plan π in a state s can
+be defined as:
+Γ(s, π) =
+
+Γ(γ(s, a1), (a2, . . . , an))
+if π̸ = ∅
+s
+if π = ∅
+A state s is reachable iff there exists a sequence of oper-
+ators π that when applied from I reach s, i.e., s ⊆Γ(I, π).
+With S we refer to the set of all reachable states of the
+planning task. A plan π is valid if G ⊆Γ(I, π). The plan
+cost is commonly defined as c(π) = P
+ai∈π c(ai), with
+cπ = (c(ai), . . . , c(an)) denoting the action cost vector of a
+plan. A plan with minimal cost is called optimal. In the rest
+of the paper we assume plans are simple, i.e., they do not
+have loops visiting the same state more than once. This is
+the case for any cost-optimal plan.
+Uniformest Cost-Optimal Planning Problem
+While classical planning focuses on finding cost-optimal
+plans, we seek plans that also optimize the uniformity of the
+plans’ action costs. Like Katz, R¨oger, and Helmert (2022),
+we are not interested in any form of weighting both objec-
+tives, but in lexicographically optimizing them.
+We seek to minimize two objectives , rather than minimiz-
+ing plan’s cost and maximizing its uniformity. Therefore, we
+will minimize action costs dispersion in order to find uni-
+form plans. The dispersion of a plan, denoted by d(π), is
+defined as the variability of its action costs. In other words,
+a plan only composed by actions of the same cost will have a
+lower dispersion, therefore being more uniform, than a plan
+composed by actions with different costs. We denote by ≤d
+the partial order of plans defined by their action costs dis-
+persion, i.e., π ≤d π′ iff d(π) ≤d(π′). Likewise, we denote
+by ≤c the partial order of plans defined by their cost, i.e.,
+π ≤c π′ iff c(π) ≤c(π′). We will use ⪯c,d when we want to
+optimize cost, and break ties in favor of more uniform (less
+disperse) plans. Formally, π ⪯c,d π′ if c(π) < c(π′) or if
+c(π) = c(π′) and d(π) ≤d(π′). The same notation and def-
+inition applies to the opposite case ⪯d,c, where we want to
+optimize uniformity and break ties by cost.
+Summarizing, for a given task Π in standard classical
+planning we must identify a plan that is minimal among all
+plans with respect to ≤c, or detect that the task is unsolvable.
+On the other hand, in the uniformest cost-optimal planning
+problem, we must find a plan for Π that is minimal among
+
+
+all plans with respect to ⪯c,d (or ⪯d,c), or detect that the
+planning task is unsolvable.
+Dispersion Metrics
+Dispersion, also called variability, is a statistical term that
+refers to the spread between numbers in a data set. In this
+case, we are interested in measuring the dispersion of vec-
+tors of plans action costs. There exist many dispersion met-
+rics: standard deviation, variance, range, or entropy, to name
+a few. In this paper we will focus on the following three
+measures of statistical dispersion:
+Definition 2. Number of different action costs of a plan π:
+the cardinality of the set of plan’s action costs.
+#(π) = |{cπ}|
+(1)
+Definition 3. Delta of a plan π: the largest difference be-
+tween the cost of any two adjacent actions in the plan.
+∆(π) = max
+ |π|−1
+[
+i=1
+|c(ai) −c(ai+1)|
+
+(2)
+Definition 4. Range of a plan π: the difference between the
+largest and smallest values in the costs of its actions.
+R(π) = max(cπ) −min(cπ)
+(3)
+The reason why we select the above dispersion metrics
+over others is two-folded. First, we seek diverse set of dis-
+persion metrics. Well-known statistical measures such as
+standard deviation or variance provide the same informa-
+tion, while the three selected metrics have different seman-
+tics. Range and Delta measure the difference between action
+costs in the plan, but while the former focuses on the entire
+plan, the latter only considers changes in two consecutive
+actions. On the other hand, just measuring the number of
+different action costs offers less information, but might be
+easier to compute while still a good dispersion proxy. We
+further investigate this in our evaluation.
+Second, the above dispersion metrics have a nice prop-
+erty that other measures do not have: their potential values
+are bounded a priori by the available actions in the planning
+task. While we can know all the possible values for Range,
+Delta and the number of different action costs by just in-
+specting the planning task, this is not possible for metrics
+such as standard deviation or entropy because the number of
+actions needed to achieve a goal is unbounded. As we will
+discuss later, this is an important property that allows us to
+generate tractable reformulations in practice.
+Let us exemplify these dispersion metrics and the plans
+we are interested in finding by using the navigation scenario
+introduced in Figure 1. Table 1 shows four possible plans to
+reach the goal in this scenario. Each plan is depicted by a
+sequence of squares (from left to right) that show the path of
+the driver from its initial state to the goal. Columns in this ta-
+ble show the three dispersion metrics, i.e., Range, Delta, and
+Number of different action costs, as well as the cost of the
+plan. The plans in the first three rows are cost-optimal and
+have an associated cost (travel time) of 9. However, these
+plans are very different in terms of action cost dispersion.
+π
+#(π)
+∆(π)
+R(π)
+c(π)
+3
+3
+3
+9
+3
+1
+2
+9
+2
+1
+1
+9
+1
+0
+0
+11
+Table 1: Four alternative plans to reach G in the scenario
+shown in Figure 1. Plans are depicted by sequences of
+squares (from left to right) that show the driver’s path from I
+to G. Columns show dispersion and cost measures and cells
+in the table indicate the metric obtained by each plan.
+The first plan combines driving through extremely (red) and
+slightly (green) congested areas, yielding the higher (worse)
+values for all the dispersion metrics. This plan will not be to
+the liking of drivers who prefer to maintain a steady pace.
+The second plan has a lower Delta and Range, since the
+change in congestion levels occurs more progressively and
+extremely congested areas are not traversed. The third plan
+has the lowest values for all the dispersion metrics along the
+cost-optimal plans, and would be the one selected by drivers
+that prefer more uniform driving experience while not sac-
+rificing cost (driving time). Finally, the fourth plan might be
+more appealing to drivers that might be willing to sacrifice
+cost-optimality in benefit of more uniform routes where they
+can completely avoid traffic jams. Among all the plans that
+minimize dispersion, this is the one with the lowest cost.
+Computing Plans with Uniform Action Costs
+We present three different compilations, one for each of the
+dispersion metrics previously described. Although some of
+the compilations could be represented more naturally using
+conditional effects or numerical planning, we opted for clas-
+sical planning compilations, as the resulting tasks can be ef-
+ficiently solved optimally by a wider variety of planners. In
+particular, unlike other compilations that take as input the
+lifted planning task (represented in PDDL (McDermott et al.
+1998)) and return a new lifted planning task (Gragera et al.
+2023), our reformulation operates at the grounded (STRIPS)
+level. We opted for this approach as in some planning tasks
+the cost of the actions is not known at the lifted level, but
+only after the task has been grounded.
+The intuition behind all the compilations is to extend a
+standard planning task with new propositions that keep track
+of the action cost distribution. They also extend the original
+planning task with actions that either (i) update these propo-
+sitions; or (ii) increase the total cost depending on the value
+of the dispersion metric induced by the plan. The cost of
+these actions will depend on the objective function that we
+try to lexicographically optimize. We will use ωd ∈N to
+weigh the importance of getting uniform plans.
+Next, we introduce the compilations in increasing order
+of complexity, according to the number of extra propositions
+and actions they require.
+
+
+Compilation 1: Number of Different Action Costs
+This is the most naive dispersion metric, as it only considers
+the cardinality of the plan’s action cost set. It also requires
+the least complex compilation, as this metric is strictly iso-
+tone (Edelkamp, Jabbar, and Lluch-Lafuente 2005). Given
+a planning task Π, we extend F with a set of propositions
+Fu = S
+i∈c(A){usedi}, which keep track of the costs that
+have been used by a plan. We also update the set of original
+actions A to associate each action a ∈A a different cost de-
+pending on whether that action cost has already been used in
+the plan or not. We create two new actions for each original
+action a ∈A, effectively dividing actions into two sets, Au
+and A¬u.
+• Au, which represents the original actions that can be exe-
+cuted when their cost is already present in the plan. Each
+action au ∈Au is defined as follows:
+– pre(au) = pre(a) ∪{usedc(a)}
+– eff(au) = eff(a)
+– c(au) = c(a)
+• A¬u, represent the original actions that can be executed
+when their cost is not present in the plan yet. Each action
+a¬u ∈A¬u is defined as follows:
+– pre(a¬u) = pre(a) ∪{¬usedc(a)}
+– eff(a¬u) = eff(a) ∪{usedc(a)}
+– c(a¬u) = c(a) + ωd
+The difference between both sets of actions is that the
+ones in A¬u set the unseen cost c(a) to used, and increase
+the total cost with the weight ωd, thus effectively penalizing
+the use of actions with different action costs to achieve the
+goal.
+The new planning task is defined as follows:
+Definition 5. Given an original planning task Π, a com-
+piled task Π# that lexicographically optimizes sum of ac-
+tion costs and number of different action costs as disper-
+sion metric is a tuple
+Π# = ⟨F ′, A′, I′, G, ωd⟩
+where,
+• F ′ = F ∪Fu
+• A′ = Au ∪A¬u
+• I′ = I ∪S
+i∈c(A){¬usedi}
+This compilation grows polynomially with |A| and gener-
+ates |A′| = 2 × |A| actions, as we need to have two versions
+of each action, depending on whether its cost has already
+been used in the plan or not.
+Proposition 1. If Π is solvable, Π# is also solvable.
+Proof Sketch. Let π be a solution for Π. It is trivial to see
+that there exists a plan π′ that solves Π# comprised by the
+same sequence of actions as π, only varying their version,
+i.e., if their cost has already been used in the plan (Au) or
+not (A¬u). The applicability of these actions is equivalent to
+their A counterparts, with the extra precondition of the used
+proposition of that cost, which appear in I′ and are updated
+by the actions in A′.
+Next we prove that ⪯c,d (or ⪯d,c) is preserved in the re-
+formulated task. The proof is similar to that of (Katz, R¨oger,
+and Helmert 2022), where the authors prove their reformu-
+lated task can generate shortest cost-optimal plans. The main
+idea is to set ωd so that for any plan, the extra cost incurred
+by introducing new action costs does not surpass the sum of
+action costs (or the opposite in case ⪯d,c).
+Proposition 2. Let π and π′ be any two simple plans for
+Π, and π# and π′
+# their counterparts in Π#. There exists a
+value for ωd such that π ⪯c,d π′ iff π# ≤c π′
+#.
+Proof Sketch. Since the plans are simple, the cost of any π
+that solves Π is bounded by |S| × max(c(A)). Let C−> 0
+be smaller or equal to the smallest non-zero cost difference
+|c(π) −c(π′)| between two plans that solve Π. Let D+ be
+larger than the max different action costs difference |#(π)−
+#(π′)| between two plans that solve Π. We define ωd :=
+C−
+D+ > 0.
+We distinguish two cases. If c(π) = c(π′), then π ⪯c,d π′
+iff #(π) ≤#(π′). By our compilation we have that
+c(π#) = c(π)+ωd#(π) ≤c(π′)+ωd#(π′) = c(π′
+#) (4)
+so when c(π) = c(π′) this can be simplified to #(π) ≤
+#(π′), iff π# ≤c π′
+#.
+On the other hand, if π ⪯c,d π′ and c(π)̸ = c(π′) then
+c(π) < c(π′). Since c(π′) −c(π) is non-zero, it must be
+≥C−. By the choice of D+, #(π) −#(π′) < D+. We get
+that c(π′
+#)−c(π#) = c(π′)+ωd#(π′)−c(π)−ωd#(π) =
+c(π′) −c(π) −ωd(#(π′) −#(π)) > c(π′) −c(π) −
+ωdD+ = c(π′) −c(π) −C−≥0. Overall we get that
+c(π′
+#) > c(π#), thus π# ≤c π′
+#. In the opposite direc-
+tion, if π# ≤c π′
+#, then c(π#) ≤c(π′
+#). By (4), c(π) +
+ωd#(π) ≤c(π′)+ωd#(π′). Since #(π)−#(π′) < D+, it
+holds that ωd(#(π′) −#(π)) < ωdD+ = C−. By the defi-
+nition of C−, C−> c(π)−c(π′). This implies c(π) < c(π′)
+and thus π ⪯c,d π′.
+As in the case of (Katz, R¨oger, and Helmert 2022), since
+we only focus on integer action costs (C−= 1), it is suffi-
+cient for the proof if |#(π#) −#(π′
+#)| < 1/ωd. This guar-
+antees that if we set ωd < 1/D+, ⪯c,d is preserved.
+Analogously it is easy to see that if we set ωd > C+,
+where C+ is the largest cost difference between two plans
+(|S| × max(c(A))), then π ⪯d,c π′ iff c(π#) ≤c(π′
+#).
+Compilation 2: Delta
+Delta measures the largest jump in action costs in two con-
+secutive actions in a plan. Minimizing it can be useful for
+agents content with plans having disperse action costs, as
+long as the cost changes are gradual rather than sudden. This
+dispersion metric is not strictly isotone, so the compilation
+to optimize it becomes more complex.
+In this compilation we will use abs(c(A)) (or just abs) to
+refer to the set of absolute values obtained after subtracting
+all the cost pairs in the domain, i.e., all the possible Delta
+values. These values are given by the following formula:
+abs(c(A)) =
+[
+m,n∈c(A)∪{0}
+{|m −n|}
+(5)
+
+
+We cannot define a general formula based on the size of c(A)
+to compute the size of abs, as it does not solely depend on
+the number of possible costs, but also on the arithmetic re-
+lationship of its elements. For example, c(A) = {0, 5, 10}
+yields a set of possible Delta values abs = {0, 5, 10}, while
+c(A) = {1, 5, 10} yields abs = {0, 1, 4, 5, 9, 10}. However,
+we can upper bound the size of this set by the binomial co-
+efficient
+ |c(A)|+1
+2
+
+. In the worst case, all the pairs of the set
+will yield a different absolute value, plus 0, since that is the
+result of the subtraction of any pair (x, x).
+Given a planning task Π, we extend F with the following
+sets of propositions:
+• Fprev = S
+i∈c(A){prev costi}, which is a set of proposi-
+tions that keep track of the last executed action’s cost.
+• Fδ = S
+i∈abs{deltai}, which is a set of propositions that
+keep track of the Delta between the current and the pre-
+vious actions executed in the plan.
+• F∆= S
+i∈abs{max deltai}, which is a set of proposi-
+tions that track the largest Delta in the plan.
+• check, which is a proposition used as a flag to indicate
+when the max delta propositions should be checked and
+updated.
+• end, which is a proposition that represents the fact that
+all goals have been achieved.
+We also extend A with three types of actions. The first
+type Aδ updates the original actions to keep track of the
+prev cost counter and the current value of Delta between
+the current and the previous action. Each action aδ ∈Aδ
+is defined as follows:
+– pre(aδ) = pre(a) ∪{prev costi, ¬check}
+– eff(aδ) = eff(a)∪
+{¬prev costi, prev costc(a), delta|i−c(a)|, check}
+– c(aprev) = c(a)
+The second type of actions will appear interleaved in the
+plan between the updated original actions. For each pair of
+costs i, j ∈c(A), if i > j, we generate a new action in a new
+set A∆. Otherwise, we generate a new action in another new
+set A¬∆. Since we are operating over the grounded task, we
+can make the check when generating the compilation.
+• A∆, which are new actions that update the counter when
+delta is larger than max delta. Each action a∆∈A∆is
+defined as follows:
+– pre(a∆) = {check, deltai, max deltaj}
+– eff(a∆) = {¬check, ¬deltai, ¬max deltaj, max deltai}
+– c(a∆) = 0
+• A¬∆, which are new actions that do not update the
+counter when delta is lower or equal than max delta, just
+turn off the check flag, so Aδ actions can be executed
+again. Each action a¬∆∈A¬∆is defined as follows:
+– pre(a¬∆) = {check, deltai, max deltaj}
+– eff(a¬∆) = {¬check, ¬deltai}
+– c(a¬∆) = 0
+Finally, the third type of actions can only be executed at
+the end of planning, i.e., once a goal state has been reached.
+They increase the total cost of the plan depending on its
+Delta (Definition 3), i.e., the value of the max delta proposi-
+tion. We refer to this set of actions as Aend, and each action
+aend ∈Aend is defined as follows:
+– pre(aend) = G ∪{¬check, max deltai}
+– eff(aend) = {end}
+– c(aend) = i × ωd
+The new planning task is defined as follows:
+Definition 6. Given an original planning task Π, a com-
+piled task Π∆that lexicographically optimizes sum of ac-
+tion costs and Delta as dispersion metric is a tuple
+Π∆= ⟨F ′, A′, I′, G′, ωd⟩
+where,
+• F ′ = F ∪Fprev ∪Fδ ∪F∆∪{check, end}
+• A′ = Aδ ∪A∆∪A¬∆∪Aend
+• I′ = I ∪{prev costmin(c(A)), max deltamin(c(A))}
+• G′ = {end}
+This compilation generates a polynomial number of ac-
+tions that is given by the following formula:
+|A′| =
+
+Aδ
+z
+}|
+{
+|A| × |c(A)|
+
++
+A∆,A¬∆
+z }| {
+|abs|2 +
+Aend
+z}|{
+|abs|
+The first part of the formula refers to the different possible
+values of prev cost appearing in the precondition of the Aδ
+actions. The second part refers to the actions that update the
+max delta propositions, i.e., one action for each combina-
+tion of deltai, max deltaj, ∀i,j∈abs. The third part refers to
+the potential values of max delta at the end of planning. Fol-
+lowing a similar reasoning as in Propositions 1 and 2, it is
+easy to see that this compilation is also complete, sound, and
+can preserve ⪯c,d or ⪯d,c if we set ωd as a relation between
+the max/min Delta and cost differences between two plans.
+Compilation 3: Range
+Range is one of the most widely employed dispersion met-
+rics, since it is easy to compute and is known to correctly ap-
+proximate standard deviation σ under different distributions
+by applying the formula σ ≈Range
+4
+(Shiffler and Harsha
+1980). This dispersion metric is again not strictly isotone.
+Given a planning task Π, we extend F as follows:
+• Fmin = S
+i∈c(A){min costi}, which is a set of proposi-
+tions that keep track of the cost of the least costly action
+executed in a plan.
+• Fmax = S
+i∈c(A){max costi}, which is a set of proposi-
+tions that keep track of the cost of the most costly action
+executed in a plan.
+• end, which is a proposition that represents the fact that
+all goals have been achieved.
+We also extend the original set of actions with two types
+of actions. The first type updates the original actions to keep
+track of the min and max counters. We divide them into the
+following subsets of actions, which cover all possible ways
+in which the counters can be updated. Like in the Delta com-
+pilation, we can do this because we know all the action costs
+combinations beforehand.
+
+
+• Aboth, which are the original actions that update both
+counters when the cost of the action is (i) lower than the
+minimum, and (ii) greater than the maximum costs em-
+ployed in the plan. Each action aboth ∈Aboth is defined
+as follows:
+– pre(aboth) = pre(a) ∪{min costi, max costj}
+– eff(aboth) = eff(a)∪
+{¬min costi, min costc(a), ¬max costj, max costc(a)}
+– c(aboth) = c(a)
+• Amin, which are the original actions that update the
+min cost counter when the cost of the action is (i) lower
+than the minimum cost, and (ii) lower or equal than
+the maximum cost employed in the plan. Each action
+amin ∈Amin is defined as follows:
+– pre(amin) = pre(a) ∪{min costi, max costj}
+– eff(amin) = eff(a) ∪{¬min costi, min costc(a)}
+– c(amin) = c(a)
+• Amax, which are the original actions that update the
+max cost counter when the cost of the action is (i) greater
+or equal than the minimum cost, and (ii) greater than
+the maximum cost employed in the plan. Each action
+amax ∈Amax is defined as follows:
+– pre(amax) = pre(a) ∪{min costi, max costj}
+– eff(amax) = eff(a) ∪{¬max costj, max costc(a)}
+– c(amax) = c(a)
+• Anone, which are the original actions that do not update
+any counter when the cost of the action is (i) greater or
+equal than the minimum cost, and (ii) lower or equal than
+the maximum cost employed in the plan. Each action
+anone ∈Anone is defined as follows:
+– pre(anone) = pre(a) ∪{min costi, max costj}
+– eff(anone) = eff(a)
+– c(anone) = c(a)
+The second type of actions can only be executed at the end
+of planning, i.e., once a goal state has been reached, and in-
+crease the total cost of the plan depending on its Range. We
+create one action for each possible value of abs (Equation
+4). We refer to this set of actions as Aend, and each action
+aend ∈Aend is defined as follows:
+– pre(aend) = G ∪{min costi, max costj}
+– eff(aend) = {end}
+– c(aend) = (j −i) × ωd
+The new planning task is defined as follows:
+Definition 7. Given an original planning task Π, a com-
+piled task ΠR that lexicographically optimizes sum of ac-
+tion costs and Range as dispersion metric is a tuple
+ΠR = ⟨F ′, A′, I′, G′, ωd⟩
+where,
+• F ′ = F ∪Fmin ∪Fmax ∪{end}
+• A′ = Aboth ∪Amin ∪Amax ∪Anone ∪Aend
+• I′ = I ∪{min costmax(c(A)), max costmin(c(A))}
+• G′ = {end}
+This compilation generates a polynomial number of ac-
+tions that is given by the following formula:
+|A′| =
+Aboth,Amin,Amax,Anone
+z
+}|
+{
+(|A| × |c(A)|2)
++
+Aend
+z }| {
+|c(A)|2
+The first part of the formula refers to the different varia-
+tions of the original actions that we create for each possible
+value of the min cost and max cost counters. The second
+part refers to the actions that achieve the end goal proposi-
+tion. The number of these actions is given by all the com-
+binations of the min and max counters values. Following a
+similar reasoning as in Propositions 1 and 2, it is easy to see
+that this compilation is also complete, sound, and can pre-
+serve ⪯c,d or ⪯d,c if we set ωd as a relation between the
+max/min Range and cost differences between two plans.
+Evaluation
+Experimental Setting
+Benchmark.
+To conduct the evaluation, we need planning
+tasks with at least two different action costs. We analyzed the
+tasks in the Planning Domains repository1, and picked those
+domains without conditional effects that have problems that,
+after grounding, satisfy |c(A)| ≥2. In case some domains
+were duplicated (either from different years or tracks), we
+selected the problems of the latest optimal track. Table 2
+summarizes our benchmark, which consists of 387 prob-
+lems divided into 19 domains. The first column indicates the
+domain, as well as the maximum number of different ac-
+tion costs in any problem within the domain (max |c(A)|).
+The second column represents the distribution of costs in
+all the problems. Larger points along the segment indicate
+the given cost is present in more problems. The last two
+rows, FINANCE and NAVIGATION are the two novel domains
+we discussed in the introduction for which we generated
+the corresponding domain and randomly generated prob-
+lems sets. They are thought to be challenging for uniformest
+cost-optimal planning, as their problems have many more
+different action costs than standard planning tasks.
+Approaches.
+We evaluate the three compilations, namely
+Π#, Π∆and ΠR, on the above benchmark. Since most plan-
+ners only accept integer costs, we perform a similar cost
+transformation as in (Katz, R¨oger, and Helmert 2022) and
+set the weights as follows. When solving ⪯c,d, we set c(a) =
+c(a) × 106 and ωd = 1. Since 106 is a loose upper bound on
+the maximum dispersion a plan can have in our benchmark,
+we keep the theoretical properties. When solving ⪯d,c, we
+set ωd = 2 × 106, which is again a loose upper bound on
+the cost of the simple plans in our benchmark. Given a com-
+pilation C, we will refer to these configurations as Πc,d
+C
+or
+Πd,c
+C , respectively. We compare these 3×2 = 6 compilations
+against two baselines. The first one uses a standard planner
+solving task Π. We use this to understand the overhead in-
+curred by the compilations compared to solving the simpler
+task where only cost is optimized. The second one computes
+all the optimal plans of the standard planning task, which we
+1https://github.com/AI-Planning/classical-domains
+
+
+Domain (max |c(A)|)
+Actions Costs Distribution
+scanalyzer (2)
+sokoban (2)
+pegsol (2)
+openstacks (2)
+barman (2)
+petri-net (2)
+tetris (3)
+gedit (3)
+floortile (4)
+woodworking (6)
+agricola (6)
+elevators (10)
+cybersec (11)
+organic-synthesis (19)
+parcprinter (22)
+transport (27)
+data-network (33)
+finance (41)
+navigation (101)
+Table 2: Actions costs distribution across our benchmark.
+Π
+Πd,c
+#
+Πc,d
+#
+Πd,c
+∆
+Πc,d
+∆
+Πd,c
+R
+Πc,d
+R
+P(Π)
+Coverage 225
+167
+204
+100
+115
+105
+125
+115
+Table 3: Number of problems solved by each compilation.
+refer to as P(Π). We use this to understand if solving the
+compiled planning tasks is faster than computing P(Π) and
+then post-processing that set to find the most uniform plan.
+These two baselines can only be used to compare against
+the Πc,d compilations, since the Πd,c compilations are solv-
+ing a different task. However, we put them together so we
+can understand (i) which task is easier; and (ii) how far solv-
+ing Πc,d is from the optimal dispersion achieved by solving
+Πd,c.
+Reproducibility.
+We
+solve
+all
+the
+planning
+tasks
+(Π, Π#, Π∆and ΠR) and their different variations using the
+SEQ-OPT-LMCUT configuration of Fast Downward (Helmert
+2006), which runs A∗with the admissible LMCUT heuristic
+to compute an optimal plan. For computing the set of
+optimal plans P(Π), we use FORBIDITERATIVE (Katz et al.
+2018) with a limit of 100, 000 plans to avoid disk overflows.
+We chose this planner over other alternatives such as SYM-
+K (Speck, Mattm¨uller, and Nebel 2020) because its search
+process is more similar to that of SEQ-OPT-LMCUT, and
+therefore comparing their results is more fair. Experiments
+were run on an Intel Xeon E5-2666 v3 CPU @ 2.90GHz x
+8 processors with a 8GB memory bound and a time limit of
+1800s. Code and benchmarks are available upon request.
+Results
+Coverage and Execution Time Overhead.
+First, we want
+to understand how hard solving our compiled tasks is. Ta-
+ble 3 shows the coverage of each compilation and the two
+baselines across all domains and problems. As expected,
+d, c
+#
+c, d
+#
+d, c
+c, d
+d, c
+R
+c, d
+R
+( )
+100
+101
+102
+103
+Time Overhead Factor
+Figure 2: Distribution of the execution time overhead factor
+T (X)
+T (Π) for each approach X. Black dots represent the average.
+solving the standard planning task where only cost is opti-
+mized is easier, and the planner can find a cost-optimal plan
+for 225 instances. Optimizing for cost and breaking ties in
+favor of less disperse plans (Πc,d compilations) tends to be
+easier than doing the opposite, regardless of the dispersion
+metric. Taking a look to the specific metrics, minimizing
+the number of different action costs (Π# compilations) is
+somewhat comparable to standard planning, and definitely
+more feasible than computing all the cost-optimal plans.
+This is not the case when jointly optimizing cost and Delta
+or Range, where we get slightly lower coverages than when
+solving P(Π). This difference in coverage comes mainly
+from domains such as FINANCE or NAVIGATION, which are
+difficult for uniformest cost-optimal planning due to their
+large number of different action costs, but easier for top-
+quality planning, as they contain few cost-optimal plans.
+However, by post-processing all the cost-optimal plans we
+would only get those that optimize these metrics as a sec-
+ond objective, i.e., plans generated by the Πc,d compilations,
+and not those plans that prioritize uniformity (Πd,c compila-
+tions).
+In order to further understand the overhead induced by
+our compilations, we compare the execution time T needed
+by the planner to solve the new tasks X versus the time
+needed to solve the standard planning task. We refer to this
+as the time overhead factor, and formally define it as T (X)
+T (Π) .
+This execution time includes both the time needed to trans-
+late (and ground) the task and the solving time. To make
+the comparison fair, we only consider the 59 problems that
+are commonly solved by all the approaches. Figure 2 shows
+this analysis as a set of violinplots, which represent the dis-
+tribution of these factors in log scale for each approach.
+As we can see, minimizing the number of different action
+costs hardly introduces any overhead compared to solving
+the standard planning task, resulting into easier tasks in few
+problems. On the other hand, the rest of the compilations
+are much closer in execution time to computing all the cost-
+optimal plans.
+Is Solving Π Good Enough?
+With the coverage and exe-
+cution time results at hand, one could arguably ask whether
+solving the standard planning task Π is a good enough uni-
+
+
+d, c
+#
+c, d
+#
+d, c
+c, d
+d, c
+R
+c, d
+R
+1.00
+1.25
+1.50
+1.75
+2.00
+2.25
+2.50
+2.75
+3.00
+Dispersion Suboptimality Ratio
+Figure 3: Distribution of the dispersion suboptimality ratio
+d(π)
+d(πd) for each dispersion metric d.
+formity proxy. In order to refute this hypothesis, we com-
+pare the dispersion metric d induced by the plan obtained
+by the compilation that optimizes it, πd, against the disper-
+sion metric induced by the plan obtained by solving the stan-
+dard planning task, π. We refer to this as the dispersion sub-
+optimality ratio, and formally define it as
+d(π)
+d(πd). Figure 3
+shows this analysis as a set of violinplots, which represent
+the distribution of these ratios for each compilation. Here we
+consider problems that were commonly solved by the given
+compilation and the standard planning task. If we only focus
+on cost-optimal plans, i.e., only in the Πc,d compilations, the
+solution obtained by solving the standard planning task, π,
+also minimizes the given dispersion metric in most of the
+tasks. On the other hand, if we focus on uniformest plans,
+i.e., only in the Πd,c compilations, we observe a larger sub-
+optimality gap, meaning that π is not as uniform as it could.
+Although these results might initially suggest that solving
+the standard planning task provides uniform enough plans,
+that would be a conclusion drawn from a myopic analysis.
+This is because most planning tasks have few cost-optimal
+plans involving very few different action costs. If we per-
+form this analysis in tasks with plans that have different ac-
+tion costs, we can clearly observe that cost-optimal plans
+obtain dispersion metrics that are up to 3 times suboptimal.
+Figure 4 shows the cost and number of different action costs
+of the plans that solve Π, Πc,d
+# , and Πd,c
+# tasks in FINANCE.
+As we can see, the cost-optimal plans (green squares) are the
+cheapest, but often involve more action costs. On the other
+side of the spectrum we have Πd,c
+# (blue points), which com-
+putes uniformest plans, breaking ties in favor of less costly
+plans. Solving the compilation allows us to get plans that,
+although not cost-optimal in some cases, only contain two
+different action costs. In this domain, this means the plan is
+suggesting to always save the same amount of money ev-
+ery month (one action cost), plus the last zero-cost action
+that checks if the financial goal has been achieved. Πc,d
+# (or-
+ange crosses) represent a good compromise between both
+approaches, as the plans generated are cost-optimal and re-
+quire to use only three different action costs.
+2
+3
+4
+5
+6
+#( )
+1300
+1400
+1500
+1600
+1700
+1800
+1900
+c( )
+finance
+d, c
+#
+c, d
+#
+Figure 4: Cost (y) and number of different action costs (x)
+of the plans that solve Π, Πc,d
+# , and Πd,c
+# tasks in FINANCE.
+#( )
+( )
+R( )
+( )
+Metric
+d, c
+#
+d, c
+d, c
+R
+Approach
+1.00
+1.12
+1.07
+1.08
+1.07
+1.00
+1.04
+1.01
+1.01
+1.04
+1.00
+1.01
+1.00
+1.02
+1.04
+1.06
+1.08
+1.10
+Figure 5: Dispersion suboptimality ratio for each combina-
+tion of compilation (rows) and dispersion metric (columns).
+Lighter cells indicate better performance.
+How Some Dispersion Metrics Approximate Others.
+Finally, we want to understand whether optimizing for some
+dispersion metrics allow us to get good values in other met-
+rics. We perform this analysis with two objectives: (i) test
+if more scalable compilations such as Π# also approxi-
+mate Range or Delta; and (ii) test if some of these compi-
+lations also approximate well-established dispersion metrics
+for which we could not generate compilations such as stan-
+dard deviation σ. Figure 5 shows the result of this analysis
+as a heatmap, where we have the compilations that gener-
+ate uniformest plans in the rows, and the three different dis-
+persion metrics plus standard deviation in the columns. The
+values in the cells of the heatmap indicate the average dis-
+persion suboptimality ratio for each combination of compi-
+lation and dispersion metric in the 90 instances that were
+commonly solved by the three compilations. For example,
+a value of 1.00 in the (#(π), Πd,c
+# ) cell indicates that, as
+expected, compilation Πd,c
+# was able to always find plans
+with optimal #(π) values. On the other hand, the 1.12 in
+the next column of the same row indicates that compilation
+Πd,c
+# returned plans with an average suboptimality of 1.12
+with respect to the Delta dispersion metric. Since we cannot
+get the optimal standard deviation value for all the problems,
+
+
+we compute its dispersion suboptimality ratio by using the
+best σ value found by any compilation in the denominator.
+Cells with a lighter background indicate better (closer to
+the optimal) performance. If we analyze each approach (full
+row), we can observe that all the compilations approximate
+quite well all the dispersion metrics, including standard de-
+viation. This makes sense, as all the compilations are in one
+way or another restricting the variety of the action costs
+used. In particular, Πd,c
+∆and Πd,c
+R , the most complex com-
+pilations, obtain the best results across all dispersion met-
+rics. On the other hand, the more scalable compilation Πd,c
+#
+shows only a slightly worse behavior, which makes it a good
+candidate as an affordable way of getting uniform plans.
+Conclusions and Future Work
+In this paper we have introduced a novel objective that might
+be relevant in many planning applications: that of finding
+plans whose actions have costs that are as uniform as possi-
+ble. We have adapted three different dispersion metrics to
+automated planning, and presented six different compila-
+tions to produce plans that lexicographically optimize sum
+of action costs and the given dispersion metric. Experimen-
+tal results across a large number of existing and novel plan-
+ning tasks show that our methods are able to generate plans
+that optimally balance these two objectives. While some of
+the compilations generate tasks that are hard to solve in prac-
+tice, our compilations to generate plans with a low number
+of different action costs are able to scale on par with the
+standard planning task. The plans generated by solving these
+more amenable compilations are also able to implicitly op-
+timize more complex dispersion metrics, making them good
+candidates to compute uniform plans in practice.
+In this work we solely focused on computing optimal so-
+lutions for uniformest cost-optimal planning problems. In
+future work we would like to solve the compiled tasks us-
+ing satisficing planners to study the trade-off between scala-
+bility and suboptimality. Finally, we focused on actions cost
+uniformity, as cost usually encodes the effort of executing
+an action. Extending our compilations to other definitions
+of uniformity such as preferring to use the same grounded
+(lifted) action is straightforward, and we would like to eval-
+uate the resulting plans as part of future work.
+Disclaimer
+This paper was prepared for informational purposes by the
+Artificial Intelligence Research group of JPMorgan Chase
+& Co. and its affiliates (“JP Morgan”), and is not a prod-
+uct of the Research Department of JP Morgan. JP Morgan
+makes no representation and warranty whatsoever and dis-
+claims all liability, for the completeness, accuracy or relia-
+bility of the information contained herein. This document is
+not intended as investment research or investment advice, or
+a recommendation, offer or solicitation for the purchase or
+sale of any security, financial instrument, financial product
+or service, or to be used in any way for evaluating the merits
+of participating in any transaction, and shall not constitute a
+solicitation under any jurisdiction or to any person, if such
+solicitation under such jurisdiction or to such person would
+be unlawful.
+References
+Barth, M.; and Boriboonsomsin, K. 2009. Traffic congestion
+and greenhouse gases. Access Magazine, 1(35): 2–9.
+Edelkamp, S.; Jabbar, S.; and Lluch-Lafuente, A. 2005.
+Cost-algebraic heuristic search. In AAAI, volume 5, 1362–
+1367.
+Geißer, F.; Haslum, P.; Thi´ebaux, S.; and Trevizan, F. 2022.
+Admissible Heuristics for Multi-Objective Planning.
+In
+Proceedings of the International Conference on Automated
+Planning and Scheduling, volume 32, 100–109.
+Ghallab, M.; Nau, D. S.; and Traverso, P. 2004. Automated
+planning - theory and practice.
+Elsevier.
+ISBN 978-1-
+55860-856-6.
+Golledge, R. G. 1995. Path selection and route preference in
+human navigation: A progress report. In International con-
+ference on spatial information theory, 207–222. Springer.
+Gragera, A.; Fuentetaja, R.; Olaya, ´A. G.; and Fern´andez,
+F. 2023. A Planning Approach to Repair Domains with In-
+complete Action Effects. In Koenig, S.; Stern, R.; and Val-
+lati, M., eds., Proceedings of the Thirty-Third International
+Conference on Automated Planning and Scheduling, July 8-
+13, 2023, Prague, Czech Republic, 153–161. AAAI Press.
+Hanna, S. D.; and Lindamood, S. 2010.
+Quantifying the
+economic benefits of personal financial planning. Financial
+Services Review, 19(2).
+Helmert, M. 2006. The Fast Downward Planning System. J.
+Artif. Intell. Res., 26: 191–246.
+Hern´andez, C.; Yeoh, W.; Baier, J. A.; Zhang, H.; Suazo,
+L.; Koenig, S.; and Salzman, O. 2023. Simple and efficient
+bi-objective search algorithms via fast dominance checks.
+Artificial Intelligence, 314: 103807.
+Katz, M.; R¨oger, G.; and Helmert, M. 2022. On Producing
+Shortest Cost-Optimal Plans. In Proceedings of the Inter-
+national Symposium on Combinatorial Search, volume 15,
+100–108.
+Katz, M.; Sohrabi, S.; Udrea, O.; and Winterer, D. 2018. A
+novel iterative approach to top-k planning. In Proceedings
+of the International Conference on Automated Planning and
+Scheduling, volume 28, 132–140.
+Mandow, L.; and De La Cruz, J. L. P. 2008. Multiobjective
+A* Search with Consistent Heuristics. J. ACM, 57(5).
+McDermott, D.; Ghallab, M.; Howe, A.; Knoblock, C.; Ram,
+A.; Veloso, M.; Weld, D.; and Wilkins, D. 1998. PDDL - The
+Planning Domain Definition Language.
+Pozanco, A.; Papasotiriou, K.; Borrajo, D.; and Veloso, M.
+2023. Combining Heuristic Search and Linear Programming
+to Compute Realistic Financial Plans.
+In Proceedings of
+the International Conference on Automated Planning and
+Scheduling, volume 33, 527–531.
+Salzman, O.; Felner, A.; Hernandez, C.; Zhang, H.; Chan,
+S. H.; and Koenig, S. 2023. Heuristic-Search Approaches
+for the Multi-Objective Shortest-Path Problem: Progress and
+
+
+Research Opportunities. In 32nd International Joint Con-
+ference on Artificial Intelligence, IJCAI 2023, 6759–6768.
+International Joint Conferences on Artificial Intelligence.
+Shiffler, R. E.; and Harsha, P. D. 1980. Upper and lower
+bounds for the sample standard deviation. Teaching Statis-
+tics, 2(3): 84–86.
+Sobrinho, J. L. 2001. Algebra and algorithms for QoS path
+computation and hop-by-hop routing in the Internet.
+In
+Proceedings IEEE INFOCOM 2001. Conference on Com-
+puter Communications. Twentieth Annual Joint Conference
+of the IEEE Computer and Communications Society (Cat.
+No. 01CH37213), volume 2, 727–735. IEEE.
+Speck, D.; Mattm¨uller, R.; and Nebel, B. 2020. Symbolic
+top-k planning. In Proceedings of the AAAI Conference on
+Artificial Intelligence, volume 34, 9967–9974.
+Stewart, B. S.; and White III, C. C. 1991. Multiobjective a.
+Journal of the ACM (JACM), 38(4): 775–814.
+Ulloa, C. H.; Yeoh, W.; Baier, J. A.; Zhang, H.; Suazo, L.;
+and Koenig, S. 2020. A simple and fast bi-objective search
+algorithm. In Proceedings of the International Conference
+on Automated Planning and Scheduling, volume 30, 143–
+151.

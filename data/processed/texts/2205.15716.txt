@@ -1,0 +1,791 @@
+Multi-Agent Learning of Numerical Methods for
+Hyperbolic PDEs with Factored Dec-MDP⋆
+Yiwei Fu1, Dheeraj S.K. Kapilavai1, and Elliot Way2
+1 GE Research, Niskayuna NY 12309, USA {yiwei.fu, kapilava}@ge.com
+2 Binghamton University, Binghamton, NY 13902, USA ellioteway@gmail.com
+Abstract. Factored decentralized Markov decision process (Dec-MDP)
+is a framework for modeling sequential decision making problems in
+multi-agent systems. In this paper, we formalize the learning of numerical
+methods for hyperbolic partial diﬀerential equations (PDEs), speciﬁcally
+the Weighted Essentially Non-Oscillatory (WENO) scheme, as a factored
+Dec-MDP problem. We show that diﬀerent reward formulations lead to
+either reinforcement learning (RL) or behavior cloning, and a homoge-
+neous policy could be learned for all agents under the RL formulation
+with a policy gradient algorithm. Because the trained agents only act on
+their local observations, the multi-agent system can be used as a general
+numerical method for hyperbolic PDEs and generalize to diﬀerent spatial
+discretizations, episode lengths, dimensions, and even equation types.
+Keywords: Decentralized Markov Decision Process · Multi-Agent Sys-
+tem · Numerical Method · Partial Diﬀerential Equation
+1
+Introduction
+Numerical methods such as the ﬁnite diﬀerence method (FDM), ﬁnite element
+method (FEM), and ﬁnite-volume method (FVM) were designed on grids of data
+points to approximate the solutions of partial diﬀerential equations (PDEs) nu-
+merically. Speciﬁcally, hyperbolic PDEs are often used in real-world applications,
+especially in the ﬁeld of ﬂuid dynamics for modeling the motion of viscous ﬂuids
+with high Reynolds numbers, multiphase ﬂows, water waves, etc. Often, simula-
+tions of these physical processes exploit the numerical ﬂuxes of some conserved
+quantities from ﬁnite diﬀerences between two elements, and time integration is
+used to determine the next state. This kind of incremental computation in time
+is similar to a Markov Decision Process (MDP), where the next state is deter-
+mined only by the current state, and actions provided by the numerical method.
+Since numerical computations happen at all grid points simultaneously, this can
+be viewed as a multi-agent system where each agent only has partial knowledge
+of the state, modeled by a decentralized MDP (Dec-MDP) [4].
+The reason that a Dec-MDP is the proper framework for modeling numerical
+methods can be justiﬁed from two perspectives. On one hand, if we let a single
+⋆This work was supported in part by the Defense Advanced Research Projects Agency
+(DARPA) under Agreement No. HR00112090063.
+arXiv:2205.15716v1  [cs.LG]  31 May 2022
+
+
+2
+Y. Fu et al.
+agent act on the entire physical space, which often has at least hundreds of
+discretized locations and requires multiple actions at each location, the number
+of action dimensions would be huge, with each one being continuous. Such large
+continuous action space quickly becomes impossible to deal with. Even with
+the most recent advances in deep Reinforcement Learning (RL), DQN [10] and
+all of its follow-ups are only able to handle large observation spaces, while the
+action spaces remain small discrete ones. Many Deep RL applications in robotics
+and control [7] do handle continuous action spaces, but they usually have less
+than ten dimensions, because there are simply not that many degrees of freedom
+in one robot. Besides, learning a numerical method with a single agent is not
+generalizable: any changes in spatial discretization require retraining.
+On the other hand, existing numerical schemes cannot be treated as multiple
+independent agents acting alone at their respective locations. PDEs that describe
+some underlying processes must have physics that propagates from one location
+to the other, so if the action at one location changes, the state at another location
+would be diﬀerent even if the action at that location stays the same. This causes
+the non-stationary issue in a multi-agent environment [23]. Therefore, to properly
+model numerical methods, a Dec-MDP framework has to be used to account for
+the eﬀects of other agents.
+Speciﬁcally in this paper, we focus on learning Weighted Essentially Non-
+Oscillatory (WENO) [8,18], a state-of-the-art numerical scheme with a uniform
+high order of accuracy in ﬂux reconstruction. The main idea of WENO is to form
+a weighted combination of several local reconstructions based on diﬀerent sten-
+cils and use it as the ﬁnal WENO reconstruction. The combination coeﬃcients
+(weights) depend on the linear weights and smooth indicators [24]. Later we will
+highlight the insight that these weights can be viewed as actions of agents.
+In the ﬁeld of multi-agent systems, it is well known that optimally solving a
+Decentralized Partially Observable Markov Decision Process (Dec-POMDP) is
+NEXP-complete [3]. Although Dec-POMDP is a more generalized formulation
+of Dec-MDP, with the latter being the jointly fully observable version of the
+former, Dec-MDP is still NEXP-complete. In our previous work [22], a policy
+gradient algorithm called Backpropagation Through Time and Space (BPTTS)
+is proposed to solve the multi-agent reinforcement learning problem for numerical
+methods with recurrent neural networks (RNNs). Here we use BPTTS to solve a
+factored Dec-MDP problem, and show that automatic diﬀerentiation is possible
+for the RL formulation to learn a generalizable numerical scheme.
+In this paper, we introduce the fundamentals of both Dec-MDPs and nu-
+merical methods. Then, the key insight that the learning of numerical methods
+can be modeled as a factored Dec-MDP is drawn. We analyzed diﬀerent reward
+formulations which lead to either RL or behavior cloning. A policy gradient algo-
+rithm, BPTTS [22], is used to solve the homogeneous multi-agent RL problem.
+We show that the learned policy can generate numerical solutions for hyper-
+bolic PDEs comparable to WENO methods, and can generalize to diﬀerent grid
+discretizations, initial conditions, dimensions, and equations. This practical ap-
+
+
+Multi-Agent Learning of Numerical Methods with Factored Dec-MDP
+3
+plication of using a factored Dec-MDP framework to solve hyperbolic PDEs is
+novel, and could potentially have real impacts on both industry and academia.
+2
+Related Work
+In the ﬁeld of numerical analysis, there are two distinct classes of methods:
+mesh-based methods and meshfree methods. The comparison of these two is
+beyond the scope of this paper, but usually they are incompatible, thus so are
+the machine learning approaches that try to learn them. For example, the WENO
+method [18] used in this paper is a mesh-based method; while on the other hand,
+the popular Physics Informed Neural Network (PINN) [15] and their descendants
+are meshfree: they directly use neural networks to approximate the solutions,
+gradients, or operators of PDEs. Since both the spatial and temporal coordinates
+are explicit in PINN inputs, modern deep learning architectures which handle
+spatial or temporal information implicitly, like Convolutional Neural Networks
+(CNNs), Recurrent Neural Networks (RNNs), etc., are not directly applicable.
+As a result, PINNs often resort to fully-connected neural networks.
+Among numerous papers at the intersection of machine learning and mesh-
+based numerical methods, the setup in Wang et al. [21] resembles that of this
+paper most closely. Although they are also trying to learn a high-order numerical
+scheme for hyperbolic PDEs, they treat this inherently multi-agent problem as
+multiple independent single-agents. This will lead to a sub-optimal solution at
+best because for each agent the environment becomes non-stationary: the actions
+taken by one agent will aﬀect the rewards of other agents and the state evolution
+at other locations. This invalidates the stationary Markovian assumption that
+the individual reward and current state should depend only on the previous
+state and actions taken. There exist some other papers that claim to have used
+multi-agent RL to discover closure models in simulations of turbulent ﬂows [11,2].
+However, they are not formulated under a truly decentralized framework because
+of the use of replay buﬀers. When sampling diﬀerent state-action pairs inside a
+replay buﬀer, the temporal correlations are broken, therefore the eﬀects of other
+agents’ actions over time on one agent’s current state are lost, again leading to a
+non-stationary environment. To sum up, solutions to these multi-agent systems
+must be consistent both spatially and temporally.
+In the ﬁeld of multi-agent systems, there have been some previous papers on
+factored Dec-POMDPs, which is close to the formulation in this paper. Oliehoek
+et al. [12] exploit the locality of interactions between agents in a factored Dec-
+POMDP and formulated decomposable value functions. This leads to a single
+framework based on collaborative graphical Bayesian games and is solved by
+heuristic policy search. However, this approach is only tested on a simple factored
+Fireﬁghting problem (FFP) with three agents. Later on, this was extended to
+deal with more agents [13] by using a factored forward-sweep policy computation
+that tackles the stages of the problem one by one, but the action space for each
+agent remains the same (two discrete choices). Pajarinen et al. [14] propose an
+
+
+4
+Y. Fu et al.
+expectation-maximization based optimization for factored inﬁnite-horizon Dec-
+POMDP and kept the complexity tractable by factored approximations. They
+apply the algorithm to the same FFP with a maximum of 10 agents. Messias et
+al. [9] convert a factored Dec-POMDP to a centralized Multi-agent POMDP by
+allowing inter-agent communications. Amato et al. [1] model macro-actions as
+options in a factored Dec-POMDP model to model systems where coordination
+decisions only occur at the level of deciding which macro-actions to execute.
+They have demonstrated that near-optimal solutions can be generated for longer
+horizons and larger state spaces than previous Dec-POMDP methods.
+3
+Background
+In this section, we introduce the background of both factored Dec-MDP for
+modeling multi-agent systems, and weighted essentially nonoscillatory (WENO)
+scheme, a high-order accurate numerical scheme for hyperbolic PDEs.
+3.1
+Factored Dec-MDP
+Before deﬁning the multi-agent framework used in this paper, factored Dec-MDP,
+it is helpful to ﬁrst introduce Dec-POMDP and Dec-MDP, because factored Dec-
+MDP is a special case of Dec-MDP, who is a special case of Dec-POMDP [4].
+Deﬁnition 1.
+Dec-POMDP: A Dec-POMDP for n agents is deﬁned as a
+tuple ⟨S, A, P, Ω, O, R⟩where:
+– S is a ﬁnite set of system states;
+– A = ⟨A1, . . . , An⟩is a set of joint actions; Ai is the set of actions ai that
+can be executed by agent Agi;
+– P = S × A × S →[0, 1] is a transition function; P (s, a, s′) is the probability
+of the outcome state s′ when the agents execute the joint action a from s;
+– Ω= Ω1 × Ω2 × · · · × Ωn is a ﬁnite set of observations, where Ωi is Agi’s set
+of observations;
+– O = S × A × S × Ω→[0, 1] is the observation function; O (s, a, s′, o =
+⟨o1, . . . , on⟩) is the probability that each agent Agi observes oi when they
+execute the joint action a from state s and the system moves to state s′
+– R is a reward function; R (s, a, s′) is the reward the system obtains when the
+agents execute joint action a from state s and the system moves to state s′.
+Deﬁnition 2. Dec-MDP: A Dec-MDP is a special case of Dec-POMDP where
+the system state is jointly observable, i.e.:
+– If O(s, a, s′, o = ⟨o1, ..., on⟩) > 0, then Pr(s′|⟨o1, ..., on⟩) = 1.
+Note that joint observability does not entail local observability. For each indi-
+vidual agent, the full system state is still partially observable.
+
+
+Multi-Agent Learning of Numerical Methods with Factored Dec-MDP
+5
+Deﬁnition 3.
+Factored Dec-MDP: A factored Dec-MDP is a Dec-MDP
+where the state of the system S = X1 × X2 × · · · × X|X| has |X| components
+and is spanned by X = {X1, X2, · · · , X|X|}.
+Like factored Dec-POMDP in [12], the reward function of factored Dec-MDP
+can often be compactly represented by exploiting additive separability, meaning
+that the total reward can be decomposed into the sum of local reward functions
+R = R1 + · · · + Rp. The local reward functions are often deﬁned over a smaller
+number of state and action variables and the scope of them is smaller.
+3.2
+Hyperbolic PDEs and WENO Scheme
+Conservation laws in many branches of classical physics, such as ﬂuid dynam-
+ics and electrodynamics, are often described by hyperbolic PDEs. The ﬁnite-
+diﬀerence grid is often used when dealing with such equations. The goal is to
+evolve a vector of conserved quantities u ∈Rd on a uniform N-point discretiza-
+tion DN = {x1, x2, . . . , xj, . . . , xN} for hyperbolic PDE of the form:
+∂u
+∂t + ∂
+∂xf(u) = 0
+(1)
+where f(u) are ﬂuxes of each quantity in u that are exchanged at the interface
+xj± 1
+2 of each cell, Ij = [xj−1
+2 , xj+ 1
+2 ]. The initial conditions, u(xj, 0) at all loca-
+tions at the beginning of the simulation, along with boundary conditions, u(x1, t)
+and u(xN, t) at all times, are required to specify the PDE. Then, the method of
+lines [17] is used to convert the PDE to an ordinary diﬀerential equation (ODE),
+where the spatial derivative is approximated by the ﬁnite diﬀerences:
+duj(t)
+dt
+= −1
+∆x( ˆfj+ 1
+2 −ˆfj−1
+2 )
+(2)
+with uj being the approximation to the point value u(xj, t) and ˆfj± 1
+2 being the
+numerical ﬂuxes computed at the interfaces using cell values. A high-order ﬁnite
+diﬀerence scheme boils down to
+– using a high-order time integration scheme (e.g., a high-order Runge-Kutta
+method);
+– using the ﬁnite diﬀerence in Equation (2) to approximate the derivative of
+the ﬂux to a high order.
+WENO scheme [18] is one high-order scheme. A WENO scheme of order r can
+achieve a 2r−1 order spatially accurate construction of ˆfj+ 1
+2 by using the stencil
+Sj with 2r −1 points around u(xj, t). Speciﬁcally, it computes ˆfj+ 1
+2 as a convex
+combination of polynomials deﬁned on r small stencils inside Sj:
+ˆfj+ 1
+2 =
+r−1
+X
+k=0
+ωk ˆfk,j+ 1
+2
+with
+r−1
+X
+k=0
+ωk = 1
+(3)
+
+
+6
+Y. Fu et al.
+where ˆfk,j+ 1
+2 is the polynomial reconstruction of the k-th small stencil. For
+example, for a 2-nd order WENO scheme at location xj, the stencil is:
+Sj = {xj−1, xj, xj+1}
+(4)
+and the 2 small stencils are {xj−1, xj}, {xj, xj+1} respectively.
+To choose these convex weights ωk and ensure they sum up to 1, WENO
+scheme computes the following:
+ωk =
+αk
+Pr
+m=1 αm
+with
+αk =
+dk
+(ε + βk)2
+(5)
+where dk is a pre-computed optimal coeﬃcient determined by a smoothness
+indicator βk, and ϵ is a small positive number to avoid the denominator becoming
+zero. In smooth regions, these weights are designed to produce higher-order
+approximations. At discontinuities, WENO can select the single best small stencil
+to avoid discontinuities as far as possible by setting the one ωk corresponding to
+that small stencil to be 1, and all other weights to be 0. Since the core of WENO
+scheme is actually an approximation procedure not directly related to hyperbolic
+PDEs or ﬁnite diﬀerence methods, it can also be generalized and applied to other
+types of schemes (ﬁnite volume, compact schemes, residual distribution schemes,
+limiters for the discontinuous Galerkin schemes, etc.), or to diﬀerent ﬁelds [19].
+4
+Problem Formulation and Analysis
+With the background information provided in Section 3, here we draw the con-
+nection between numerical methods and factored Dec-MDP, and provide some
+analysis on the reward formulations.
+4.1
+Numerical Methods as Multi-Agent Systems
+Because of the diﬃculty of translating a PDE into a computable model, the de-
+sign of numerical schemes often requires substantial eﬀorts by domain experts.If
+the discovery of numerical schemes can be automated, it could potentially have
+huge impacts on many applications. We make the key connection here that
+WENO scheme works exactly like a collaborative multi-agent system.
+To formulate the learning of numerical methods for hyperbolic PDEs as a
+factored Dec-MDP problem, we can start with the discretization of the physical
+space in Equation (1), which is precisely factoring the entire system state S ≡u
+into n components u1 × u2 · · · × un as in Deﬁnition 3. From Equation (3) to
+(5), we can see that for WENO scheme at a certain location, it is essentially
+doing a local observation on the stencil and then coming up with the weights
+to recompute the ﬂuxes. This process is exactly an agent taking an action a
+after observing a state, with the action being the weights ωk in Equation (3).
+Then, the PDE (or environment) uses Equation (2) to integrate the system to
+the next state, which deﬁnes a deterministic transition function. This system
+
+
+Multi-Agent Learning of Numerical Methods with Factored Dec-MDP
+7
+𝑟𝑟𝑗𝑗+1
+2
+𝑢𝑢𝑗𝑗
+𝑢𝑢𝑗𝑗+1
+𝑢𝑢𝑗𝑗−1
+𝑢𝑢𝑗𝑗+2
+𝑎𝑎𝑗𝑗−1
+2
+𝑎𝑎𝑗𝑗+1
+2̂
+𝑓𝑓𝑗𝑗+1
+2̂
+𝑓𝑓𝑗𝑗−1
+2
+𝑎𝑎𝑗𝑗+11
+2̂
+𝑓𝑓𝑗𝑗+11
+2
+𝑜𝑜𝑗𝑗+1
+2
+𝑢𝑢𝑗𝑗
+𝑢𝑢𝑗𝑗+1
+𝑢𝑢𝑗𝑗−1
+𝑢𝑢𝑗𝑗+2
+𝑜𝑜𝑗𝑗+11
+2
+𝑜𝑜𝑗𝑗−1
+2
+𝑢𝑢𝑗𝑗−2
+𝑢𝑢𝑗𝑗−2
+𝑜𝑜𝑗𝑗−11
+2̂
+𝑓𝑓𝑗𝑗−11
+2
+𝑟𝑟𝑗𝑗−1
+2
+𝑟𝑟𝑗𝑗−1
+2
+𝑟𝑟𝑗𝑗−1
+2
+…
+…
+…
+…
+…
+…
+Time 𝑡𝑡
+Time 𝑡𝑡−1
+𝑎𝑎𝑗𝑗−11
+2
+Fig. 1: The dynamics of the numerical scheme over two steps. The scope of rj+ 1
+2 ,
+illustrated by shading, increases when going back in time.
+state is Markovian and the next set of agents’ actions only depends on the next
+state, because WENO scheme does not keep track of the history. Furthermore,
+since the joint observation for all agents fully covers the entire physical space,
+the system state is jointly observable, but not locally fully observable. Therefore,
+the learning of WENO schemes can be properly modeled as a factored Dec-MDP
+problem.
+In order to learn WENO scheme, the immediate reward (the details of which
+will be discussed in Section 4.2) is deﬁned at interface j + 1
+2 as the average of the
+error in its two adjacent cells. An error of 0 means that our agents have learned
+actions similar to WENO actions so that the PDE system state evolves to the
+same one. Following the deﬁnition of scope in [12], we can draw the dynamics
+of the numerical scheme in Figure 1 and observe that the scope increases when
+going back in time. This should make sense from both the multi-agent system
+perspective and the physics perspective: the action of an agent at a certain
+time and space would aﬀect the observations of other agents at a later time, or
+the physics would propagate from one location to another. This is precisely the
+reason that a multi-agent system should not be modeled as multiple independent
+single agents as in [21]. It should be noted that as with our previous work [22],
+Lax-Friedrichs ﬂux splitting [6] was used to ensure numerical stability and avoid
+entropy-violating solutions, which makes the ﬂux reconstruction slightly diﬀerent
+by splitting them into plus and minus terms, but the main idea still holds.
+
+
+8
+Y. Fu et al.
+4.2
+Analysis of Diﬀerent Reward Formulations
+Among components of the factored Dec-MDP, the transition function and ob-
+servation function are already determined by physics, so the only moving piece
+is the reward function. We formalize the reward at interface j + 1
+2 as follows:
+rt
+j+ 1
+2 = −|ut
+j −ref t
+j| + |ut
+j+1 −ref t
+j+1|
+2
+(6)
+where ut
+j is factored state uj at time t, and ref t
+j is a reference state at the
+same location j and time t computed by some existing numerical methods like
+WENO. Maximizing this reward will lead to the agents trying to evolve the state
+to be as close to the reference state as possible. Because the system immediate
+reward at time t is the summation of rt
+j+ 1
+2 in Equation (6) at all interfaces, rt =
+P
+j rt
+j+ 1
+2 = −P
+j |ut
+j −ref t
+j| (with a small caveat that the boundary conditions
+needed to be computed according to the physics), we can further analyze the
+reward function with integration from Equation (2) and (3) as follows:
+rt = −
+X
+j
+|ut
+j −ref t
+j| = −
+X
+j
+|ut−1
+j
+−∆t
+∆x( ˆfj+ 1
+2 −ˆfj−1
+2 ) −ref t
+j|
+= −
+X
+j
+|ut−1
+j
+−∆t
+∆x
+r−1
+X
+k=0
+(ak,j+ 1
+2 ˆfk,j+ 1
+2 −ak,j−1
+2 ˆfk,j−1
+2 ) −ref t
+j|
+(7)
+There are diﬀerent choices of reference states, and diﬀerent reward functions
+can be combined. However, reward engineering is beyond the scope of this paper,
+here we analyze 3 simple reward formulations for the PDE environment:
+1. RL-WENO (Markovian WENO agent-based simulation rewards): the refer-
+ence state is calculated from ut−1 with the standard WENO scheme following
+the computational graph in Figure 1. This reward is Markovian because the
+actions of the standard WENO actions depend only on the most recent state.
+This reward leads to a reinforcement learning problem. Equation (7) becomes
+rt = −∆t
+∆x
+P
+j
+Pr−1
+k=0 |(ak,j+ 1
+2 −ωk,j+ 1
+2 ) ˆfk,j+ 1
+2 −(ak,j−1
+2 −ωk,j−1
+2 ) ˆfk,j−1
+2 )|,
+with ωk being the actions taken by the WENO scheme at ut−1
+k
+.
+2. BC-WENO (Non-Markovian ﬁxed WENO solution rewards): the reference
+state is pre-calculated by running a WENO scheme from an initial condition
+all the way till the end. This reward is non-Markovian because the refer-
+ence state is ﬁxed and does not depend on the current system state. This
+ﬁxed expert trajectory leads to behavior cloning and is a supervised learn-
+ing problem. Equation (7) becomes rt = −∆t
+∆x
+P
+j
+Pr−1
+k=0 |ak,j+ 1
+2 ˆfk,j+ 1
+2 −
+Ct
+k,j+ 1
+2 −ak,j−1
+2 ˆfk,j−1
+2 + Ct
+k,j−1
+2 |, with Ct
+k,j+ 1
+2 and Ct
+k,j−1
+2 being constants
+predetermined by the reference state trajectory.
+3. BC-analytical (Non-Markovian ﬁxed analytical solution rewards): similar to
+BC-WENO, but the reference trajectory is pre-calculated by using the an-
+alytical solution to the PDE. Of course, this requires the existence of such
+
+
+Multi-Agent Learning of Numerical Methods with Factored Dec-MDP
+9
+analytical solutions to begin with. This reward also leads to behavior cloning.
+The reward structure is similar to BC-WENO, but with diﬀerent constants
+calculated by the analytical solution.
+With the reward function deﬁned and exploiting the fact that all state tran-
+sitions are diﬀerentiable in this PDE environment, we could train a policy gra-
+dient algorithm (such as BPTTS [22]) for this homogeneous multi-agent system
+to learn numerical methods. The policy is parameterized by a fully connected
+neural network (NN) whose weights are shared by all agents. During training,
+gradients ﬂow back in time and space following the shaded routes as illustrated
+in Figure 1 and an RNN-like computational graph is created. However, this re-
+current structure is not used once the agents are trained, because in a factored
+Dec-MDP, each agent’s actions only depend on its immediate observations. This
+leads to incredible generalizability for the multi-agent system: they can be ap-
+plied to diﬀerent spatial and/or temporal discretizations, as shown in Section 5.
+Although the performance of agents in RL-WENO is upper-bounded by
+the WENO scheme (so is BC-WENO), i.e., the best learning results would be
+ak,j+ 1
+2 = ωk,j+ 1
+2 or the agents take actions exactly like WENO schemes leading
+to the maximum reward of 0, the RL formulation provides a straightforward
+framework for the agents to learn. This is also the reward used in our previous
+work [22]. BC-WENO and BC-analytical not only suﬀer from the distributional
+drift problem in behavior cloning [16], but also have an obvious local minimum
+where ak,j+ 1
+2 ˆfk,j+ 1
+2 = ak,j−1
+2 ˆfk,j−1
+2 since Ct
+k,j+ 1
+2 , Ct
+k,j−1
+2 are just constants. This
+could potentially make gradient descent diﬃcult, as shown in Section 5.
+5
+Experiment Results
+In this section, we introduce the Euler equations as an example of hyperbolic
+PDEs, and compare the training on the 3 diﬀerent reward formulations proposed
+in Section 4.2. We then show that the trained system of RL-WENO agents
+can generalize to diﬀerent spatial discretizations and temporal lengths, initial
+conditions (ICs), equations, and even 2D Euler equations.
+5.1
+Euler Equations and Training Setup
+The Euler equations describe the conservation of mass, momentum, and energy
+for ﬂuids. They are given by:
+Ut + [F(U)]x = 0
+with
+U =
+
+
+ρ
+ρu
+ρE
+
+
+F(U) =
+
+
+ρu
+ρuu + p
+ρuE + up
+
+
+(8)
+where ρ is the density, u is the velocity, p is the pressure and E is the total
+energy. E is calculated by internal energy, e, and kinetic energy as E = e + 1
+2u2.
+The equations are closed by the addition of an equation of state, a common
+choice of which is the gamma-law given by p = ρe(γ −1) where γ = 1.4.
+
+
+10
+Y. Fu et al.
+Following the training setup in [22], we trained a system of agents to learn the
+order r = 2 WENO schemes on the Sod initial condition [20]. During training, the
+space is discretized into N = 128 points, i.e., the factored Dec-MDP has a system
+state S of 128 factors, resulting in a state of the shape (3, 128) for the 3 equations.
+For agents trying to learn the r = 2 WENO scheme, the system observation space
+has a shape of (3, 129, 2, 3): 3 equations, 129 agents for each equation, 2 plus and
+minus ﬂuxes (because of Lax-Friedrichs ﬂux splitting mentioned in Section 4.1)
+and 3 points in each stencil. The corresponding action space shape is (3, 129, 2, 2):
+the ﬁrst three dimensions are the same as the observation space, and the last
+is the 2 weights (actions) on the small stencils as given in Equation 3. Each
+component of the observation and action space is continuous.
+During training, the system is evolved to 1,000 timesteps of 0.0001 seconds
+for a total of 0.1 seconds for each episode, and a total of 10,000 episodes. The
+policy network for each agent is a 2-layer NN with 64 neurons each and ReLU
+activation. An Adam optimizer [5] with a learning rate of 0.0003 is used to train
+the policy gradient algorithm. The training takes about 2 days on a 2.2GHz CPU
+(GPU was tried but turned out to be slower because most of the computations
+are in the environment, not during NN training). Once trained, the system of
+agents can perform inference at a similar speed as standard WENO schemes.
+5.2
+Results and Discussions
+The same multi-agent system is trained with the 3 reward formulations described
+in Section 4.2 and their total rewards during training are shown in Figure 2. The
+agents are not able to learn under either BC-WENO or BC-analytical reward for-
+mulation (potentially trapped in a local minimum), but in contrast, RL-WENO
+is successful. In fact, when we train agents on r ≥3 schemes, BC-WENO and
+BC-analytical would lead to gradient explosion immediately and the simulation
+has to be terminated. This is not to prove that they cannot be learned, but
+merely to show that behavior cloning can be diﬃcult to train in this multi-agent
+system. Trained RL-WENO agents are used for the rest of this section.
+We then show the generalizability of the trained RL-WENO agents in Ta-
+ble 1. They were tested on diﬀerent initial conditions (ICs) and evolved to longer
+timesteps, as detailed in [22]. Because in this factored Dec-MDP formulation each
+agent only acts on its local observations, when the spatial discretization changes
+we can simply add more trained agents. As shown in Table 1, the agents have
+learned the standard WENO agents’ policy and the system is able to perform al-
+most exactly like the state-of-the-art WENO numerical scheme for solving Euler
+equations.
+Furthermore, we show that the RL-WENO agents trained on 1D Euler Equa-
+tions can be applied to solving a diﬀerent hyperbolic PDE, Burger’s Equation, as
+shown in Figure 3a. The agents behave exactly like the standard WENO scheme
+and generate solutions close to the true analytical solution. The same agents can
+also be applied to solving 2D Euler equations as shown in Figure 3b by acting
+on both dimensions. These results show that the agents have truly learned the
+physics and the multi-agent system can perform new tasks.
+
+
+Multi-Agent Learning of Numerical Methods with Factored Dec-MDP
+11
+0
+2000
+4000
+6000
+8000
+10000
+Episodes
+120
+100
+80
+60
+40
+20
+0
+Reward
+RL-WENO
+BC-WENO
+BC-analytical
+Fig. 2: Reward during training for diﬀerent reward formulations.
+Table 1: Comparison of trained RL-WENO agents’ and standard WENO agents’
+L2 error with the analytical solution for Euler equations on diﬀerent ICs.
+IC
+Sod
+Sod2
+Lax
+Sonic Rarefaction
+N RL-WENO WENO RL-WENO WENO RL-WENO WENO RL-WENO WENO
+64
+0.0707
+0.0707
+0.0628
+0.0628
+0.5275
+0.5280
+2.1192
+2.1183
+128
+0.0420
+0.0420
+0.0407
+0.0407
+0.4109
+0.4110
+1.2401
+1.2402
+256
+0.0278
+0.0278
+0.0267
+0.0267
+0.2411
+0.2411
+0.7867
+0.7866
+512
+0.0218
+0.0218
+0.0183
+0.0183
+0.2232
+0.2233
+0.5531
+0.5532
+6
+Conclusion
+In this paper, we introduced both factored Dec-MDP and numerical methods
+and formulated the learning of WENO scheme as a multi-agent learning prob-
+lem. We analyzed diﬀerent reward formulations, which lead to reinforcement
+learning (RL) or behavior cloning. We experimentally tested these formulations
+and showed that the agents could learn a policy under the RL formulation using
+a policy gradient algorithm. Because of the ﬂexibility provided by this factored
+Dec-MDP framework, the trained agents can be applied to diﬀerent spatial dis-
+cretizations, episode lengths, and even equations. This paper aims to bridge
+the gap between the domains of scientiﬁc computing and multi-agent systems.
+There are many future directions for this work, including but not limited to
+learning new numerical schemes that go beyond imitating existing methods by
+automatically discovering better ones.
+
+
+12
+Y. Fu et al.
+0.00
+0.25
+0.50
+0.75
+1.00
+x
+1.0
+1.2
+1.4
+1.6
+1.8
+2.0
+u
+True Solution
+WENO
+RL
+(a) Burger’s Equation with rarefaction
+initial condition, evolved to 0.2s.
+(b) 2D Euler Equations with Kelvin-Helmholtz
+initial condition, evolved to 2.0s.
+Fig. 3: Testing RL-WENO agents on diﬀerent equation and diﬀerent dimension.
+References
+1. Amato, C., Konidaris, G.D., Kaelbling, L.P.: Planning with macro-actions in de-
+centralized pomdps (2014)
+2. Bae, H.J., Koumoutsakos, P.: Scientiﬁc multi-agent reinforcement learning for wall-
+models of turbulent ﬂows. Nature Communications 13(1), 1–9 (2022)
+3. Bernstein, D.S., Givan, R., Immerman, N., Zilberstein, S.: The complexity of decen-
+tralized control of markov decision processes. Mathematics of operations research
+27(4), 819–840 (2002)
+4. Beynier, A., Charpillet, F., Szer, D., Mouaddib, A.I.: Dec-mdp/pomdp. Markov
+Decision Processes in Artiﬁcial Intelligence pp. 277–318 (2013)
+5. Kingma, D., Ba, J.: Adam: A method for stochastic optimization. International
+Conference on Learning Representations (12 2014)
+6. Lax, P.D.: Weak solutions of nonlinear hyperbolic equations and their numerical
+computation. Communications on pure and applied mathematics 7(1), 159–193
+(1954)
+7. Lillicrap, T.P., Hunt, J.J., Pritzel, A., Heess, N., Erez, T., Tassa, Y., Silver, D.,
+Wierstra, D.: Continuous control with deep reinforcement learning. arXiv preprint
+arXiv:1509.02971 (2015)
+8. Liu, X.d., Osher, S., Chan, T.F.: Weighted essentially non-oscillatory schemes.
+Journal of Computational Physics 115, 200–212 (1994)
+9. Messias, J., Spaan, M., Lima, P.: Eﬃcient oﬄine communication policies for fac-
+tored multiagent pomdps. Advances in Neural Information Processing Systems 24
+(2011)
+10. Mnih, V., Kavukcuoglu, K., Silver, D., Graves, A., Antonoglou, I., Wierstra, D.,
+Riedmiller, M.: Playing atari with deep reinforcement learning. arXiv preprint
+arXiv:1312.5602 (2013)
+
+
+Multi-Agent Learning of Numerical Methods with Factored Dec-MDP
+13
+11. Novati, G., de Laroussilhe, H.L., Koumoutsakos, P.: Automating turbulence mod-
+elling by multi-agent reinforcement learning. Nature Machine Intelligence 3(1),
+87–96 (2021)
+12. Oliehoek, F.A., Spaan, M.T., Vlassis, N., Whiteson, S.: Exploiting locality of in-
+teraction in factored dec-pomdps. In: Int. Joint Conf. on Autonomous Agents and
+Multi-Agent Systems. pp. 517–524 (2008)
+13. Oliehoek, F.A., Whiteson, S., Spaan, M.T., et al.: Approximate solutions for fac-
+tored dec-pomdps with many agents. In: AAMAS. pp. 563–570 (2013)
+14. Pajarinen, J.K., Peltonen, J.T.: Eﬃcient planning for factored inﬁnite-horizon dec-
+pomdps. In: Twenty-Second International Joint Conference on Artiﬁcial Intelli-
+gence (2011)
+15. Raissi, M., Perdikaris, P., Karniadakis, G.E.: Physics-informed neural networks:
+A deep learning framework for solving forward and inverse problems involving
+nonlinear partial diﬀerential equations. Journal of Computational Physics 378,
+686–707 (2019)
+16. Ross, S.: Interactive learning for sequential decisions and predictions. Ph.D. thesis,
+Carnegie Mellon University (2013)
+17. Schiesser, W.E.: The numerical method of lines: integration of partial diﬀerential
+equations. Elsevier (2012)
+18. Shu, C.W.: Essentially non-oscillatory and weighted essentially non-oscillatory
+schemes for hyperbolic conservation laws. In: Advanced numerical approximation
+of nonlinear hyperbolic equations, pp. 325–432. Springer (1998)
+19. Shu, C.W.: High order weighted essentially nonoscillatory schemes for convection
+dominated problems. SIAM review 51(1), 82–126 (2009)
+20. Sod, G.A.: A survey of several ﬁnite diﬀerence methods for systems of nonlinear
+hyperbolic conservation laws. Journal of computational physics 27(1), 1–31 (1978)
+21. Wang, Y., Shen, Z., Long, Z., Dong, B.: Learning to discretize: solving 1d scalar
+conservation laws via deep reinforcement learning. arXiv preprint arXiv:1905.11079
+(2019)
+22. Way, E., Kapilavai, D.S., Fu, Y., Yu, L.: Backpropagation through time and
+space: Learning numerical methods with multi-agent reinforcement learning. arXiv
+preprint arXiv:2203.08937 (2022)
+23. Zhang, K., Yang, Z., Ba¸sar, T.: Multi-agent reinforcement learning: A selective
+overview of theories and algorithms. Handbook of Reinforcement Learning and
+Control pp. 321–384 (2021)
+24. Zhang, Y.T., Shu, C.W.: Eno and weno schemes. In: Handbook of Numerical Anal-
+ysis, vol. 17, pp. 103–122. Elsevier (2016)

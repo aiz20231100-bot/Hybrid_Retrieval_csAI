@@ -1,0 +1,1434 @@
+Modality Plug-and-Play: Elastic Modality Adaptation
+in Multimodal LLMs for Embodied AI
+Kai Huang, Boyuan Yang and Wei Gao
+University of Pittsburgh
+k.huang, by.yang, weigao@pitt.edu
+Abstract
+Large Language Models (LLMs) are capable of reasoning over diverse input data
+modalities through pre-trained encoders. However, the growing diversity of in-
+put data modalities prevents incorporating all modalities into LLMs, especially
+when LLMs are deployed on resource-constrained edge devices for embodied
+AI applications. Instead, a better option is to adaptively involve only the useful
+modalities at runtime, depending on the current environmental contexts and task
+requirements. For such modality adaptation, existing work adopts fixed connec-
+tions between encoders and the LLM’s input layer, leading to high training cost
+at runtime and ineffective cross-modal interaction. In this paper, we address these
+limitations by presenting mPnP-LLM, a new technique that allows fully elastic,
+automated and prompt runtime modality adaptation, by connecting unimodal en-
+coders to a flexible set of last LLM blocks and making such latent connections
+fully trainable at runtime. Experiments over the nuScenes-QA dataset show that
+mPnP-LLM can achieve up to 3.7× FLOPs reduction and 30% GPU memory us-
+age reduction, while retaining on-par accuracy with the existing schemes. Under
+the same compute budget, mPnP-LLM improves the task accuracy by up to 4%
+compared to the best existing scheme. Source codes of mPnP-LLM can be found
+at https://github.com/pittisl/mPnP-LLM.
+1
+Introduction
+Large Language Models (LLMs) can do reasoning over diverse input data modalities [6, 19, 10,
+45], besides the natural language domain. Such multimodal reasoning relies on pre-trained encoders
+for different input modalities, such as RGB frames [25], LiDAR point clouds [27] and acoustic
+signals [39], to extract task-relevant features. By incorporating encoders from multiple input modal-
+ities, LLMs can fully perceive the physical world and enable intelligent embodied agents, such as
+autonomous vehicles and robots, that adapt to environmental contexts and task needs [30, 19, 53].
+One major challenge of such multimodal reasoning is the growing diversity of input data modali-
+ties [33, 63, 32, 20]. Since today’s transformer-based encoders [58, 61] are usually large in size1,
+incorporating all modalities to LLMs is computationally expensive or even infeasible, especially on
+resource-constrained edge devices used in embodied AI applications2. Instead, we envision that the
+usefulness of different input modalities, even for the same embodied AI task, could greatly vary
+when the environmental contexts change. Hence, a better option is to adaptively involve only the
+useful modalities at runtime, for the minimum on-device computing cost. An example of such run-
+1For example, the parameter sizes of widely used vision transformers (ViT) can vary between 86M to 22B
+[17].
+2Most hardware platforms used in embodied AI have much weaker capabilities in computation and storage.
+For example, Nvidia JetBots [2] and Skydio drones [5] both have <8GB memory, and their GPU computing
+power is <7 TOPS which is <1% of workstation-grade GPUs.
+Preprint. Under review.
+arXiv:2312.07886v1  [cs.AI]  13 Dec 2023
+
+
+Q: Is there a car ahead?
+A: Yes.
+Q: Is there a car ahead?
+A: No.
+Q: Is there a car ahead?
+A: Yes.
+RGB Camera View
+RGB Camera View
+LiDAR Point Cloud
+LLM for QA
+RGB 
+encoder
+LLM for QA
+LLM for QA
+RGB 
+encoder
+LiDAR 
+encoder
+Correct answer
+Correct answer
+Wrong answer
+Figure 1: Runtime modality adaptation for multimodal QA in autonomous driving: During daytime
+with high visibility, RGB encoder can sufficiently enable visual perception for LLM. However, it
+fails to provide useful information in nighttime with low visibility. In these cases, we switch to the
+LiDAR encoder to provide distance perception and retain QA accuracy.
+time modality adaptation for multimodal question answering (QA) tasks in autonomous driving is
+shown in Figure 1.
+An intuitive approach to such modality adaptation is to jointly train the encoders of all involved
+modalities with LLM to align every modality with the natural language domain [10, 19, 62], but is
+too expensive for runtime. Instead, we can freeze both encoders and LLM at runtime, but only train
+the inserted projection modules in between. As shown in Figure 2 - Top, existing work connects
+encoders to LLM’s input layer through a trainable projector [35, 69], and then applies parameter-
+efficient LLM fine-tuning [28, 54, 40] to improve accuracy. However, they still require backpropa-
+gating activation gradients throughout the entire LLM and hence incur large training costs.
+Text input
+Output
+Added modality
+Text input
+RGB 
+encoder
+Output
+…
+LLM
+LLM
+…
+LiDAR 
+encoder
+Added modality
+…
+…
+Most existing work 
+Ours: mPnP-LLM
+proj.
+proj.
+proj.
+proj.
+Weighting 
+RGB 
+encoder
+LiDAR 
+encoder
+Connection at input layer
+Connection at last layers
+Figure 2: Existing work vs. mPnP-LLM for
+modality adaptation, where encoders are con-
+nected to LLM via trainable projectors.
+Adopting more lightweight projectors or reducing
+the amount of trainable parameters can only reduce
+the FLOPs of computing weight updates in training,
+but do not change the cost of gradient backpropa-
+gation.
+In addition, this connection also requires
+the projected multimodal features to be all aligned
+with the LLM input layer’s text embedding, but such
+alignment can be inefficient in bridging the semantic
+gap across different modalities, because the text rep-
+resentation in early LLM blocks can be too superfi-
+cial to match the details in input modalities [52]. Al-
+though some recent work [51] explored connections
+to LLM’s intermediate layers, such connections are
+arbitrarily decided and always fixed at runtime, and
+hence lack runtime adaptability. Improperly insert-
+ing multimodal information to intermediate LLM
+blocks could also interfere with the LLM’s reason-
+ing and affect efficient cross-modal interaction.
+To address these limitations, in this paper we
+present Modality Plug-and-Play in multimodal
+LLMs (mPnP-LLM), a new technique for elastic, automated and prompt runtime modality adap-
+tation in multimodal LLMs, by connecting unimodal encoders to a flexible set of last LLM blocks
+and making such latent connections fully trainable at runtime. As shown in Figure 2 - Bottom, we
+can adaptively adjust the amount of LLM blocks being connected for different tradeoffs between
+accuracy and runtime training cost. We can also optimize the efficiency of cross-modal interaction
+and hence improve accuracy, by controlling the amount of information being injected in each con-
+nection with a trainable weighting module. Our design focuses on decoder-only LLM, which is the
+2
+
+
+dominant LLM architecture due to stronger generative power [13] and has been widely adopted by
+most existing LLMs, ranging from BLOOM-1.1B [46] and OPT-1.3B [68] to GPT3-175B [11].
+Being different from the existing plug-and-play approaches [15, 55, 9, 51] that require re-
+implementation of LLM’s source codes, mPnP-LLM inserts the projected multimodal tokens as
+new key-value pairs into the multi-head attention (MHA) module of LLM block. Since such inter-
+facing is well supported in popular LLM frameworks (e.g., HuggingFace Transformers [60]), we
+can avoid any manual programming and reconfiguration efforts at runtime.
+We implemented and evaluated mPnP-LLM with two open-sourced LLMs, namely OPT [68] and
+BLOOMZ [46], on the nuScene-QA dataset [49] for multimodal QA task in autonomous driving.
+When adapting between modalities at runtime, mPnP-LLM achieves up to 3.7× FLOPs reduction
+and 30% GPU memory usage reduction, while retaining on-par accuracy with the existing schemes.
+Such speedup enables modality adaptation within a few minutes on a weak edge device (NVidia
+Jetson AGX Orin). Under the same compute budget, mPnP-LLM improves the task accuracy by up
+to 4%, compared to the best existing scheme.
+2
+Background, Existing Work & Motivation
+To motivate our design of mPnP-LLM, we first describe how the LLM architecture exhibits oppor-
+tunities of receiving additional inputs for modality adaptation, and then describe the inefficiency of
+existing schemes to inject multimodal information. Their limitations drive us to enforce elasticity in
+modality adaptation and look into the backpropagation model for runtime training acceleration.
+2.1
+Entry Points on Transformer Blocks
+Scaled Dot-Product 
+Attention
+Scaled Dot-Product 
+Attention
+FFN
+LayerNorm
+LayerNorm
+Self-MHA
+K
+V
+Q
+Cross MHA
+LayerNorm
+Q
+K
+V
+Decoder 
+block
+Unavailable in 
+decoder-only 
+LLMs
+MHA
+Linear
+Scaled Dot-Product 
+Attention
+Concat
+Linear
+K
+Q
+Linear
+Linear
+× H
+Self-MHA: Internal K, V
+Cross-MHA: External K, V
+V
+Figure 3: LLM architecture. Left: In a MHA mod-
+ule, the Key (K) and Value (V) sequences can be
+provided either internally (self-MHA) or externally
+(cross-MHA). Right: Cross-MHA is unavailable in the
+transformer block of decoder-only LLMs.
+Current
+LLMs
+[68,
+50,
+14,
+57]
+are
+stacked by transformer blocks [58], each
+of which contains Multi-Head Attention
+(MHA) modules,
+LayerNorms,
+and a
+Feed-Forward Network (FFN). As shown
+in Figure 3 - Left, MHA receives H
+segments of Key (K), Value (V), and
+Query (Q) token sequences and performs
+attention through H heads in parallel.
+The scaled dot-product attention mimics
+database search by weighted-summing the
+Values using their Keys’ similarity to the
+Query. For self-MHA, K, V, and Q come
+internally from the previous LLM block’s
+output.
+An intuitive solution to connecting an en-
+coder to the LLM is to use the K-V pairs in
+cross-MHA. However, cross-MHA is only
+available in encoder-decoder LLMs [14],
+as shown in Figure 3 - Right. The decoder-
+only LLMs, as the dominant LLM architecture [13], do not contain pre-trained MHA modules for
+cross-attention purposes3. Alternatively, existing prompt tuning methods prepend trainable tokens
+to the input text [34] or intermediate K-V pairs [37, 41], but they only apply to the text domain.
+Inspired by these existing efforts, we further expand the scope of adaptation to multiple modalities,
+by projecting multimodal tokens via plug-in projectors and then inserting them as new K-V pairs
+into MHA modules of LLM blocks.
+3Although it is possible to re-purpose the self-MHA for cross-MHA by using external K-V pairs, doing so
+requires expensive retraining and changing the LLM structure at runtime.
+3
+
+
+2.2
+Efficient Insertion of External Modalities
+After having connected encoders to LLM’s transformer blocks, there are multiple choices of insert-
+ing multimodal information from encoders to LLM. Insertion into the LLM’s latent space enables
+more efficient cross-modal interaction [47, 51] than only into the input layer, due to more oppor-
+tunities to interact with different levels of feature representations. Early work adopts FiLM-like
+weighting schemes [15, 48, 29, 9] to condition one modality on others in intermediate layers, but
+only hard-coded two modalities and require domain-specific structure designs from scratch. Later
+schemes used cross-MHA mechanisms for cross-modal interaction [55, 56, 36, 64], but cannot be
+applied on decoder-only LLMs. To avoid changing the pre-trained LLM structures, recent work
+[51] directly concatenates the projected multimodal tokens with output sequences from multiple
+LLM blocks. However, LLM blocks for such concatenation are arbitrarily selected and not opti-
+mized for training accuracy or speed. Extending the output sequence length for one LLM block will
+also affect the token sequence length in other blocks and reduce accuracy.
+These limitations of existing schemes motivate us to design a more flexible and generic method
+to insert multimodal information into pre-trained LLMs, and our basic idea is to allow adaptive
+weighting of multimodal tokens being inserted into the K-V set in LLM blocks. In this way, we
+can establish optimal connections between encoders and LLM at runtime, for efficient cross-modal
+interaction.
+2.3
+FLOPs Model for Modality Adaptation
+Layer 1
+Layer 2
+Layer 3
+Layer 4
+Input
+Pred.
+Label
+dy4
+dy3
+dy2
+dw1
+dw2
+dw3
+dw4
+y1
+y2
+y3
+y4
+forward
+backward
+Figure 4: Backpropagation of a 4-layer dense NN
+Our approach is inspired by the backpropa-
+gation model for modality adaptation. Typ-
+ically, the FLOPs of backpropagation can
+be decomposed into two parts using the
+chain rule. As shown in Figure 4, when
+training a 4-layer dense neural network,
+each layer computes i) the activation gra-
+dient dyi and passes it backward, and ii)
+computes the weight update dwi using
+dyi+1 from the upstream layer. Freezing some layers can eliminate the FLOPs of computing these
+layers’ weight updates, but activation gradients will still be computed. For example, when freezing
+layer 2 to 4, the activation gradients from dy2 to dy4 still need to be computed for layer 1 to compute
+its weight update. Due to the generality of the chain rule, this mechanism applies to any other types
+of models, including transformer blocks in LLMs.
+Existing work inserts new modalities into LLM’s input layer through trainable projectors, and the
+inserted projectors can be considered as the model’s first layer. Even when all the LLM layers are
+frozen, the projector still needs activation gradients to be passed through the entire LLM. Instead,
+our design connects input modalities into the last layers of LLM, to minimize the training cost at
+runtime.
+RGB 
+Encoder
+LiDAR 
+Encoder
+Key 
+Aligner
+Value 
+Aligner
+LiDAR 
+keys
+LiDAR 
+values
+Key 
+Aligner
+Value 
+Aligner
+RGB 
+keys
+RGB 
+values
+Multimodal 
+keys (K)
+Multimodal 
+values (V)
+Modality 2: LiDAR Point Cloud
+Modality 1: RGB Camera View
+LLM Block
+LLM Block
+LLM Block
+MHA
+K
+V
+Q
+Q: Are there any pedestrians 
+at the right sidewalk?
+A: Yes
+LLM Decoder
+Concat
+× 𝛼𝛼1
+× 𝛼𝛼2
+× 𝛼𝛼𝑁𝑁
+Trainable latent 
+connection
+Environment 
+Changes
+day  night
+mount
+Unimodal Encoders
+The last N 
+LLM blocks
+: the model components to be retrained at runtime
+Figure 5: An example of mPnP-LLM’s modality adaptation for the multimodal QA task between two
+input modalities, namely RGB camera view and LiDAR point cloud. The text tokenizer, detokenizer,
+input and output embedding layers of the LLM are omitted for simplicity.
+4
+
+
+3
+mPnP-LLM Design
+We first discuss possible design choices of mPnP-LLM, and then present technical details of main
+modules in our design. Our design is generic and applicable to different types of decoder-only LLMs
+and generative tasks. In this paper, for simplicity, we use the multimodal question-answering (QA)
+task in autonomous driving [49] as an illustrative example of embodied AI applications, as shown in
+Figure 5.
+Choices of unimodal encoders. Many pre-trained transformers, such as ViT [17], AST [23], Aut-
+oformer [61], and Point-BERT [66], can be used as unimodal encoders to extract modality-specific
+features into token representations. With the token representations extracted from transformers, we
+only need to reshape the embedding dimension when designing projectors for inserting new modal-
+ities into the LLM. Other legacy encoder architectures based on MLP, CNN and LSTM can also be
+adopted by mPnP-LLM, but require additional efforts on reshaping their feature vectors or feature
+maps to token representations for LLM.
+Feature representation. Most transformer-based encoders extract features into the [CLS] token
+sequences, and we further follow recent studies [51] to extract [CLS] tokens from multiple interme-
+diate layers of encoders, to form a multi-level feature representation for more opportunities to align
+with the text features. We are also aware that not all the transformer-based encoders contain usable
+[CLS] tokens, which must be trained on relevant classification tasks. For other transformers, such as
+the ones pre-trained using Masked Auto-Encoder (MAE) [25, 27] or other non-classification tasks
+[38, 7], we will use the averaged-pooled tokens for feature representation.
+Based on these design choices, mPnP-LLM adapts new input modalities and connects the corre-
+sponding unimodal encoders to LLM blocks via the following modules:
+• Key & Value Aligners: We first use the trainable aligners to project multimodal tokens
+from the unimodal encoders into K-V pairs, which should be aligned with the text K-V
+pairs in the LLM blocks. Existing linear projections lack expressivity to ensure accurate
+alignment, and we address this challenge by introducing non-linearity in the aligner’s pro-
+jection with negligible computing cost.
+• Trainable Latent Connection: Instead of injecting the aligned K-V pairs to every LLM
+block, we connect aligners to a flexible set of last blocks in LLM to save the runtime
+training cost, and use a lightweight post-weighting module to optimize the amount of mul-
+timodal information that flows to each LLM block from the same aligner.
+In practice, to ensure that the LLM can recognize newly adapted modalities, we first offload part of
+adaptation efforts, such as initial connections and adaptation to prompt structures, to offline training.
+Then at runtime, modality adaptation is performed by retraining the corresponding aligners and
+latent connections using the training data in new modalities, with the LLM and all encoders frozen.
+3.1
+Key & Value Aligners
+For modality adaptation, the encoder is connected to key and value aligners. For example in Fig-
+ure 5, when switching the input modality, the new aligner is trained to project the unimodal tokens
+extracted from the LiDAR encoder into key-value pairs, which are then aligned with the key-value
+representations in LLM’s latent space. Each aligner is a point-wise FFN with two linear transforma-
+tions and a GELU activation function [26] in between:
+Aligner(x) = GELU(xW1 + b1)W2 + b2,
+(1)
+where W1, W2, b1, b2 are trainable parameters. This architecture is similar to the FFN in most trans-
+former blocks, but our purpose is to align the token representation and match its shape to the LLM.
+Compared to a single linear transformation in the existing work [69, 51], our design has stronger
+representation power because of the nonlinearity of activation functions, while adding negligible
+computing overhead compared to the high complexity of LLMs.
+5
+
+
+3.2
+Trainable Latent Connection
+The aligner’s output of unimodal key and value tokens are concatenated into multimodal keys and
+values:
+Kmm = [K1; K2; ..., KM] + Tpos
+k
+Vmm = [V1; V2; ..., VM] + Tpos
+v
+where {Kj}, {Vj} are unimodal key-value pairs and M is the number of new modalities. Adding
+the learnable positional embedding Tpos
+k,v is optional, depending on the task complexity. For example
+in multimodal QA tasks, to answer questions like “Is there any pedestrian on my left side?”, such
+positional embedding is necessary when the input data modality contains multiple parts (e.g., the
+RGB cameras on an autonomous vehicle may provide multiple views around the vehicle), for the
+LLM to recognize which token corresponds to which data part.
+As shown in Figure 5, to inject multimodal information into N LLM blocks, Kmm and Vmm are
+first duplicated N times and then each duplication is multiplied by a trainable weight to tune its
+intensity. Specifically, such weighting procedure can be represented as:
+K′
+mm = [α1Kmm, α2Kmm, ..., αNKmm]
+V′
+mm = [α1Vmm, α2Vmm, ..., αNVmm]
+where each αj = sigmoid(wj/T) is parameterized by a trainable weight wj and a sigmoid function
+to ensure that its value is between 0 and 1, and we use the temperature T as a hyper-parameter to
+control the sharpness of αj. Smaller T makes the learned αj more binary. The existing work [31,
+21] usually prefers to learn an exact binary representation of αj using straight-through estimator
+[8], but may reduce the representation power and cause unstable training. Instead, we aim to enable
+continuous tuning of the intensity of the injected multimodal information, so that each LLM block
+can flexibly retrieve different amounts of multimodal information by its need.
+The weighted multimodal key-value pairs are then concatenated with the projected text key-value
+pairs in the corresponding LLM block. For LLM block j, the key-value pairs for MHA are extended
+as:
+Kext = [αjKmm; Ktxt]
+Vext = [αjVmm; Vtxt].
+When αj = 1, the original information in Kmm and Vmm are fed without any decay to the LLM
+block. Otherwise, αj = 0 degrades the impact of such information to zero, as no external tokens are
+injected. This is because by looking at the MHA’s attention calculation:
+Out = softmax(Q[αjKmm; Ktxt]⊤
+√
+d
+)[αjVmm; Vtxt].
+(2)
+As long as αjVmm is zero, the involvement of Kmm and Vmm will be zeroed in MHA calculation.
+This property is important because it allows us to eliminate the impact of some modality’s infor-
+mation if it impairs the LLM’s inference accuracy. Weighting on both keys and values also avoids
+complex designs of attention masks.
+Note that implementing such concatenation does not require any modification of the existing LLM’s
+computing graph. Most popular transformer frameworks (e.g., HuggingFace [60]) have already
+implemented interfaces to pass αjKmm and αjVmm to perform concatenation internally. The user
+only needs to extend the attention mask, so that the LLM can attend to the inserted keys and values.
+3.3
+Deciding the Number of Connections
+As illustrated in Figure 5, such latent connection injects the multimodal information to the last N
+LLM blocks, and the training cost hence depends on the value of N. Specifically, the backpropaga-
+tion FLOPs can be calculated as:
+Tbackprop(N) = T Aligners
+dw
++ T Emb
+dy
++ N
+L T LLM
+dy
+,
+(3)
+6
+
+
+where T Aligners
+dw
+is the FLOPs to compute weight updates of aligners, and T Emb
+dy
+is the FLOPs to
+pass activation gradients through the LLM’s output embedding layer, and T LLM
+dy
+is the FLOPs to
+pass activation gradients through all the LLM blocks. In practice, due to much higher complexity
+of the LLM blocks, we have T Aligners
+dw
++ T Emb
+dy
+≪T LLM
+dy
+. The ratio of training cost with respect to
+connecting to all L LLM blocks can be approximated as:
+r = Tbackprop(L)
+Tbackprop(N) ≈L
+N .
+(4)
+In this way, the user can flexibly control the training cost at runtime, by tuning N based on different
+application requirements and system resource conditions.
+Algorithm 1 Modality Adaptation in mPnP-LLM
+Require: : A set of pre-trained encoders E = {E1, E2, ...} and the corresponding aligners A =
+{A1, A2, ...} stored on local external storage; a pre-trained LLM loaded in memory; trainable
+latent connections α1,...,N
+/* Offline preparation */
+E0, A0 ←Select(E, A)
+▷Load initial encoders
+LLM ←Reconnect(E0, A0)
+▷Connect to LLM
+Train(LLMk,v, A0, α1,...,N)
+▷Offline training
+/* Runtime modality adaptation */
+while t < Tend do
+Et, At ←Select(E, A)
+▷Reload encoders
+LLM ←Reconnect(Et, At)
+▷Reconnect
+Train(LLMk1,...,N ,v1,...,N , At, α1,...,N)
+▷Adapt
+end while
+3.4
+Practical Workflow for Modality Adaptation
+With aligners and trainable latent connections described above, modality adaptation can be per-
+formed with proper workflows. When being assigned a task, such as multimodal QA, the em-
+bodied AI device should have multiple unimodal encoders for different input modalities and their
+pre-trained aligners being stored on the device’s local external storage. We assume that the user has
+prior knowledge to select the relevant modalities that are initially connected to the LLM, and that the
+embodied AI system can detect the environmental changes and automatically select new modalities
+for adaptation. In the example shown in Figure 5, we assume that the embodied AI system starts
+with the modality of RGB camera view by default and will automatically adapt to the modality of
+LiDAR point cloud in nighttime.
+As shown in Algorithm 1, the initial connection is pre-trained offline with a base dataset that is
+relevant to the task. For example, to perform domain-specific QA tasks, the model can be pre-
+trained on generic but small-scale datasets (e.g., OKVQA [44]) to gain basic QA capabilities. In
+particular, all the key and value projectors in the LLM are also trained to quickly adapt to input and
+output text prompt structures, such as “Given the question: Q, the answer is:”.
+After offline preparation, the system can be used for runtime modality adaptation, by retraining
+the aligners and latent connections at runtime with the newly inserted encoders. Besides, it is also
+still necessary to update the K, V projectors in the connected LLM blocks, so that the LLM can
+distinguish newly inserted tokens from the existing ones. To minimize the training cost in this part,
+we apply LoRA [28] because it introduces negligible FLOPs to compute weight updates. Note that
+we only apply LoRA to the connected blocks, which is different from the existing work [18, 22] that
+applies LoRA to all the LLM blocks for excessive representation power.
+4
+Experiments
+Dataset preparation and evaluation setup. We use the nuScenes-QA dataset for multimodal visual
+QA in autonomous driving [12]. The original nuScenes-QA dataset is too large (∼460k QA pairs)
+7
+
+
+Method
+Accuracy (%) w.r.t Scene & Modality
+Cost w.r.t Night (C →L)
+Day (C)
+Night (C)
+Night (C →C + L)
+Night (C →L)
+PFLOPs
+Memory (GB)
+Full LLM
+32.5
+30.2
+3.5
+3.5
+1.58
+29.9
+PromptFuse
+33.3
+26.9
+24.9
+39.2
+1.09
+26.0
+eP-ALM
+34.7
+24.6
+36.0
+44.7
+1.11
+27.6
+mPnP-LLM (N = 4)
+25.2
+21.1
+22.3
+24.9
+0.68
+23.2
+mPnP-LLM (N = 7)
+40.1
+34.1
+25.6
+26.3
+0.74
+23.9
+mPnP-LLM (N = 10)
+49.1
+41.1
+27.0
+41.9
+0.81
+24.5
+mPnP-LLM (N = 13)
+49.2
+40.1
+38.5
+46.4
+0.87
+23.1
+mPnP-LLM (N = 16)
+50.3
+43.4
+41.7
+46.9
+0.93
+25.9
+mPnP-LLM (N = 19)
+50.7
+41.0
+44.0
+46.1
+0.99
+23.9
+mPnP-LLM (N = 22)
+47.8
+39.2
+41.7
+47.5
+1.05
+26.0
+Table 1: Performance of mPnP-LLM vs. baseline schemes w.r.t scenes (Day/Night) and modalities
+(C: 6 RGB camera views, L: LiDAR point cloud) using OPT-1.3B by connecting with different
+numbers of LLM blocks (N). The OPT-1.3B model has 24 LLM blocks in total.
+for runtime training. Instead, we build a dataset named nuScenes-QA-mini on top of nuScenes-
+QA benchmark [49], as the overlap part between the nuScenes-QA dataset and the mini-split of the
+original nuScenes database.
+We consider a challenging evaluation scenario of runtime modality adaptation: the model should
+switch from RGB camera view in daytime to LiDAR point cloud in nighttime. We divide the
+nuScenes-QA-mini dataset into day (4,458 samples) and night (1,138 samples) splits based on
+nuScenes’ metadata. These two splits are further divided by half for training and testing, respec-
+tively. More details about datasets, as well as encoders and LLMs used in evaluations, can be found
+in Section A of the Appendix.
+Baseline schemes. For runtime modality adaptation, existing modular and parameter-efficient mul-
+timodal learning schemes are competitive with mPnP-LLM. They adopt trainable projectors and
+adapters (e.g., prompt tuning [34]) for plug-and-play encoders. We compare mPnP-LLM with the
+following three baselines4:
+• Full LLM [9, 19]: It connects multimodal encoders with the LLM input layer, and trains
+the projector and fine-tunes the entire LLM for modality adaptation. It is the most expensive
+and data-hungry method, but can potentially lead to the highest task accuracy.
+• PromptFuse [40]: Similarly, it connects the encoders with the input layer of the LLM. To
+reduce the training cost of modality adaptation, instead of fine-tuning all the parameters, it
+adopts prompt tuning to adapt the LLM.
+• eP-ALM [51]: It applies hard-coded connections between encoders’ [CLS] tokens and
+intermediate LLM blocks, and uses prompt tuning to adapt the LLM. Since the LiDAR
+encoder does not provide well-trained [CLS] tokens, we feed its average-pooled output
+tokens to LLM, being consistent with our implementation in mPnP-LLM.
+We implemented mPnP-LLM in PyTorch, and conducted our experiments on 1) a Dell workstation
+with a Nvidia RTX A6000 48GB GPU and 2) an edge device of Nvidia Jetson AGX Orin with a
+Nvidia Ampere GPU of 64 tensor cores and 64GB shared memory. We use the exact match ratio as
+the accuracy metric to indicate how many generated answers exactly match the ground truth. More
+implementation details can be found in Section B of the Appendix.
+4.1
+Modality Adaptation Cost & Accuracy
+We first compare mPnP-LLM with other baseline schemes on the OPT-1.3B model. In the evaluation
+scenario described above, the model is first offline trained on the day-train split to connect the RGB
+modality to LLM, and tested on the day-test split where the test accuracy corresponds to Day (C)
+in Table 1. The trained model is then tested on the night-test split to show the failure of RGB
+4Note that, we did not include those methods that hard-code the model structure for adapting to a particular
+downstream task [48, 59], because their designs lack flexibility for modality adaptation and can only change
+modality by redesigning and training a new model from scratch.
+8
+
+
+0.2
+0.4
+0.6
+0.8
+1.0
+PFLOPs
+0
+10
+20
+30
+40
+50
+Accuracy (%)
+PromptFuse
+eP-ALM
+mPnP-LLM (n=13)
+mPnP-LLM (n=16)
+(a) OPT-1.3B
+0.2
+0.6
+1.0
+1.4
+1.8
+2.2
+PFLOPs
+0
+10
+20
+30
+40
+50
+Accuracy (%)
+PromptFuse
+eP-ALM
+mPnP-LLM (n=17)
+mPnP-LLM (n=21)
+(b) OPT-2.7B
+Figure 6: Accuracy-compute tradeoff w.r.t Night (C →L)
+modality in nighttime conditions, where the test accuracy corresponds to Night (C). Then, two types
+of modality adaptations are evaluated on the night-test split: 1) Night (C →C + L) mounts the
+LiDAR modality and still keeps the RGB modality; 2) Night (C →L) mounts the LiDAR modality
+but detaches the RGB modality.
+Results in Table 1 show that in offline training - Day (C), mPnP-LLM achieves 5%-15% higher test
+accuracy than baseline schemes. When being zero-shot evaluated on Night (C), the accuracy drops
+significantly and demonstrates the need of modality adaptation. After having adapted to the LiDAR
+modality, mPnP-LLM (N = 13, ..., 22) can resume the task accuracy by up to 8%, but uses 20%-
+45% less training FLOPs and 25% less GPU memory compared to baseline schemes. Including both
+RGB and LiDAR modalities in nighttime (C →C + L) surprisingly impairs the accuracy, possibly
+because keeping the uninformative RGB modality confuses LLM inference.
+Note that the task accuracy with different input modalities could be inherently different, depending
+on the knowledge being provided. For example, RGB images contain fine-grained object informa-
+tion (e.g., color and texture). LiDAR point clouds can be relatively sparse and only provide infor-
+mation about distances and 3D object structures. Hence, the accuracy with the LiDAR modality at
+nighttime is lower than that with the RGB modality at daytime.
+Figure 6 further shows the accuracy-compute efficiency of mPnP-LLM, as how the task accuracy
+evolves with respect to the amount of FLOPs being incurred, when adapting C →C + L. mPnP-
+LLM achieves better accuracy-compute tradeoff compared to baselines. Specifically, it reduces the
+FLOPs by 3.6× to achieve 40% accuracy compared to PromptFuse, and reduces the FLOPs by 1.7×
+to achieve 45% accuracy compared to eP-ALM. Such performance margin is further enlarged when
+using larger LLMs. On OPT-2.7B, to achieve the same final accuracy as eP-ALM, mPnP-LLM
+reduces the training FLOPs by 3.7×. This good accuracy-compute tradeoff stems from both the
+improved convergence and less backpropagation cost.
+Ablated module
+Accuracy (N = 13)
+Accuracy (N = 17)
+None
+42.2
+46.0
+Offline train K,V proj.
+37.8
+42.9
+Aligner: MLP→Linear
+37.3
+43.8
+Conn.: trained →fixed
+39.5
+44.7
+LoRA on K,V proj.
+33.8
+35.4
+Table 2: Ablation study of mPnP-LLM with OPT-2.7B as the LLM
+4.2
+Ablation Study
+An ablation study in Table 2 showed that each component in mPnP-LLM contributes at least 3%
+to the task accuracy, compared to accuracy without ablation. Disabling the LoRA adapter causes
+the highest accuracy drop, because modality adaptation requires updating the K, V projectors to
+correctly distinguish newly inserted tokens from existing tokens. Similar phenomena are observed
+in the existing work [51] when adopting LLM adapters. The accuracy drop due to ablation is lower
+when connecting to more LLM blocks, because higher representation power is present when the
+multimodal tokens go through more LLM blocks.
+9
+
+
+LLM
+& Method
+Accuracy (%) w.r.t Scene & Modality
+Cost w.r.t Night (C →L)
+Day (C)
+Night (C)
+Night (C →C + L)
+Night (C →L)
+PFLOPs
+Memory (GB)
+OPT-350M
+PromptFuse
+27.7
+18.8
+0.0
+34.9
+0.32
+21.1
+eP-ALM
+25.3
+13.5
+24.1
+36.9
+0.33
+20.0
+mPnP-LLM (N = 10)
+44.0
+37.5
+26.1
+38.5
+0.25
+19.8
+mPnP-LLM (N = 13)
+45.4
+36.6
+31.6
+37.7
+0.26
+20.0
+mPnP-LLM (N = 16)
+45.9
+37.8
+31.7
+40.5
+0.28
+21.0
+OPT-1.3B
+PromptFuse
+33.3
+26.9
+24.9
+39.2
+1.09
+26.0
+eP-ALM
+34.7
+24.6
+36.0
+44.7
+1.11
+27.6
+mPnP-LLM (N = 10)
+49.1
+41.1
+27.0
+41.9
+0.81
+24.5
+mPnP-LLM (N = 13)
+49.2
+40.1
+38.5
+46.4
+0.87
+23.1
+mPnP-LLM (N = 16)
+50.3
+43.4
+41.7
+46.9
+0.93
+25.9
+OPT-2.7B
+PromptFuse
+35.7
+26.1
+28.8
+39.8
+2.16
+36.4
+eP-ALM
+37.3
+24.7
+24.9
+41.9
+2.13
+36.4
+mPnP-LLM (N = 13)
+50.2
+36.9
+31.3
+42.2
+1.56
+28.4
+mPnP-LLM (N = 17)
+51.2
+37.2
+27.6
+46.0
+1.67
+30.1
+mPnP-LLM (N = 21)
+52.3
+42.2
+44.3
+46.4
+1.81
+28.9
+Table 3: Performance of mPnP-LLM vs. baseline schemes using OPT-350M, 1.3B and 2.7B models,
+by connecting with different numbers of LLM blocks (N).
+4.3
+Impact of LLM Size
+We compare mPnP-LLM with baseline schemes using OPT-350M, OPT-1.3B and OPT-2.7B models.
+We keep the ratio of connected LLM blocks, which decides the model’s representation power in
+newly added modalities, to be consistent across different models. For example, we set N = 10 ∼16
+for OPT-350M with 24 blocks, and set N = 13 ∼21 for OPT-2.7B with 32 blocks, leading to a
+connection ratio between 41% 66% for both.
+As shown in Table 3, accuracy improvements of mPnP-LLM (r = 42%) are higher on OPT-350M
+than on bigger models. With OPT-2.7B, eP-ALM suffers a significant accuracy drop on Night (C
+→L), while mPnP-LLM can retain performance compared to the OPT-1.3B cases. We attribute
+this to mPnP-LLM’s trainable connections that can adaptively reconnect for different LLM sizes.
+Essentially, with different values of N, the training costs of mPnP-LLM have been very close to
+the backpropagation costs of encoders and LLM blocks. Hence, training the aligners and latent
+connections in mPnP-LLM are very lightweight.
+The peak GPU memory usage in mPnP-LLM is mainly decided by the LiDAR encoder, since it
+directly takes high-volume point cloud tensors as input. LLM’s memory consumption is relatively
+lower, due to its small context window (64 tokens). Since mPnP-LLM freezes the encoders in
+runtime training, its memory savings only stem from the smaller backpropagation cost and are hence
+limited to 20% when the LLM size is small (350M and 1.3B). However, the memory savings increase
+with larger models and larger context windows. On OPT-2.7B, the memory savings can increase by
+another 10-15%.
+4.4
+Performance with Different Types of LLMs
+We also investigated the performance of mPnP-LLM with different types of LLMs, including both
+OPT and BLOOMZ. OPT is pre-trained on the generic text corpus and the pre-training of BLOOMZ
+focuses more on cross-lingual text generation, leading to different reasoning power. As shown in
+Table 4, the overall task accuracy on BLOOMZ is lower than OPT, because cross-lingual pre-training
+could reduce the LLM’s performance on a specific language when the model complexity is low
+[43]. Nevertheless, mPnP-LLM still achieves higher accuracy than baseline schemes, and reduces
+the training FLOPs by 20%-37% and GPU memory consumption by up to 30%.
+10
+
+
+LLM
+& Method
+Day (C)
+Acc. (%)
+Night (C →L)
+Acc. (%) / PFLOPs / Mem. (GB)
+OPT-1.3B
+Full LLM
+32.5
+3.5 / 1.58 / 29.9
+PromptFuse
+33.3
+39.2 / 1.09 / 26.0
+eP-ALM
+34.7
+44.7 / 1.11 / 27.6
+mPnP-LLM (n = 10)
+49.1
+41.9 / 0.81 / 24.5
+mPnP-LLM (n = 13)
+49.2
+46.4 / 0.87 / 23.1
+BLOOMZ-1.1B
+Full LLM
+34.0
+0.0 / 1.16 / 32.2
+PromptFuse
+35.4
+26.6 / 0.90 / 25.7
+eP-ALM
+27.1
+26.0 / 0.91 / 28.7
+mPnP-LLM (n = 10)
+39.4
+25.8 / 0.73 / 22.7
+mPnP-LLM (n = 13)
+44.0
+27.0 / 0.76 / 25.8
+Table 4: Task accuracy & training cost on different LLMs
+4.5
+Impact of the Amount of Training Samples
+In our evaluation, the amount of runtime training samples is 659, which is very small compared to
+the size of existing QA datasets (e.g., 9k for OKVQA [44] and 444k for VQA-v2 [24]) to minimize
+the cost. As shown in Table 5, mPnP-LLM can achieve higher accuracy compared to the baseline
+schemes, when the amount of runtime training samples further reduces by up to 40%. In particular,
+when using 527 training samples, mPnP-LLM can still achieve on-par accuracy with eP-ALM using
+659 training samples, but further reduces the training FLOPs by 20%.
+Method
+zero-shot
+# sample = 395 (60%)
+Accuracy (%)
+PFLOPs
+Accuracy (%)
+PFLOPs
+PromptFuse
+26.9
+-
+37.3
+0.65
+eP-ALM
+24.6
+-
+41.5
+0.67
+mPnP-LLM (N = 13)
+40.1
+-
+41.0
+0.52
+mPnP-LLM (N = 16)
+43.4
+-
+43.9
+0.56
+Method
+# sample = 527 (80%)
+# sample = 659 (100%)
+Accuracy (%)
+PFLOPs
+Accuracy (%)
+PFLOPs
+PromptFuse
+39.0
+0.87
+39.2
+1.09
+eP-ALM
+43.7
+0.89
+44.7
+1.11
+mPnP-LLM (N = 13)
+44.0
+0.70
+46.4
+0.87
+mPnP-LLM (N = 16)
+44.2
+0.74
+46.9
+0.93
+Table 5: The impact of the amount of training samples for runtime modality adaptation, on the OPT-
+1.3B model
+4.6
+Runtime Modality Adaptation on Edge Devices
+We further evaluated mPnP-LLM on a Nvidia Jetson AGX Orin [4], which is widely used in em-
+bodied AI such as home intelligent robots [1] and autonomous delivery [3]. As shown in Table 6, in
+its maximum power mode (MAXN), mPnP-LLM can iterate through the 2,636 training samples in
+our nuScenes-QA-mini dataset within 35 minutes, which corresponds to 4 epochs on the night-train
+split and resumes the task accuracy by 5%. In comparison, the wall-clock time needed to complete
+the same training on workstation-level GPUs, such as NVidia RTX A6000, is 6 minutes.
+Device setup
+GPU Freq.
+mPnP-LLM (N = 13)
+RTX A6000 300W
+1.9GHz
+9.40 samples/s
+AGX Orin 30W
+612MHz
+0.33 samples/s
+AGX Orin 50W
+816MHz
+0.92 samples/s
+AGX Orin MAXN
+1.3GHz
+1.41 samples/s
+Table 6: Performance of runtime modality adaptation with OPT-1.3B on Nvidia Jetson AGX Orin
+11
+
+
+Note that even without runtime modality adaptation, mPnP-LLM can retain a moderate level of zero-
+shot accuracy as shown in Table 5, which is at least 15% higher than that of baselines and only 3%
+lower than the task accuracy using 100% training samples. Similarly, mPnP-LLM’s task accuracy
+approximates to the peak accuracy even before it has iterated over all training samples. Such high
+accuracy ensures that the embodied AI system can smoothly adapt to new input modalities, and still
+use the RGB modality during such adaptation to retain the task performance.
+5
+Conclusions
+In this paper, we present mPnP-LLM, a new technique that allows elastic runtime modality adapta-
+tion for multimodal LLMs in embodied AI. mPnP-LLM can achieve up to 3.7× FLOPs reduction
+while retaining on-par accuracy with the existing schemes. Under the same compute budget, mPnP-
+LLM improves the task accuracy by up to 4% compared to the best existing scheme. More discus-
+sions about the expandability and generalizablity of mPnP-LLM are in Section C of the Appendix.
+References
+[1] Hachibot. https://hachibot.com/index_en.html. 11
+[2] Jetbot. https://developer.nvidia.com/embedded/learn/jetbot. 1
+[3] Meituan autonomous delivery. https://developer.nvidia.com/downloads/embedded/
+success-stories/showcases/meituan. 11
+[4] Nvidia
+agx
+orin.
+https://www.nvidia.com/en-us/autonomous-machines/
+embedded-systems/jetson-orin/. 11
+[5] Skydio 2. https://developer.nvidia.com/blog/skydio-2-jetson-tx2-drone/. 1
+[6] J.-B. Alayrac, J. Donahue, P. Luc, A. Miech, I. Barr, Y. Hasson, K. Lenc, A. Mensch, K. Mil-
+lican, M. Reynolds, et al. Flamingo: a visual language model for few-shot learning. Advances
+in Neural Information Processing Systems, 35:23716–23736, 2022. 1
+[7] A. Ando, S. Gidaris, A. Bursuc, G. Puy, A. Boulch, and R. Marlet. Rangevit: Towards vi-
+sion transformers for 3d semantic segmentation in autonomous driving. In Proceedings of the
+IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages 5240–5250, 2023.
+5, 17
+[8] Y. Bengio, N. L´eonard, and A. Courville. Estimating or propagating gradients through stochas-
+tic neurons for conditional computation. arXiv preprint arXiv:1308.3432, 2013. 6
+[9] A. Brohan, N. Brown, J. Carbajal, Y. Chebotar, J. Dabis, C. Finn, K. Gopalakrishnan, K. Haus-
+man, A. Herzog, J. Hsu, et al. Rt-1: Robotics transformer for real-world control at scale. arXiv
+preprint arXiv:2212.06817, 2022. 3, 4, 8
+[10] A. Brohan, N. Brown, J. Carbajal, Y. Chebotar, X. Chen, K. Choromanski, T. Ding, D. Driess,
+A. Dubey, C. Finn, et al. Rt-2: Vision-language-action models transfer web knowledge to
+robotic control. arXiv preprint arXiv:2307.15818, 2023. 1, 2
+[11] T. Brown, B. Mann, N. Ryder, M. Subbiah, J. D. Kaplan, P. Dhariwal, A. Neelakantan,
+P. Shyam, G. Sastry, A. Askell, et al. Language models are few-shot learners. Advances
+in neural information processing systems, 33:1877–1901, 2020. 3
+[12] H. Caesar, V. Bankiti, A. H. Lang, S. Vora, V. E. Liong, Q. Xu, A. Krishnan, Y. Pan, G. Baldan,
+and O. Beijbom. nuscenes: A multimodal dataset for autonomous driving. In Proceedings of
+the IEEE/CVF conference on computer vision and pattern recognition, pages 11621–11631,
+2020. 7, 16
+[13] A. Chowdhery, S. Narang, J. Devlin, M. Bosma, G. Mishra, A. Roberts, P. Barham, H. W.
+Chung, C. Sutton, S. Gehrmann, et al. Palm: Scaling language modeling with pathways. arXiv
+preprint arXiv:2204.02311, 2022. 3
+12
+
+
+[14] H. W. Chung, L. Hou, S. Longpre, B. Zoph, Y. Tay, W. Fedus, E. Li, X. Wang, M. De-
+hghani, S. Brahma, et al.
+Scaling instruction-finetuned language models.
+arXiv preprint
+arXiv:2210.11416, 2022. 3
+[15] H. De Vries, F. Strub, J. Mary, H. Larochelle, O. Pietquin, and A. C. Courville. Modulating
+early visual processing by language. Advances in Neural Information Processing Systems, 30,
+2017. 3, 4
+[16] J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. Fei-Fei. Imagenet: A large-scale hierar-
+chical image database. In 2009 IEEE conference on computer vision and pattern recognition,
+pages 248–255. Ieee, 2009. 17
+[17] A. Dosovitskiy, L. Beyer, A. Kolesnikov, D. Weissenborn, X. Zhai, T. Unterthiner, M. De-
+hghani, M. Minderer, G. Heigold, S. Gelly, et al. An image is worth 16x16 words: Transform-
+ers for image recognition at scale. arXiv preprint arXiv:2010.11929, 2020. 1, 5, 17
+[18] S. Doveh, A. Arbelle, S. Harary, E. Schwartz, R. Herzig, R. Giryes, R. Feris, R. Panda, S. Ull-
+man, and L. Karlinsky. Teaching structured vision & language concepts to vision & language
+models. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recog-
+nition, pages 2657–2668, 2023. 7
+[19] D. Driess, F. Xia, M. S. Sajjadi, C. Lynch, A. Chowdhery, B. Ichter, A. Wahid, J. Tompson,
+Q. Vuong, T. Yu, et al. Palm-e: An embodied multimodal language model. arXiv preprint
+arXiv:2303.03378, 2023. 1, 2, 8
+[20] X. Fan, D. Pearl, R. Howard, L. Shangguan, and T. Thormundsson. Apg: Audioplethysmog-
+raphy for cardiac monitoring in hearables. In Proceedings of the 29th Annual International
+Conference on Mobile Computing and Networking, pages 1–15, 2023. 1
+[21] S. Gao, F. Huang, W. Cai, and H. Huang. Network pruning via performance maximization. In
+Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, pages
+9270–9280, 2021. 6
+[22] T. Gong, C. Lyu, S. Zhang, Y. Wang, M. Zheng, Q. Zhao, K. Liu, W. Zhang, P. Luo, and
+K. Chen. Multimodal-gpt: A vision and language model for dialogue with humans. arXiv
+preprint arXiv:2305.04790, 2023. 7
+[23] Y. Gong, Y.-A. Chung, and J. Glass. Ast: Audio spectrogram transformer. arXiv preprint
+arXiv:2104.01778, 2021. 5
+[24] Y. Goyal, T. Khot, D. Summers-Stay, D. Batra, and D. Parikh. Making the v in vqa matter:
+Elevating the role of image understanding in visual question answering. In Proceedings of the
+IEEE conference on computer vision and pattern recognition, pages 6904–6913, 2017. 11
+[25] K. He, X. Chen, S. Xie, Y. Li, P. Doll´ar, and R. Girshick. Masked autoencoders are scalable
+vision learners. In Proceedings of the IEEE/CVF conference on computer vision and pattern
+recognition, pages 16000–16009, 2022. 1, 5
+[26] D. Hendrycks and K. Gimpel.
+Gaussian error linear units (gelus).
+arXiv preprint
+arXiv:1606.08415, 2016. 5
+[27] G. Hess, J. Jaxing, E. Svensson, D. Hagerman, C. Petersson, and L. Svensson. Masked autoen-
+coder for self-supervised pre-training on lidar point clouds. In Proceedings of the IEEE/CVF
+Winter Conference on Applications of Computer Vision, pages 350–359, 2023. 1, 5
+[28] E. J. Hu, Y. Shen, P. Wallis, Z. Allen-Zhu, Y. Li, S. Wang, L. Wang, and W. Chen. Lora:
+Low-rank adaptation of large language models. arXiv preprint arXiv:2106.09685, 2021. 2, 7
+[29] R. Hu, J. Andreas, T. Darrell, and K. Saenko. Explainable neural computation via stack neural
+module networks. In Proceedings of the European conference on computer vision (ECCV),
+pages 53–69, 2018. 4
+[30] W. Huang, F. Xia, T. Xiao, H. Chan, J. Liang, P. Florence, A. Zeng, J. Tompson, I. Mordatch,
+Y. Chebotar, et al. Inner monologue: Embodied reasoning through planning with language
+models. arXiv preprint arXiv:2207.05608, 2022. 1
+13
+
+
+[31] E. Jang, S. Gu, and B. Poole. Categorical reparameterization with gumbel-softmax. arXiv
+preprint arXiv:1611.01144, 2016. 6
+[32] W. Jiao, Y. Li, X. Xi, J. Wang, D. Fang, and X. Chen. Bioscatter: Low-power sweat sens-
+ing with backscatter. In Proceedings of the 21st Annual International Conference on Mobile
+Systems, Applications and Services, pages 191–204, 2023. 1
+[33] H. Kong, X. Xu, J. Yu, Q. Chen, C. Ma, Y. Chen, Y.-C. Chen, and L. Kong. m3track: mmwave-
+based multi-user 3d posture tracking. In Proceedings of the 20th Annual International Confer-
+ence on Mobile Systems, Applications and Services, pages 491–503, 2022. 1
+[34] B. Lester, R. Al-Rfou, and N. Constant. The power of scale for parameter-efficient prompt
+tuning. arXiv preprint arXiv:2104.08691, 2021. 3, 8
+[35] J. Li, D. Li, S. Savarese, and S. Hoi. Blip-2: Bootstrapping language-image pre-training with
+frozen image encoders and large language models. arXiv preprint arXiv:2301.12597, 2023. 2
+[36] M. Li, T. Lv, J. Chen, L. Cui, Y. Lu, D. Florencio, C. Zhang, Z. Li, and F. Wei.
+Trocr:
+Transformer-based optical character recognition with pre-trained models. In Proceedings of
+the AAAI Conference on Artificial Intelligence, volume 37, pages 13094–13102, 2023. 4
+[37] X. L. Li and P. Liang. Prefix-tuning: Optimizing continuous prompts for generation. arXiv
+preprint arXiv:2101.00190, 2021. 3
+[38] Y. Li, H. Mao, R. Girshick, and K. He. Exploring plain vision transformer backbones for object
+detection. In European Conference on Computer Vision, pages 280–296. Springer, 2022. 5
+[39] Z. Li, Z. Rao, L. Pan, P. Wang, and Z. Xu.
+Ti-mae: Self-supervised masked time series
+autoencoders. arXiv preprint arXiv:2301.08871, 2023. 1
+[40] S. Liang, M. Zhao, and H. Sch¨utze. Modular and parameter-efficient multimodal fusion with
+prompting. arXiv preprint arXiv:2203.08055, 2022. 2, 8
+[41] X. Liu, K. Ji, Y. Fu, W. Tam, Z. Du, Z. Yang, and J. Tang. P-tuning: Prompt tuning can be
+comparable to fine-tuning across scales and tasks. In Proceedings of the 60th Annual Meeting
+of the Association for Computational Linguistics (Volume 2: Short Papers), pages 61–68, 2022.
+3
+[42] I. Loshchilov and F. Hutter.
+Decoupled weight decay regularization.
+arXiv preprint
+arXiv:1711.05101, 2017. 17
+[43] Y. Luo, Z. Yang, F. Meng, Y. Li, J. Zhou, and Y. Zhang.
+An empirical study of catas-
+trophic forgetting in large language models during continual fine-tuning.
+arXiv preprint
+arXiv:2308.08747, 2023. 10
+[44] K. Marino, M. Rastegari, A. Farhadi, and R. Mottaghi. Ok-vqa: A visual question answer-
+ing benchmark requiring external knowledge. In Proceedings of the IEEE/cvf conference on
+computer vision and pattern recognition, pages 3195–3204, 2019. 7, 11
+[45] S. Moon, A. Madotto, Z. Lin, T. Nagarajan, M. Smith, S. Jain, C.-F. Yeh, P. Murugesan,
+P. Heidari, Y. Liu, et al. Anymal: An efficient and scalable any-modality augmented language
+model. arXiv preprint arXiv:2309.16058, 2023. 1
+[46] N. Muennighoff, T. Wang, L. Sutawika, A. Roberts, S. Biderman, T. L. Scao, M. S. Bari,
+S. Shen, Z.-X. Yong, H. Schoelkopf, et al. Crosslingual generalization through multitask fine-
+tuning. arXiv preprint arXiv:2211.01786, 2022. 3, 17
+[47] A. Nagrani, S. Yang, A. Arnab, A. Jansen, C. Schmid, and C. Sun. Attention bottlenecks for
+multimodal fusion. Advances in Neural Information Processing Systems, 34:14200–14213,
+2021. 4
+[48] E. Perez, F. Strub, H. De Vries, V. Dumoulin, and A. Courville. Film: Visual reasoning with
+a general conditioning layer. In Proceedings of the AAAI conference on artificial intelligence,
+volume 32, 2018. 4, 8
+14
+
+
+[49] T. Qian, J. Chen, L. Zhuo, Y. Jiao, and Y.-G. Jiang. Nuscenes-qa: A multi-modal visual ques-
+tion answering benchmark for autonomous driving scenario. arXiv preprint arXiv:2305.14836,
+2023. 3, 5, 8, 16
+[50] T. L. Scao, A. Fan, C. Akiki, E. Pavlick, S. Ili´c, D. Hesslow, R. Castagn´e, A. S. Luccioni,
+F. Yvon, M. Gall´e, et al. Bloom: A 176b-parameter open-access multilingual language model.
+arXiv preprint arXiv:2211.05100, 2022. 3
+[51] M. Shukor, C. Dancette, and M. Cord. ep-alm: Efficient perceptual augmentation of language
+models. arXiv preprint arXiv:2303.11403, 2023. 2, 3, 4, 5, 8, 9
+[52] C. G. Snoek, M. Worring, and A. W. Smeulders. Early versus late fusion in semantic video
+analysis. In Proceedings of the 13th annual ACM international conference on Multimedia,
+pages 399–402, 2005. 2
+[53] C. H. Song, J. Wu, C. Washington, B. M. Sadler, W.-L. Chao, and Y. Su. Llm-planner: Few-
+shot grounded planning for embodied agents with large language models. In Proceedings of
+the IEEE/CVF International Conference on Computer Vision, pages 2998–3009, 2023. 1
+[54] Y.-L. Sung, J. Cho, and M. Bansal. Vl-adapter: Parameter-efficient transfer learning for vision-
+and-language tasks. In Proceedings of the IEEE/CVF Conference on Computer Vision and
+Pattern Recognition, pages 5227–5237, 2022. 2
+[55] H. Tan and M. Bansal. Lxmert: Learning cross-modality encoder representations from trans-
+formers. arXiv preprint arXiv:1908.07490, 2019. 3, 4
+[56] Z. Tang, J. Cho, Y. Nie, and M. Bansal. Tvlt: Textless vision-language transformer. Advances
+in Neural Information Processing Systems, 35:9617–9632, 2022. 4
+[57] H. Touvron, T. Lavril, G. Izacard, X. Martinet, M.-A. Lachaux, T. Lacroix, B. Rozi`ere,
+N. Goyal, E. Hambro, F. Azhar, et al. Llama: Open and efficient foundation language models.
+arXiv preprint arXiv:2302.13971, 2023. 3
+[58] A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polo-
+sukhin. Attention is all you need. Advances in neural information processing systems, 30,
+2017. 1, 3
+[59] J. Wang, Z. Yang, X. Hu, L. Li, K. Lin, Z. Gan, Z. Liu, C. Liu, and L. Wang. Git: A generative
+image-to-text transformer for vision and language. arXiv preprint arXiv:2205.14100, 2022. 8
+[60] T. Wolf, L. Debut, V. Sanh, J. Chaumond, C. Delangue, A. Moi, P. Cistac, T. Rault, R. Louf,
+M. Funtowicz, et al. Huggingface’s transformers: State-of-the-art natural language processing.
+arXiv preprint arXiv:1910.03771, 2019. 3, 6
+[61] H. Wu, J. Xu, J. Wang, and M. Long. Autoformer: Decomposition transformers with auto-
+correlation for long-term series forecasting. Advances in Neural Information Processing Sys-
+tems, 34:22419–22430, 2021. 1, 5
+[62] S. Wu, H. Fei, L. Qu, W. Ji, and T.-S. Chua. Next-gpt: Any-to-any multimodal llm. arXiv
+preprint arXiv:2309.05519, 2023. 2
+[63] W. Xu, W. Song, J. Liu, Y. Liu, X. Cui, Y. Zheng, J. Han, X. Wang, and K. Ren. Mask does not
+matter: Anti-spoofing face authentication using mmwave without on-site registration. In Pro-
+ceedings of the 28th Annual International Conference on Mobile Computing And Networking,
+pages 310–323, 2022. 1
+[64] X. Xu, C. Wu, S. Rosenman, V. Lal, W. Che, and N. Duan. Bridgetower: Building bridges
+between encoders in vision-language representation learning.
+In Proceedings of the AAAI
+Conference on Artificial Intelligence, volume 37, pages 10637–10647, 2023. 4
+[65] L. Yang, Z. Zhang, Y. Song, S. Hong, R. Xu, Y. Zhao, W. Zhang, B. Cui, and M.-H. Yang.
+Diffusion models: A comprehensive survey of methods and applications. ACM Computing
+Surveys, 2022. 18
+15
+
+
+[66] X. Yu, L. Tang, Y. Rao, T. Huang, J. Zhou, and J. Lu. Point-bert: Pre-training 3d point cloud
+transformers with masked point modeling. In Proceedings of the IEEE/CVF Conference on
+Computer Vision and Pattern Recognition, pages 19313–19322, 2022. 5
+[67] A. Zeng, M. Chen, L. Zhang, and Q. Xu. Are transformers effective for time series forecasting?
+In Proceedings of the AAAI conference on artificial intelligence, volume 37, pages 11121–
+11128, 2023. 18
+[68] S. Zhang, S. Roller, N. Goyal, M. Artetxe, M. Chen, S. Chen, C. Dewan, M. Diab, X. Li,
+X. V. Lin, et al.
+Opt: Open pre-trained transformer language models.
+arXiv preprint
+arXiv:2205.01068, 2022. 3, 17
+[69] D. Zhu, J. Chen, X. Shen, X. Li, and M. Elhoseiny. Minigpt-4: Enhancing vision-language
+understanding with advanced large language models. arXiv preprint arXiv:2304.10592, 2023.
+2, 5
+APPENDIX
+In the appendix, we provide additional details and discussions that were included in the main texts
+of our paper. These include: 1) the details of the dataset that we used in evaluations; 2) the details
+about our evaluation setup and implementations of mPnP-LLM; and 3) discussions about technical
+design choices, expandability and generalizability of mPnP-LLM. The source codes of mPnP-LLM
+can be found at https://github.com/pittisl/mPnP-LLM.
+A
+Details of Dataset used in Evaluations
+The dataset being used in our evaluations, namely nuScenes-QA-mini, is built on the nuScenes min-
+split [12], where we obtain the QA pairs from the original nuScenes-QA dataset [49]. The data in
+the nuScenes-QA dataset is collected from driving scenes in cities of Boston and Singapore with
+diverse locations, time, and weather conditions. As shown in Figure 7, each data sample contains
+6-view RGB camera captures, a 5D LiDAR point cloud, and a corresponding text QA pair. Each
+LiDAR point cloud includes 5 dimensions of data about distance, intensity, X, Y, and Z axes.
+In this dataset, the questions are generally difficult, and may require multiple hops of reasoning
+over the RGB and LiDAR data. For example, to answer the sample question in Figure 7, the ML
+model needs to first identify in which direction the “construction vehicle” appears, and then counts
+the number of “parked trucks” in that direction. In our evaluations, we further cast the question-
+answering (QA) as an open-ended text generation task. This is more challenging than the evaluation
+setup in the original nuScenes-QA paper [12], where an answer set is predefined and the QA task is
+a classification task over this predefined answer set.
+Question: How many parked trucks are to the back of the construction vehicle? Answer: 4
+Front
+Front Left
+Front Right
+Back
+Back Left
+Back Right
+LiDAR Top
+Figure 7: A data sample from the nuScenes-QA dataset
+In most RGB images in the original nuScenes-QA dataset, as shown in Figure 8 - Left, the lighting
+conditions in night scenes are still abundant (e.g., with street lights). Hence, to create a challenging
+16
+
+
+evaluation scenario in which modality adaptation from RGB camera view to liDAR point cloud is
+necessary in night scenes, we further reduce the brightness of RGB cameara captures in night scenes
+by 80% and apply Gaussian blur with a radius of 7, as shown in Figure 8 - Right. By applying
+such preprocessing to the RGB views in night-scene samples of our nuScenes-QA-mini dataset, we
+obtained the training and validation splits of night scenes, with 659 samples for each split. On the
+other hand, the RGB views in daytime scenes remain unchanged: the daytime split in the dataset
+contains 2,229 for training and 2,229 for validation, respectively.
+We built the dataset into Apache Arrow format for faster access at runtime, and provided the scripts
+of generating the nuScenes-QA-mini dataset from the original nuScenes-QA dataset in the source
+code repository. Please refer to the README.md file in the source code package for details.
+Figure 8: An example of darkening and blurring the RGB view.
+B
+Details about Evaluation Setup and Implementation
+Encoders and LLMs. For the RGB camera view modality, we use a ViT-small [17] encoder pre-
+trained on ImageNet-1k [16] to extract RGB tokens. For each of the 6 RGB camera views in a
+data sample, we extract the [CLS] tokens from the last 4 transformer blocks of the encoder. For the
+LiDAR point cloud modality, we use a RangeViT [7] encoder pre-trained on the nuScenes segmen-
+tation tasks to extract rich object-level information from the LiDAR point cloud. We average pool
+the RangeViT output into 4 tokens to represent features of the LiDAR modality.
+To perform QA tasks on multimodal data, we adopt pre-trained decoder-only LLMs, including OPT
+[68] and BLOOMZ [46]. These LLMs offer different variants of parameter sizes (125M-176B),
+and in our evaluation, we select models with parameter sizes varying from 350M to 2.7B, to take
+different resource constraints of embodied AI devices into consideration.
+Implementation. We implemented mPnP-LLM in PyTorch, and conducted our experiments on 1) a
+Dell workstation with a Nvidia RTX A6000 48GB GPU and 2) a Nvidia AGX Orin edge device with
+a Nvidia Ampere GPU of 64 tensor cores and 64GB shared memory. The RGB images are resized
+to 224×224 to match ViT-small’s input requirement, and each LiDAR point cloud is projected to a
+32×2048×3 tensor internally by RangeViT. Note that, since the amount of input data in the LiDAR
+point cloud modality is much larger than that in the RGB camera view modality, the LiDAR data
+consumes the majority of memory in runtime modality adaptation. The amount of memory savings
+in mPnP-LLM, hence, depends on the LLM size and could be relatively smaller when LLM is small.
+See Table 1 and Table 2 in Section 4 of the paper for more details.
+For answer generation, we adopt the prompt structure “question:{Q}</s>answer:{A}</s>”, where
+“</s>” is the EOS token that has been already included in OPT and BLOOMZ’s pre-trained embed-
+dings. We truncate the question sequences so that the length of every preprocessed input sequence is
+within 64 tokens. On the testing data, we use a beam search size of 4, and set the maximum number
+of generated tokens to 8.
+In all experiments, we conduct training in BF16 data format. We use a batch size of 16 and retrain
+the model for 8 epochs for modality adaptation. We set 8 epochs because no noticeable accuracy
+improvement is further observed when training more epochs. We use the AdamW optimizer [42]
+at a learning rate of 2 × 10−5 with linear schedule and weight decay of 10−2. For mPnP-LLM’s
+trainable connections, we set the learning rate to be 10−1. In each run, we use the exact match ratio
+17
+
+
+as the accuracy metric to indicate how many generated answers exactly match the ground truth, and
+measure PFLOPs as the training cost. Note that, sentence-level correctness is challenging when the
+QA task is open-ended text generation, compared to QA task of classification where the answers are
+categorized into several classes in advance.
+C
+Discussions
+In this section, we discuss various technical issues regarding mPnP-LLM’s expandability and gen-
+eralizability that the reviewers may be concerned of.
+Extending to more modalities. In this paper, we present the design of mPnP-LLM using an ex-
+ample of adapting between two input modalities for the multimodal QA task. However, we would
+like to highlight that, by design, mPnP-LLM can support adaptation among an arbitrary number
+of input modalities, since there is no constraint on the size of the K-V set in LLMs. On the other
+hand, simultaneously mounting more modalities could consume more computing resources on the
+embodied AI devices. In extreme cases, it would be necessary to meticulously rank the modalities’
+importance and only mount the most important modalities to fit to the devices’ resource constraints.
+Quantifying such importances of different modalities at runtime will be our future work.
+Generality on other generative AI tasks. In this paper, we use the LLM as the backbone of mPnP-
+LLM for multimodal reasoning. However, the design rationale of mPnP-LLM can also be applied
+to other transformer-based generative backbones. For example, mPnP-LLM can also be applied to
+a pre-trained time-series transformer decoder [67], for simpler embodied AI tasks such as motion
+planning. In this case, the projected multimodal K-V pairs can be concatenated with the previous
+tokens of motion status in the decoder blocks, to generate the future motions to perform. Even for
+non-transformer-based generative AI backbones such as stable diffusion models [65], the design
+principle of mPnP-LLM is still applicable, as we can establish trainable latent connections with
+encoders. Efficient connections, in this case, will require specific model structure designs, which
+will be an interesting research direction to be explored in the future but is out of scope of this paper.
+Training data for runtime modality adaptation.
+mPnP-LLM requires labeled and modality-
+aligned training data for runtime modality adaptation. In practical embodied AI applications, it
+may be difficult to collect such training data at runtime, and we instead suggest preparing such
+multimodal training data in the offline phase. Such multimodal training data could include all the
+available input data modalities for every possible modality adaptation that may be necessary at run-
+time, and the offline preparation of such training data is consistent with our described workflow for
+modality adaptation in Section 3.4, where all the unimodal encoders for different input modalities
+and their pre-trained aligners are available offline.
+In addition, as demonstrated by our experiment results in Section 4.5, mPnP-LLM is highly data
+efficient and only requires a few hundreds of training samples for effective modality adaptation.
+This data efficiency largely reduces the difficulty of preparing multimodal training data offline.
+Integration with encoder-decoder LLMs. Our design of mPnP-LLM focuses on decoder-only
+LLMs, which is currently the dominant LLM architecture and has been adopted by most existing
+LLMs, including the well-known GPT models. Encoder-decoder LLMs, on the other hand, can be
+considered as a sparse version of decoder-only LLMs with the same parameter size, and they hence
+have weaker generative power. Nevertheless, mPnP-LLM can also be applied to the encoder-decoder
+LLM, by connecting the multimodal encoders to its decoder part. For encoder-decoder LLMs, by
+default, the K-V pairs in the decoder block’s self-MHA are extended. The encoder part, on the
+other hand, functions as a separate encoding process over input text, and hence does not require any
+special handling.
+Using a shared set vs. separate sets of connections for different input modalities. In this paper,
+our design of mPnP-LLM uses a shared set of trainable connections, including trainable weights of
+these connections, to all the involved input modalities. In this way, we can minimize the amount of
+connections and hence minimize the cost of runtime training. With that being said, the design of
+mPnP-LLM also allows using a separate set of connections for each modality’s encoder to the LLM,
+so that each modality has more flexibility to interact with different levels of text representations.
+18
+
+
+Such flexibility, of course, comes with higher training cost, and it is essential to balance between the
+flexibility and extra computing cost.
+Runtime adaptation of the number of connections between input modality encoders and the
+LLM. In mPnP-LLM’s design, the number of connections, which is also the number of last LLM
+blocks to be connected, is determined offline based on the user-defined computation budgets. Larger
+computation budgets allow more connections, which correspond to longer backpropagation paths
+in training and also higher costs of runtime training. Conceptually, such number of connections
+can also be flexibly adjusted at runtime, if the computing budgets vary in embodied AI tasks. More
+specifically, to reduce the number of connections at runtime, we can simply discard the existing con-
+nections and their corresponding trainable weights. Reversely, to add new connections at runtime,
+we can append new trainable weights between input modalities’ encoders and the corresponding
+LLM blocks. No extra computing cost will be incurred for such runtime adaptation of the number
+of connections.
+19

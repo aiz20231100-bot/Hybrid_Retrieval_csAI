@@ -1,0 +1,2762 @@
+Symmetry-Aware Transformer Training for Automated Planning
+Markus Fritzsche*, Elliot Gestrin*, Jendrik Seipp
+Linköping University, Sweden
+firstname.lastname@liu.se
+Abstract
+While transformers excel in many settings, their application
+in the field of automated planning is limited. Prior work like
+PlanGPT, a state-of-the-art decoder-only transformer, strug-
+gles with extrapolation from easy to hard planning problems.
+This in turn stems from problem symmetries: planning tasks
+can be represented with arbitrary variable names that carry no
+meaning beyond being identifiers. This causes a combinatorial
+explosion of equivalent representations that pure transformers
+cannot efficiently learn from. We propose a novel contrastive
+learning objective to make transformers symmetry-aware and
+thereby compensate for their lack of inductive bias. Combin-
+ing this with architectural improvements, we show that trans-
+formers can be efficiently trained for either plan-generation
+or heuristic-prediction. Our results across multiple planning
+domains demonstrate that our symmetry-aware training effec-
+tively and efficiently addresses the limitations of PlanGPT.
+Code — https://github.com/mrlab-ai/symmetry-transformers
+Data — https://doi.org/10.5281/zenodo.17591697
+This work was accepted at AAAI 2026.
+1
+Introduction
+Transformer architectures (Vaswani et al. 2017) have revo-
+lutionized various fields, from natural language processing
+(e.g., Tunstall, von Werra, and Wolf 2022) to computer vision
+(e.g., Zhai et al. 2022). While leveraging transformers for
+automated planning—complex reasoning tasks that require
+sequential decisions—holds significant promise, transform-
+ers specifically trained for this purpose remain rare. This is
+surprising, given that solving automated planning problems
+is inherently a sequence generation task: finding a sequence
+of actions that leads from the initial state to a goal state.
+We posit that a key challenge lies in the inherent ambiguity
+of planning problem descriptions, combined with a lack of
+inductive bias in pure transformer architectures. While pre-
+trained large language models have been explored for solving
+planning problems (e.g., Pallagani et al. 2022; Huang et al.
+2022; Silver et al. 2024; Kambhampati et al. 2024; Huang,
+Lipovetzky, and Cohn 2025), models trained from scratch for
+generating plans from structured planning inputs are much
+less common. A notable exception is PlanGPT (Rossetti et al.
+2024), a state-of-the-art GPT-2-based transformer (Radford
+*These authors contributed equally.
+et al. 2019) trained to predict plans from formal problem
+descriptions.
+However, PlanGPT faces several limitations, particularly
+concerning extrapolation to more challenging instances be-
+yond its training set. A primary reason for this is that the
+same planning problem can have a huge number of differ-
+ent input representations since 1) objects can be given arbi-
+trary names, since they only serve as identifiers and carry
+no semantic meaning, and 2) the atoms of initial and goal
+states can be ordered arbitrarily. Pure transformer architec-
+tures must implicitly learn to ignore the differences between
+such symmetric planning problems, which is challenging
+and sample-inefficient. Furthermore, relying on an explic-
+itly learned positional encoding can hinder generalization, as
+the model may struggle with novel input sizes and unseen
+positions.
+We propose a symmetry-aware contrastive learning objec-
+tive for transformers that explicitly accounts for the symme-
+tries present in planning problems, guiding the model to learn
+representations that are equivariant to these symmetries (see
+Figure 1). While we focus on automated planning, this objec-
+tive is applicable to any task using transformer tokens that
+primarily represent identifiers. To address remaining symme-
+tries in the input representation, we highlight the importance
+of architectural choices, especially the omission of explicit
+positional encodings. Furthermore, we use a compositional
+tokenization scheme along with a transformer encoder, bene-
+fiting from its inherent permutation-equivariance. We denote
+our architectures as Symmetry-Aware Transformers (SymT).
+We evaluate our approach in two different settings:
+1) plan generation using an encoder-decoder (SymTED) and
+2) heuristic prediction using an encoder-only transformer
+(SymTE). Our experiments show that our symmetry-aware
+contrastive learning objective and architectural innovations
+significantly improve planning performance compared to the
+PlanGPT baseline in three of the four evaluated domains, par-
+ticularly in extrapolating to harder planning problems where
+our models find plans for many tasks that PlanGPT fails to
+solve. These findings showcase the importance of explicitly
+addressing input symmetries to unlock the full potential of
+transformers for automated planning and general reasoning
+tasks that use variable names.
+arXiv:2508.07743v2  [cs.AI]  26 Jun 2026
+
+
+N×
+at(o1, o2)
+free(o3)
+. . .
+at(o1, o2)
+free(o3)
+. . .
+Layer i
+Layer i
+N×
+=
+at(o9, o8)
+free(o1)
+. . .
+at(o9, o8)
+free(o1)
+. . .
+Layer i
+N×
+Transformer Encoder
+seq1
+at(o1, o2)
+free(o3)
+goal_at(o1, o5)
+...
+seq2
+at(o9, o8)
+free(o1)
+goal_at(o9, o2)
+...
+Batch
+...
+...
+...
+...
+. . .
+. . .
+Input for decoder
+(next token prediction)
+4b
+3
+4a
+Readout Module
+P
+over token dim
+MLP
+h
+state = {at(b1,roomA), free(left), at-robby(roomA), . . . }
+goal = {at(b1,roomB)}
+1
+2
+Figure 1: Illustration of our contrastive loss and the encoder part of our architecture. First, (1) we create two copies of the state
+and goal, each mapped into a token sequence, where each object is renamed to a random object token. While forwarding the
+sequences to the encoder (2), all attention scores and hidden states are collected for loss computations. The first objective is
+to align the attention scores for both samples in all attention-based modules (illustrated as equal attention scores). The second
+objective is to align fractions of the hidden states for all pairwise-corresponding tokens (illustrated by matching colors in the
+image). The output (3) can either be forwarded to the decoder (4b, Figure A.1 in the appendix) for next-token prediction or
+to a readout module for heuristic computation (4a). When predicting heuristics, we sum the hidden state fractions used in the
+contrastive loss and pass them through an MLP to obtain the prediction.
+2
+Background
+Classical Planning. We consider classical planning, where
+the world is fully-observable and actions are deterministic.
+Formally, a (lifted STRIPS) planning problem (Fikes and
+Nilsson 1971) is a tuple ⟨P, O, A, I, G⟩. Here, P is a finite
+set of predicates that describe properties of the world (e.g., at,
+in, connected) and the arity of predicate p ∈P is its number
+of arguments. O is a finite set of objects that exist in the
+world (e.g., pkg1, truck3, loc2). Each object has a type (e.g.,
+Package, Truck, Location). Using predicates and objects, we
+form (ground) atoms, which are basic propositions about
+the world (e.g., at(pkg1, loc2)). A state is a set of ground
+atoms that are true in a given situation and the initial state I
+describes which atoms are true initially. We denote the set of
+all possible states by S. An atom can also contain variables
+(e.g., at(?pkg, ?loc)), which act as placeholders for objects.
+Such lifted atoms are used within action schemas A ∈A,
+which are templates for actions in the world. Each action
+schema A ∈A consists of a precondition pre(A), an add
+list add(A) and a delete list del(A). The precondition pre(A)
+is a set of atoms that must be true in a state for the action
+to be applicable (e.g., at(?pkg, ?loc) and at(?truck, ?loc)).
+The add list add(A) is a set of atoms that will be true after
+the action is applied (e.g., in(?pkg, ?truck)), and the delete
+list del(A) is a set of atoms that will no longer be true after
+the action is applied (e.g., at(?pkg, ?loc)). We ground an
+action schema A to obtain a ground action by replacing all
+variables in pre(A), add(A) and del(A) with objects from O,
+respecting the types of the variables and objects. A ground
+action a is applicable in state s if pre(a) ⊆s, and applying it
+results in the successor state s′ = (s \ del(a)) ∪add(a). The
+goal G is the set of atoms that must be true simultaneously
+to solve the planning problem. A sequence of ground actions
+is a plan if it is applicable from I and reaches a goal state
+s∗such that G ⊆s∗. Optimal planning is the task of finding
+a plan with minimum length. Here, we focus on satisficing
+planning, where any plan is acceptable, but short plans are
+preferred. Finally, a heuristic h : S →R+
+0 ∪∞is a function
+estimating the cost of reaching a goal state from a given state.
+Transformer Architectures for Sequence Generation. Pure
+transformers (Vaswani et al. 2017) consist of an encoder and
+a decoder, each consisting of a stack of multiple layers. The
+input to each layer is a sequence of token embeddings, and
+the output is a sequence of hidden state vectors. Both types
+of layers consist of a multi-head attention (MHA) mecha-
+nism and a position-wise feed-forward network (MLP), with
+residual connections and optional layer normalization applied
+after each sub-layer. Multi-head attention and self-attention
+(A) are defined as
+αi(Q, K) = softmax
+
+QiKT
+i /
+p
+dk
+
+Ai(Q, K, V ) = αi(Q, K)Vi
+MHA(Q, K, V ) = (A1(Q, K, V )|...|AL(Q, K, V ))WO,
+where WO
+∈
+Rd×d is a learned projection combin-
+
+
+ing the L attention heads, and | denotes concatenation.
+Q, K, V ∈RN×d are the query, key, and value matrices,
+with Qi, Ki, Vi ∈RN×dk the i-th head and dk = d/L.
+An encoder layer transforms the input X(i) ∈RN×d into
+the output X(i+1) ∈RN×d as follows:
+Q(i) = X(i)W (i)
+Q
+K(i) = X(i)W (i)
+K
+V (i) = X(i)W (i)
+V
+X(i)
+att = X(i) + MHA(i) 
+Q(i), K(i), V (i)
+X(i+1) = X(i)
+att + MLP(i) 
+X(i)
+att
+
+Here, W (i)
+Q , W (i)
+K , W (i)
+V
+∈Rd×d are learned weight matrices
+specific for the i-th layer. We omit layer normalization for
+simplicity. Optionally, a bias term can be added to the Q, K,
+and V matrices, but we omit it here for simplicity.
+We let E denote the output of the last encoder layer and
+Y ∈RM×d the decoder input sequence. A decoder layer
+transforms the input Y (i) into the output Y (i+1) as follows:
+Q(i)
+Y = Y (i)W (i)
+Q,1 K(i)
+Y
+= Y (i)W (i)
+K,1 V (i)
+Y
+= Y (i)W (i)
+V,1
+Y (i)
+att = Y (i) + MHA(i) 
+Q(i)
+Y , K(i)
+Y , V (i)
+Y
+
+Q(i)
+Yatt = Y (i)
+att W (i)
+Q,2
+K(i)
+E = EW (i)
+K,2
+V (i)
+E
+= EW (i)
+V,2
+˜Y (i) = Y (i)
+att + MHA(i) 
+Q(i)
+Yatt, K(i)
+E , V (i)
+E
+
+Y (i+1) = ˜Y (i) + MLP(i) 
+˜Y (i)
+The first MHA module in the decoder masks out future
+tokens using a triangular mask, ensuring that the model can
+only attend to previous tokens in the sequence. A final MLP
+predicts the probability of the next token in the sequence,
+generating the output sequence one token at a time, referred to
+as autoregressive generation. Typically, the decoder is trained
+using the cross-entropy loss between the predicted token
+probabilities and the true next token in the sequence. Decoder-
+only variants, such as GPT-based models (e.g., Radford et al.
+2018; Rossetti et al. 2024), focus solely on this sequential
+generation process and use only self-attention.
+Transformers for Automated Planning. The primary target
+for Deep Learning in planning has been the prediction of
+heuristics, where the model is trained to predict the estimated
+cost of reaching the goal from a given state (e.g., Toyer et al.
+2020; Ståhlberg, Bonet, and Geffner 2022a; Chen, Trevizan,
+and Thiébaux 2024). While transformers can be used for
+predicting heuristics, most work has focused on the sequence-
+to-sequence setting, where the model is trained to predict
+a plan (sequence of actions) given a planning problem, i.e.,
+a sequence of state and goal atoms (Pallagani et al. 2022;
+Rossetti et al. 2024). Unlike architectures with strong built-in
+assumptions about local connectivity such as graph neural
+networks (GNNs), transformers possess limited inductive
+bias regarding sequence structure, relying heavily on data
+to learn dependencies. Handling sequence order explicitly
+requires positional information, commonly via positional
+encodings, as the attention mechanism itself is permutation-
+invariant. This data-driven nature and reliance on learned
+positional signals pose a challenge, particularly when input
+sequences can exhibit symmetries or structural variations not
+explicitly encoded, as is the case in planning problems.
+PlanGPT. PlanGPT (Rossetti et al. 2024) is a decoder-only
+transformer architecture, trained to predict a plan for a given
+planning problem. The model processes the planning prob-
+lem by segmenting it into an input token sequence. The input
+begins with a <start> token, followed by tokens represent-
+ing the initial state, where each atom is decomposed into
+predicate and argument tokens (e.g., atom at(truck5, loc3)
+becomes the token sequence at, truck5, loc3). A <goal> to-
+ken separates the state from the goal description, tokenized
+similarly. The input sequence concludes with an <action>
+token, signaling the start of the plan output. The output se-
+quence comprises tokens representing the predicted actions,
+also segmented into action name and argument tokens, until
+the end-of-sequence token <EOS> is generated. An exam-
+ple input-output sequence for a successfully-solved simpli-
+fied Logistics tasks is: <start> at truck5 loc1 at pkg1 loc1
+...<goal> at pkg1 loc2 <action> load truck5 pkg1 loc1
+move truck5 loc1 loc2 unload truck5 pkg1 loc2 <EOS>.
+To handle symmetries induced by arbitrary object names,
+PlanGPT randomizes object names based on their types from
+a fixed vocabulary, e.g., truck5 becomes truck2. Training is
+supervised using a standard next-token prediction objective,
+namely cross-entropy loss. The authors use a training dataset
+that contains multiple (suboptimal) plans for each planning
+problem, allowing the model to learn from diverse solutions.
+3
+Limitations of PlanGPT
+PlanGPT is trained solely to minimize the next-token pre-
+diction loss. While this objective can in principle capture
+symmetries, the combinatorial explosion of input representa-
+tions leads to poor sample efficiency in practice.
+Limitation 1: Object Assignment Equivariance. Object
+names in planning are arbitrary and not intended to carry
+additional semantics. However, PlanGPT uses a fixed vocab-
+ulary of object names that are randomly assigned to objects
+in the planning problem. Assume a single object type with
+|O| objects in the training instance and |V| object names
+in vocabulary V with |V| ≥|O|. Then there are
+|V|!
+(|V|−|O|)!
+different assignments of objects to vocabulary names. For
+example, a task with |O| = 8 objects and |V| = 8 names
+yields
+8!
+(8−8)! = 40320 different assignments, all describing
+the same planning task. The model must learn to generalize
+across all assignments to predict plans equivariant to these
+name assignments, which is challenging without additional
+objectives.
+Limitation 2: Leaking Information in Object Names. To
+mitigate Limitation 1, PlanGPT does not randomize object
+names of all types. In the Visitall domain, for instance, ob-
+jects of type Location encode grid coordinates, e.g., loc-x1-
+y2 corresponds to coordinate ⟨1, 2⟩. Instead of randomizing
+these names, PlanGPT keeps the human-intended coordinates,
+which the model can memorize, preventing generalization
+to locations not seen during training. We demonstrate this in
+Appendix B1.
+
+
+Limitation 3: Atom Order Invariance. The order of atoms
+in the initial and goal states of a planning problem is arbi-
+trary. Assume there are |I| atoms in the state and |G| atoms
+in the goal description. Then there are |I|! different atom
+orders for the same state and |G|! different orders for the goal,
+yielding |I|! · |G|! equivalent representations for each object
+assignment from Limitation 1. PlanGPT is a decoder-only
+model that uses learned positional encodings to capture token
+order in the input sequence. To make atom order consistent
+across training instances, PlanGPT pre-sorts the atoms in the
+state and goal descriptions before passing them to the model.
+Nevertheless, the model may overfit to particular atoms being
+overrepresented in specific positions, which can hinder gener-
+alization to larger instances where atoms appear in different
+positions.
+Limitation 4: Learned Positional Encodings. In contrast
+to state and goal atoms, the order of actions in a plan mat-
+ters. Since transformer layers are permutation-equivariant
+functions,1 PlanGPT uses learned absolute positional encod-
+ings (Radford et al. 2019) to capture the order of input tokens.
+This is problematic for state and goal tokens due to Limi-
+tation 3. Moreover, for any token type, learned positional
+encodings imply that embeddings for unseen positions are
+not learned, preventing generalization to harder planning
+problems with more objects, which typically require longer
+plans.
+4
+Symmetry-Aware Training
+This section introduces our contrastive training objective and
+architecture choices for overcoming the limitations identified
+for PlanGPT. An overview of our objective and encoder-only
+architecture for heuristics is shown in Figure 1, while our
+encoder-decoder architecture for plan generation is shown in
+Figure A.1 (Appendix A).
+Addressing Atom Order Symmetries with Encoders
+(Limitation 3). To directly address atom order symmetries,
+we use an encoder-only architecture for heuristic prediction
+and an encoder-decoder architecture for plan generation. The
+encoder processes the state and goal atoms, while the decoder
+predicts the action sequence forming the plan. By omitting
+positional encodings in the encoder, its processing is inher-
+ently permutation-equivariant with respect to the order of
+input atom tokens. This makes its output representation inde-
+pendent of their arbitrary order, yielding a |I|!·|G|! reduction
+of the input space.
+PlanGPT tokenizes each atom into several tokens (pred-
+icate and arguments), each mapped to an individual learn-
+able embedding and requiring an ordering. As this is in-
+compatible with an encoder without positional encodings,
+we instead encode each atom as a single embedding. Let
+E[token] denote the learnable embedding vector for a token.
+For an atom p(o1, . . . , on) grounded from predicate p and
+objects o1, . . . , on, we concatenate E[p], E[o1], . . . , E[on],
+and m −n padding token embeddings to obtain a vector
+1If we reorder the input sequence of tokens according to some
+permutation, the output sequence will be the original output se-
+quence reordered by the same permutation.
+of fixed length |E[token]| · (1 + m), where m is the maxi-
+mum predicate arity in the domain. We then pass this vector
+through a single linear layer with parameters W and b to
+produce the atom embedding Tp(o1,...,on):
+Tp(o1,...,on) = W(E[p]|E[o1]| . . . |E[on]|E[pad]| . . . ) + b
+This linear transformation maps the concatenated embedding
+to the dimensionality of the atom embeddings used by the
+encoder.2 We further avoid splitting the input into state and
+goal subsequences by introducing new goal-predicates for
+every predicate. For example, the goal atom at(truck3, loc2)
+becomes goal_at(truck3, loc2). By converting all atoms into
+these atom-level embeddings and operating without posi-
+tional encodings, the encoder produces a representation that
+is guaranteed to be permutation-equivariant in the order of
+input atom tokens, addressing Limitation 3.
+Addressing
+Positional
+Encodings
+in
+the
+Decoder
+(Limitation 4). Predicting heuristic values only requires an
+order-invariant state representation and is therefore suitable
+for an encoder-only architecture without positional encod-
+ings. In contrast, the order of actions in a plan is essential
+and must be preserved. As noted in Limitation 4, learned
+positional encodings can struggle to generalize to unseen
+positions and thus limit extrapolation. To mitigate this issue
+in the decoder, we omit positional encodings entirely. This
+technique, NoPE, has shown successful length generalization
+in various sequence-to-sequence tasks, including reasoning
+problems (Kazemnejad et al. 2023).
+Contrastive Training for Object Name Equivariance
+(Limitations 1 and 2). To obtain robust object name as-
+signment equivariance (Limitation 1), architectural changes
+alone are insufficient. We therefore introduce a contrastive
+training objective that encourages the model to learn repre-
+sentations and processing patterns equivariant to arbitrary
+object name assignments.
+The core idea is to train on pairs of symmetric planning
+problems. For a given problem, we generate two encoder in-
+put sequences, X and X′, that share the same underlying state
+and goal structure but differ only in object names. We simi-
+larly generate two corresponding decoder output sequences,
+Y and Y ′, which are the plans predicted for X and X′, respec-
+tively. Since X and X′ represent the same planning problem,
+the model should process them in a way that reflects this
+equivalence. We propose two renaming modes: Rename-One,
+where object names in X are fixed across training instances
+and object names in X′ are randomized, and Rename-Both,
+where object names in both X and X′ are randomized. We
+then rename the objects in Y and Y ′ accordingly. Prelimi-
+nary experiments showed that Rename-One works better for
+predicting heuristics, whereas Rename-Both is better for plan
+generation. We encourage equivalent behavior across both
+sequences using two complementary contrastive losses.
+The first, the attention loss Latt, is motivated by the intu-
+ition that if the model encodes the same algorithm regardless
+2Directly encoding atoms with unique tokens, i.e., E[p(o1, . . . ,
+on)], would induce a massive vocabulary that scales poorly in the
+number of supported objects, making it likely that some atoms are
+rarely seen during training and causing poor generalization.
+
+
+PlanGPT
+SymTE
+SymTED
+# Parameters
+117M
+7M
+16M
+Table 1: Parameter counts for PlanGPT and our architectures.
+of names, the attention scores between corresponding parts
+of the input must match across layers and heads (Figure 1).
+We define Latt as:
+Latt = 1
+B
+X
+α∈Att
+#rows(α)
+X
+i=1
+#cols(α)
+X
+j=1
+(αi,j −α′
+i,j)2
+Here, B denotes the batch size and Att the set of all attention
+modules across layers and heads. α and α′ are the attention
+scores produced by the transformer for (X, Y ) and (X′, Y ′),
+respectively.
+The second component, the hidden state loss Lhid, encour-
+ages similarity directly in the learned token representations.
+It is based on the idea that the hidden state vector for a token
+should encode problem-structure features that are indepen-
+dent of the specific object names. We compute Lhid as:
+Lhid = 1
+B
+X
+H∈{X,Y }
+#layers(H)
+X
+l=1
+(H(l)
+[:dk] −H′(l)
+[:dk])2
+Here, H(l) denotes the hidden states after the l:th encoder
+layer when H = X and the l:th decoder layer when H = Y ,
+and [:dk] denotes a projection selecting the first dk dimen-
+sions of these hidden states.
+We combine these with the standard prediction loss: L =
+w1 ·Lpred +w2 ·Latt +w3 ·Lhid. Here, Lpred is the next-token
+prediction loss (cross-entropy for plan generation, MSE for
+heuristic prediction), and w1, w2, and w3 are hyperparame-
+ters controlling the importance of each component. We set
+all wi to 1 in our experiments. Minimizing this objective
+incentivizes the model to predict correct actions or heuris-
+tic values while learning attention patterns and hidden state
+features that are equivariant to object name variations. For
+predicting heuristics with our encoder-only architecture, we
+feed P
+N X(N)
+[:dk] instead of P
+N X(N) to the readout MLP to
+obtain the final heuristic prediction (Figure 1). We addition-
+ally address Limitation 2 by always fully randomizing object
+names.
+Summary of Our Architectures. We introduce two
+symmetry-aware transformers: SymTE, an encoder-only ar-
+chitecture for heuristic prediction, and SymTED, an encoder-
+decoder architecture for plan generation. Inspired by the
+GNNs of Ståhlberg, Bonet, and Geffner (2022a), both share
+weights across layers to reduce the number of parameters,
+see Table 1. This is strictly necessary; otherwise Lhid would
+collapse to a trivial solution for slices of hidden states in non-
+final layers. Both models use the contrastive loss described
+above to ignore object names. Thus, our heuristic model is a
+permutation-equivariant, shared-weight encoder, and our plan
+generation model extends it with a shared-weight decoder
+using NoPE positional encodings for length generalization.
+5
+Plan Generation
+There are many ways to use transformer models to generate
+plans, differing in how much they rely on the model versus
+search techniques such as backtracking or cycle detection. To
+assess the performance of the model rather than the search
+strategy, we consider three minimally supportive plan gener-
+ation strategies.
+Greedy Plan Generation. At each step, we autoregressively
+select the token with the highest predicted probability and
+stop when an end-of-sequence token is generated.
+Applicability-Filtered Plan Generation. This strategy again
+autoregressively selects the most probable token, but first
+masks the probabilities so that only tokens leading to an
+applicable action are considered. For example, if the last two
+tokens generated are move and roomA, then the model can
+only generate a token corresponding to a room reachable
+from roomA (e.g., roomB). Plan generation stops when the
+simulated state satisfies the goal. This strategy dominates the
+greedy plan generation strategy.
+Regrounding Applicability-Filtered Plan Generation. This
+strategy filters applicable actions as above. After each action
+is generated, it is applied to update the state, and the model’s
+input sequence is reset to this new state. Essentially, we
+alternate between predicting (partial) plans of length one and
+applying them. Again, we stop when the found state satisfies
+the goal. This strategy does not dominate either of the two
+above.
+Greedy Heuristic Guidance. For the heuristic-prediction
+model, we generate plans by computing the heuristic value
+of each successor state and greedily selecting the action that
+leads to the state with the lowest heuristic value. This process
+is repeated until reaching a goal state.
+For each strategy, we also stop plan generation early if the
+model generates more than 500 tokens. Pseudo-code for all
+strategies is in Appendix D.
+6
+Experiments, Results and Limitations
+We now evaluate our symmetry-aware training, focusing on
+training efficiency and extrapolation capabilities.
+Experimental Setup. Since the benchmarks used by
+PlanGPT are unsuitable for our purposes, due to significant
+training/test set overlap (see Appendix B2) and a lack of
+dedicated extrapolation data, we generated our own datasets
+for four widely used planning domains with characteristics
+relevant to PlanGPT’s limitations: Blocksworld, Gripper, Vis-
+itall and Logistics. In Blocksworld, a set of blocks in multiple
+towers must be stacked in a specific order into a single tower.
+In Gripper, a robot with two grippers must move a set of balls
+from one room to another. In Visitall, an agent must visit
+all cells in a grid. In Logistics, a set of trucks and airplanes
+must transport packages from their initial locations to their
+goal locations. Appendix C details the domains, their PDDL
+representations, and the size and distribution of problems for
+each domain.
+We train models for each combination of domain and archi-
+tecture on an NVIDIA A100 GPU with 12 hours of training
+
+
+PlanGPT - Decoder (baseline)
+SymTE (ours)
+SymTED (ours)
+greedy
+applicable
+regrounding
+greedy
+greedy
+applicable
+regrounding
+Blocks
+validation
+.00±.00
+.00±.00
+.00±.00
+1.00±.00
+1.00±.00
+1.00±.00
+.00±.00
+interpolation
+.56±.16
+.56±.16
+.00±.00
+1.00±.00
+1.00±.00
+1.00±.00
+1.00±.00
+extrapolation
+.00±.00
+.00±.00
+.00±.00
+.05±.07
+.07±.02
+.13±.05
+.00±.00
+Gripper
+validation
+.00±.00
+.00±.00
+.00±.00
+1.00±.00
+.17±.24
+1.00±.00
+1.00±.00
+interpolation
+.00±.00
+.44±.16
+.00±.00
+.89±.16
+.67±.00
+1.00±.00
+1.00±.00
+extrapolation
+.00±.00
+.00±.00
+.00±.00
+.02±.03
+.00±.00
+.15±.06
+.79±.16
+Visitall
+validation
+.00±.00
+.14±.12
+.00±.00
+1.00±.00
+.33±.09
+.93±.04
+.99±.02
+interpolation
+.05±.04
+.67±.18
+.41±.22
+1.00±.00
+.87±.01
+.99±.01
+1.00±.00
+extrapolation
+.00±.00
+.02±.02
+.00±.00
+.42±.11
+.00±.00
+.15±.05
+.64±.12
+Logistics
+validation
+.00±.00
+.08±.12
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+interpolation
+.07±.05
+.44±.09
+.19±.14
+.11±.00
+.22±.31
+.26±.29
+.22±.31
+extrapolation
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+Table 2: Normalized coverage scores [(µ ± σ)] for all architectures when decoding with the various generation strategies. A
+coverage score of 1.00 means that the configuration solves all tasks. The best results are highlighted in bold.
+per model; Appendix E gives further details. We then evalu-
+ate them using all plan generation strategies from Section 5
+on three sets of problems: validation (slightly larger than
+training and used for checkpoint selection), interpolation
+(comparable but distinct sizes), and extrapolation (larger than
+validation). For robustness, we use three random seeds per
+configuration. For the PlanGPT baseline, we avoid leaking
+object names by always randomizing all object names. We
+additionally perform ablation studies to analyze the impact
+of our contrastive loss (adding it to PlanGPT and removing
+it from our models) and to examine the effect of the number
+of objects on the contrastive loss; see Appendix E2 and E3,
+respectively. Performance is primarily evaluated based on
+coverage, i.e., the percentage of problems for which a valid
+plan is generated, and plan quality, i.e., the length of the
+generated plans compared to best known plan lengths.
+Results – Coverage. Coverage is shown in Table 2. PlanGPT
+can solve instances similar in size to the training problems (in-
+terpolation), but fails entirely on larger instances regardless
+of decoding strategy. In contrast, both our architectures solve
+larger instances to varying degrees. If regrounding extrapo-
+lates well for a domain, applicability-filtered plan generation
+tends to perform worse, and vice versa, with regrounding
+generally preferable. SymTED also consistently outperforms
+SymTE in coverage. No approach extrapolates in Logistics,
+which aligns with known GNN results (Ståhlberg, Bonet, and
+Geffner 2022a) based on expressiveness limitations. Logis-
+tics is also the only domain where PlanGPT outperforms
+our models, likely due to its larger number of parameters
+allowing better fit to the training data. Even there, however,
+our SymTED model outperforms PlanGPT in both greedy and
+regrounding settings.
+Results – Plan Quality. Appendix E2 reports plan quality
+tables, where we see that the generated plans are often op-
+timal or close to optimal. This likely stems from training
+exclusively on optimal plans, encouraging the models to re-
+produce such policies. Although not our main focus, we also
+observe that the SymTED finds shorter plans in seconds than
+the classical planner LAMA (Richter and Westphal 2010)
+does in two hours for several problems (we use LAMA to
+obtain reference plan lengths), indicating that the learned
+policies are practically useful.
+Results – Training Stability. Training with the contrastive
+objective yields lower validation losses, but the coverage
+gains are most pronounced for the heuristic prediction model.
+Following Abbe et al. (2024), we hypothesize that this is
+because predicting goal distances requires considering all
+input tokens, whereas autoregressive next-action prediction
+does not. For example, in Gripper predicting the next action
+only requires considering a few balls, while the goal distance
+depends on all balls.
+Across many domains, losses plateau for SymTE models
+without the contrastive term, while models with it continue
+to improve. We also observed frequent training instabilities
+without the contrastive loss for SymTE and SymTED, leading
+to sudden loss divergence; standard stabilization techniques
+such as gradient clipping or reduced learning rates did not
+help. Across all trained models (including ablations and
+hyperparameter tuning), only a single model diverged with
+the contrastive loss, compared to 19 without it. We discuss
+the link between the contrastive objective and training
+stability in Appendix E.
+Limitations. While we outperform PlanGPT on extrapola-
+tion, our models still have clear limitations. They extrapo-
+late to some extent under greedy plan generation, but the
+applicability-filtered and regrounding strategies perform bet-
+ter, indicating that the learned algorithm is not perfect. In the
+hardest domain, Logistics, we cannot extrapolate to larger
+instances at all. Extrapolation success likely depends on sev-
+eral factors, such as the choice of positional encodings, and
+further work is needed to understand their impact on length
+generalization. Another limitation is that all transformer mod-
+
+
+els, including PlanGPT, rely on a fixed-size vocabulary, so
+problems with more objects than vocabulary entries cannot
+be solved. As we show in Appendix E3, however, our con-
+trastive loss allows stable training with much larger vocabu-
+laries, making it viable to choose a large vocabulary ahead of
+training as we do in our experiments.
+7
+Related Work
+Learning-based approaches for automated planning increas-
+ingly complement traditional symbolic methods, aiming to
+improve performance, handle more complex domains, and
+enable faster planning.
+Learning for Planning with Graph Neural Networks.
+GNNs (Scarselli et al. 2009) are the predominant deep learn-
+ing architecture for learning directly from structured plan-
+ning problem representations (Ståhlberg, Bonet, and Geffner
+2022a,b; Chen and Thiébaux 2024; Ståhlberg, Bonet, and
+Geffner 2025; Horˇcik et al. 2025). Their inductive bias to-
+wards processing graph-structured data, where nodes and
+edges can represent atoms and their relationships, aligns
+well with the relational nature of planning problems. How-
+ever, standard GNNs are theoretically bounded by their ex-
+pressive power, aligning with the 1-dimensional Weisfeiler–
+Lehman (WL) test (Xu et al. 2019), and may struggle to dis-
+tinguish WL-indistinguishable graph structures. Approaches
+like higher-order GNNs (Ståhlberg, Bonet, and Geffner 2025)
+have been explored to lift this expressiveness barrier for plan-
+ning tasks. Despite their success, GNNs have not been ex-
+ploited for generating plans in the context of next-token gen-
+eration.
+Transformers for Planning and Structured Data. Apply-
+ing transformer architectures directly to structured planning
+problem inputs is less common than using GNNs. Notable
+examples include PlanGPT (Rossetti et al. 2024), which
+treats planning as a sequence generation task, and Dual-
+former (Su et al. 2025), which trains transformers on search
+traces for navigation and puzzle tasks. A key challenge for
+these sequence-based models is extrapolation to larger in-
+stances. Transformers, particularly those relying on learned
+absolute positional encodings, are often limited in their abil-
+ity to generalize to sequence lengths significantly different
+from those seen during training (Su et al. 2025; Rossetti
+et al. 2024). Methods like iterative self-training (Lee et al.
+2025) show that transformers can be trained to extrapolate on
+some tasks, including graph-encoded mazes, but typically re-
+quire complex multi-round training strategies. To the best of
+our knowledge, training transformers for out-of-distribution
+extrapolation on STRIPS planning problems without such
+multi-stage fine-tuning remains an open challenge.
+Large Language Models for Planning. Recent research
+increasingly leverages pre-trained large language models
+(LLMs) for solving planning problems. Some work fine-tunes
+LLMs specifically for planning tasks (Pallagani et al. 2022)
+or uses them to generate programs that solve planning prob-
+lems (Silver et al. 2024; Katz et al. 2024). Other strategies em-
+ploy LLMs to generate plans directly from natural language
+problem descriptions (Huang et al. 2022), with increasingly
+intricate prompting strategies (Yao et al. 2023; Sel et al. 2024;
+Gestrin, Kuhlmann, and Seipp 2024; Sel, Jia, and Jin 2025)
+and sometimes assisted by external tools (Kambhampati et al.
+2024), or to translate natural language into PDDL tasks that
+can be solved with off-the-shelf planners (Liu et al. 2023; Os-
+wald et al. 2024; Huang, Lipovetzky, and Cohn 2025). These
+approaches capitalize on the extensive knowledge embedded
+within LLMs and their inherent reasoning capabilities. In
+contrast, our work focuses on training models directly on
+structured planning data (like PDDL tokens) to obtain robust
+and generalizable plan generation models.
+Equivariant and Invariant Learning. Training models to
+be equivariant or invariant to specific input transformations
+is a fundamental theme in deep learning, notably in computer
+vision (e.g., CNNs for translation invariance) and GNNs
+(permutation-equivariance). For planning problems, sym-
+metries such as the arbitrary assignment of object names
+introduce complex permutations that ideal learned models
+should handle. Some work explores architectural modifi-
+cations to achieve equivariance for structured data, e.g.,
+Graphormer (Ying et al. 2021). Relevant to object name
+symmetries, Renamer (Ankner, Renda, and Carbin 2023)
+proposes transformer architectural changes for semantics-
+preserving variable renaming. Our work complements such
+architectural efforts by exploring training objectives.
+Objectives on Intermediate Representations. Standard
+training often focuses on the final output loss (e.g., predic-
+tion error), but some methods introduce auxiliary losses on
+intermediate layer outputs, such as hidden states or atten-
+tion weights, to encourage desired properties in the learned
+representations. We found no prior work that specifically in-
+troduces a contrastive learning objective applied directly to
+attention scores or targeted hidden state projections between
+symmetrically equivalent inputs with the explicit goal of in-
+ducing object name assignment equivariance in a transformer
+model. However, there is work that uses losses on attention
+for other purposes (Patro et al. 2021).
+8
+Conclusions and Future Work
+By introducing a novel contrastive training objective designed
+to encourage object name equivariance in the learned repre-
+sentations, combined with architectural choices to address
+planning-related symmetries, we showed improved inter- and
+extrapolation performance compared to the state-of-the-art
+PlanGPT baseline across multiple planning domains. How-
+ever, despite significant gains over the baseline, our model
+is still unable to consistently generate valid plans for prob-
+lems significantly larger than those encountered during train-
+ing. This outcome reinforces that achieving robust, out-of-
+distribution extrapolation on complex symbolic reasoning
+tasks remains a substantial challenge for existing transformer
+architectures and training paradigms.
+Future work should identify the architectural or representa-
+tional bottlenecks that limit generalization. Also, addressing
+the practical limitation of a fixed vocabulary size by explor-
+ing representation learning techniques independent of token
+vocabularies is crucial for tackling very large tasks.
+
+
+Acknowledgments
+This work was partially supported by the Wallenberg AI, Au-
+tonomous Systems and Software Program (WASP) funded
+by the Knut and Alice Wallenberg Foundation. The com-
+putations were enabled by resources provided by the Na-
+tional Academic Infrastructure for Supercomputing in Swe-
+den (NAISS), partially funded by the Swedish Research
+Council through grant agreement no. 2022-06725.
+References
+Abbe, E.; Bengio, S.; Lotfi, A.; Sandon, C.; and Saremi, O.
+2024. How Far Can Transformers Reason? The Globality
+Barrier and Inductive Scratchpad. In Proc. NeurIPS 2024,
+27850–27895.
+Ankner, Z.; Renda, A.; and Carbin, M. 2023. Renamer: A
+Transformer Architecture Invariant to Variable Renaming. In
+Machine Learning for Systems Workshop at NeurIPS 2023.
+Chen, D. Z.; and Thiébaux, S. 2024. Graph Learning for
+Numeric Planning. In Proc. NeurIPS 2024, 91156–91183.
+Chen, D. Z.; Trevizan, F.; and Thiébaux, S. 2024. Return
+to Tradition: Learning Reliable Heuristics with Classical
+Machine Learning. In Proc. ICAPS 2024, 68–76.
+Fikes, R. E.; and Nilsson, N. J. 1971.
+STRIPS: A New
+Approach to the Application of Theorem Proving to Problem
+Solving. AIJ, 2: 189–208.
+Gestrin, E.; Kuhlmann, M.; and Seipp, J. 2024. NL2Plan:
+Robust LLM-Driven Planning from Minimal Text Descrip-
+tions. In ICAPS Workshop on Human-Aware and Explainable
+Planning.
+Gupta, N.; and Nau, D. S. 1992. On the Complexity of
+Blocks-World Planning. AIJ, 56(2–3): 223–254.
+Helmert, M. 2003. Complexity results for standard bench-
+mark domains in planning. AIJ, 143(2): 219–262.
+Helmert, M.; Mattmüller, R.; and Röger, G. 2006. Approxi-
+mation Properties of Planning Benchmarks. In Proc. ECAI
+2006, 585–589.
+Horˇcik, R.; Šír, G.; Šimek, V.; and Pevn`y, T. 2025. State
+Encodings for GNN-Based Lifted Planners. In Proc. AAAI
+2025, 26525–26533.
+Huang, S.; Lipovetzky, N.; and Cohn, T. 2025. Planning in the
+Dark: LLM-Symbolic Planning Pipeline without Experts. In
+Proceedings of the AAAI Conference on Artificial Intelligence,
+volume 39, 26542–26550.
+Huang, W.; Abbeel, P.; Pathak, D.; and Mordatch, I. 2022.
+Language Models as Zero-Shot Planners: Extracting Action-
+able Knowledge for Embodied Agents. In Proc. ICML, 9118–
+9147. PMLR.
+Itai, A.; Papadimitriou, C. H.; and Szwarcfiter, J. L. 1982.
+Hamilton Paths in Grid Graphs. SICOMP, 11(4): 676–686.
+Kambhampati, S.; Valmeekam, K.; Guan, L.; Verma, M.;
+Stechly, K.; Bhambri, S.; Saldyt, L. P.; and Murthy, A. B.
+2024. Position: LLMs Can’t Plan, But Can Help Planning in
+LLM-Modulo Frameworks. In Proc. ICML, 22895–22907.
+PMLR.
+Katz, M.; Kokel, H.; Srinivas, K.; and Sohrabi, S. 2024.
+Thought of Search: Planning with Language Models Through
+The Lens of Efficiency. In Proc. NeurIPS 2024, 138491–
+138568.
+Kazemnejad, A.; Padhi, I.; Ramamurthy, K. N.; Das, P.; and
+Reddy, S. 2023.
+The Impact of Positional Encoding on
+Length Generalization in Transformers. In Proc. NeurIPS
+2023, 24892–24928.
+Lee, N.; Cai, Z.; Schwarzschild, A.; Lee, K.; and Papail-
+iopoulos, D. 2025. Self-Improving Transformers Overcome
+Easy-to-Hard and Length Generalization Challenges. In Proc.
+ICML 2025, 32930–32964.
+Liu, B.; Jiang, Y.; Zhang, X.; Liu, Q.; Zhang, S.; Biswas,
+J.; and Stone, P. 2023.
+LLM+P: Empowering Large
+Language Models with Optimal Planning Proficiency.
+arXiv:2304.11477.
+Loshchilov, I.; and Hutter, F. 2019. Decoupled Weight Decay
+Regularization. In Proc. ICLR 2019, 1–18.
+Oswald, J.; Srinivas, K.; Kokel, H.; Lee, J.; Katz, M.; and
+Sohrabi, S. 2024. Large language models as planning domain
+generators. In Proceedings of the International Conference
+on Automated Planning and Scheduling, volume 34, 423–
+431.
+Pallagani, V.; Muppasani, B.; Murugesan, K.; Rossi, F.;
+Horesh, L.; Srivastava, B.; Fabiano, F.; and Loreggia, A. 2022.
+Plansformer: Generating Symbolic Plans using Transformers.
+arXiv:2212.08681.
+Patro, B. N.; Kasturi, G. S.; Jain, A.; and Namboodiri, V. P.
+2021. Self Supervision for Attention Networks. In Proc.
+WACV 2021, 726–735.
+Radford, A.; Narasimhan, K.; Salimans, T.; and Sutskever, I.
+2018. Improving Language Understanding by Generative Pre-
+Training. https://cdn.openai.com/research-covers/language-
+unsupervised/language_understanding_paper.pdf.
+Radford, A.; Wu, J.; Child, R.; Luan, D.; Amodei, D.; and
+Sutskever, I. 2019.
+Language Models are Unsupervised
+Multitask Learners. https://cdn.openai.com/better-language-
+models/language_models_are_unsupervised_multitask_
+learners.pdf.
+Richter, S.; and Westphal, M. 2010.
+The LAMA Plan-
+ner: Guiding Cost-Based Anytime Planning with Landmarks.
+JAIR, 39: 127–177.
+Rossetti, N.; Tummolo, M.; Gerevini, A. E.; Putelli, L.; Se-
+rina, I.; Chiari, M.; and Olivato, M. 2024. Learning General
+Policies for Planning through GPT Models. In Proc. ICAPS
+2024, 500–508.
+Scarselli, F.; Gori, M.; Tsoi, A. C.; Hagenbuchner, M.; and
+Monfardini, G. 2009. The Graph Neural Network Model.
+IEEE Transactions on Neural Networks, 20(1): 61–80.
+Seipp, J.; Keller, T.; and Helmert, M. 2020. Saturated Cost
+Partitioning for Optimal Classical Planning. JAIR, 67: 129–
+167.
+Sel, B.; Al-Tawaha, A.; Khattar, V.; Jia, R.; and Jin, M. 2024.
+Algorithm of Thoughts: Enhancing Exploration of Ideas in
+Large Language Models. In Proc. ICML 2024, 44136–44189.
+
+
+Sel, B.; Jia, R.; and Jin, M. 2025. LLMs Can Plan Only If
+We Tell Them. In Proc. ICLR 2025.
+Selman, B. 1994. Near-Optimal Plans, Tractability, and Re-
+activity. In Proc. KR 1994, 521–529.
+Silver, T.; Dan, S.; Srinivas, K.; Tenenbaum, J. B.; Kaelbling,
+L.; and Katz, M. 2024. Generalized planning in PDDL do-
+mains with pretrained large language models. In Proceedings
+of the AAAI conference on artificial intelligence, volume 38,
+20256–20264.
+Ståhlberg, S.; Bonet, B.; and Geffner, H. 2022a. Learning
+General Optimal Policies with Graph Neural Networks: Ex-
+pressive Power, Transparency, and Limits. In Proc. ICAPS
+2022, 629–637.
+Ståhlberg, S.; Bonet, B.; and Geffner, H. 2022b. Learning
+Generalized Policies without Supervision Using GNNs. In
+Proc. KR 2022, 474–483.
+Ståhlberg, S.; Bonet, B.; and Geffner, H. 2023. Learning
+General Policies with Policy Gradient Methods. In Proc. KR
+2023, 647–657.
+Ståhlberg, S.; Bonet, B.; and Geffner, H. 2025. Learning
+More Expressive General Policies for Classical Planning
+Domains. In Proc. AAAI 2025, 26697–26706.
+Su, D.; Sukhbaatar, S.; Rabbat, M.; Tian, Y.; and Zheng, Q.
+2025. Dualformer: Controllable Fast and Slow Thinking by
+Learning with Randomized Reasoning Traces. In Proc. ICLR
+2025.
+Toyer, S.; Thiébaux, S.; Trevizan, F.; and Xie, L. 2020. AS-
+Nets: Deep Learning for Generalised Planning. JAIR, 68:
+1–68.
+Tunstall, L.; von Werra, L.; and Wolf, T. 2022. Natural
+Language Processing with Transformers. O’Reilly Media.
+Vaswani, A.; Shazeer, N.; Parmar, N.; Uszkoreit, J.; Jones, L.;
+Gomez, A. N.; Kaiser, Ł.; and Polosukhin, I. 2017. Attention
+is All You Need. In Proc. NIPS 2017, 5998–6008.
+Xu, K.; Hu, W.; Leskovec, J.; and Jegelka, S. 2019. How
+Powerful are Graph Neural Networks? In Proc. ICLR 2019.
+Yao, S.; Yu, D.; Zhao, J.; Shafran, I.; Griffiths, T.; Cao, Y.; and
+Narasimhan, K. 2023. Tree of thoughts: Deliberate problem
+solving with large language models. Advances in neural
+information processing systems, 36: 11809–11822.
+Ying, C.; Cai, T.; Luo, S.; Zheng, S.; Ke, G.; He, D.; Shen,
+Y.; and Liu, T.-Y. 2021. Do Transformers Really Perform
+Badly for Graph Representation? In Proc. NeurIPS 2021,
+28877–28888.
+Zhai, X.; Kolesnikov, A.; Houlsby, N.; and Beyer, L. 2022.
+Scaling Vision Transformers. In Proc. CVPR 2022, 12104–
+12113.
+
+
+Symmetry-Aware Transformer Training for Automated Planning
+Appendix
+A
+Decoder Architecture
+Figure A.1 illustrates the decoder part of our architecture and the associated contrastive loss.
+N×
+⟨BOS⟩
+pick
+o1
+. . .
+at(o1, o2)
+free(o3)
+. . .
+⟨BOS⟩
+pick
+o1
+. . .
+⟨BOS⟩
+pick
+o1
+. . .
+Layer i
+Layer i
+N×
+=
+=
+⟨BOS⟩
+pick
+o9
+. . .
+at(o9, o8)
+free(o1)
+. . .
+⟨BOS⟩
+pick
+o9
+. . .
+⟨BOS⟩
+pick
+o9
+. . .
+Layer i
+N×
+Transformer Decoder
+. . .
+. . .
+Encoder output
+embeddings
+seq1
+⟨BOS⟩
+pick
+o1
+. . .
+seq2
+⟨BOS⟩
+pick
+o9
+. . .
+Batch
+. . .
+. . .
+. . .
+. . .
+.. .
+.. .
+plan = pick(b1, roomA, left), move(roomA, roomB), ...
+5
+6
+MLP
+7
+{p(03) = 0.1, p(drop) = 0.01}
+Figure A.1: Illustration of the decoder part of our architecture. First, we copy the input plan, and rename all objects using the
+same renaming scheme as in the encoder and map both copies into sequences. While forwarding the sequences and encoder
+output to the decoder (6), all attention scores and hidden states are collected and aligned equally as explained in Figure 1. The
+decoder output is then used to predict the next token in the plan (7).
+
+
+B
+PlanGPT Limitations
+B1
+Data Leakage through Object Names
+To illustrate the impact of object renaming on PlanGPT, we evaluated their published models on 3 domains (Blocksworld,
+Visitall and Floortile) with and without object renaming. Note that this also used their original training and test data. The results
+are shown in Table B.1. We note that all information remains in the problem and that classical planning approaches would be
+unaffected by this renaming, and that our models would be far more resilient.
+Blocksworld is a domain in which the object names have no semantic meaning. As such, PlanGPT is unaffected by the
+renaming.
+Visitall is a domain in which the object names are semantically meaningful. The object names are based on the coordinates of
+the locations, e.g., loc-x1-y2 stands for the coordinate ⟨1, 2⟩in the grid. As such, renaming the locations to random names leads
+to a complete failure of the model, showing that it acts primarily on the inferred meaning of the object names rather than the
+supplied predicates.
+Floortile is a domain which has two types, robots and tiles. We also note that the coverage we found without renaming is
+significantly lower than the reported value. We are unaware of the reason for this discrepancy, but hypothesize that the authors
+accidentally published the wrong model checkpoints. Both the robots and tiles are semantically meaningful, as the robots’ names
+correlate to the color they carry and the tiles again are directly correlated to their coordinates. While it manages to solve .05% of
+the problems when renaming only the robots, this is still a massive drop in performance.
+We only evaluated this for these three domains and only for a single random renaming each.
+These results highlight how PlanGPT often utilizes leaked information in the object names to solve problems. This is a
+significant limitation, as it means that the model is unable to generalize to unseen objects or locations, which is a common
+requirement in planning problems. Our architectures on the other hand, have to infer this information from the available predicates
+since all the objects are anonymized. This makes them act in the way classical planners do and the way a user would expect a
+planning model to behave.
+Table B.1: PlanGPT’s performance on the original training data with and without object renaming. Reported values are those
+reported by the authors in Rossetti et al. (2024). The other columns show the performance of the models when rerunning their
+evaluation without object renaming (None) and with object renaming of the stated type(s). The coverage values are deterministic
+for a fixed renaming. We only evaluated a single random renaming for each category.
+Blocksworld
+Visitall
+Floortile
+Reported None Blocks Reported None Locations Reported None Robots Tiles Both
+Coverage [%]
+99.5
+99.55 99.36
+94
+93.80
+0
+94.4
+44.73
+0.05
+0
+0
+B2
+Training and Test Set Overlap
+We discovered that PlanGPT’s training and test sets overlap in the Visitall domain to a certain degree. Of 6231 test problem files,
+1931 identical problems were found in the training set as well. Furthermore, of the 2419 unique initial states in the test set, 2418
+were also found in the training set. For that reason and the fact that no extrapolation data is included, we opted to train on our
+own datasets. We did not evaluate this for any domain other than Visitall.
+
+
+C
+PDDL Domain Descriptions
+In this section, we provide high-level descriptions of the planning domains used in our experiments and their PDDL repre-
+sentations. In addition, we provide the sizes of the training, validation, interpolation and extrapolation sets for each domain
+in Table C.1. During training, we fully expand each training instance and sample from the complete state space. As such, our
+approach mitigates the risk of only seeing certain parts of the state space while also heavily reducing the number of problems
+that need to be used for training. The larger number of training problems in Visitall than other domains is due to the fact that the
+number of unique states in any given Visitall problem is noticeably smaller than in Blocksworld and Logistics. Consequently, the
+total number of training states thereof lies between Blocksworld and Logistics. On the contrary, in Gripper, all problems with the
+same number of balls are equivalent under the expansion and as such we only included one per training size. In comparison,
+PlanGPT training used 63 000 problems per domain for training (Rossetti et al. 2024). See Appendix E for further details on the
+training procedure and sampling. To generate the instances, we either used commonly available domain generation scripts or
+wrote our own. These are available in our repository.
+Table C.1: Problem sizes of the planning problems from the four benchmark subsets. The problems in the training set are chosen
+to allow exhaustive exploration of their state spaces. The problems in the extrapolation set are chosen to be large enough to allow
+for meaningful evaluation of the models’ extrapolation capabilities.
+Domain
+Parameter
+# Training Instances
+Training Sizes
+Validation Sizes
+Interpolation Sizes
+Extrapolation Sizes
+Blocksworld
+#blocks
+9
+4, 6, 7
+8
+5
+9, 10, . . . , 17
+Gripper
+#balls
+4
+2, 4, 6, 8
+9, 10
+3, 5, 7
+12, 14, . . . , 42
+Logistics
+#goals
+12
+1, 3, 5
+6
+2, 4
+7, 8, . . . , 15
+Visitall
+#cells
+207
+1, 3, 4, 6, 10, 11, 12, 14, 16
+18, 20
+2, 5, 8, 9, 15
+24, 25, . . . , 121
+C1
+Blocksworld
+A Blocksworld problem consists of a set of blocks that can be picked up and stacked on top of each other or put on the table.
+The goal is to stack all blocks in a single stack in a given order. Blocksworld problems are NP-hard to solve optimally (Gupta
+and Nau 1992), but can be solved in at most twice the minimum number of steps using a simple polynomial policy that puts all
+blocks on the table and then stacks them in the goal order (Selman 1994).
+(define (domain blocks)
+(:requirements :strips)
+(:predicates (on ?x ?y)
+(ontable ?x)
+(clear ?x)
+(handempty)
+(holding ?x))
+(:action pick-up
+:parameters (?x)
+:precondition (and (clear ?x)
+(ontable ?x)
+(handempty))
+:effect (and (not (ontable ?x))
+(not (clear ?x))
+(not (handempty))
+(holding ?x)))
+(:action put-down
+:parameters (?x)
+:precondition (holding ?x)
+:effect (and (not (holding ?x))
+(clear ?x)
+(handempty)
+(ontable ?x)))
+(:action stack
+:parameters (?x ?y)
+:precondition (and (holding ?x)
+(clear ?y))
+
+
+:effect (and (not (holding ?x))
+(not (clear ?y))
+(clear ?x)
+(handempty)
+(on ?x ?y)))
+(:action unstack
+:parameters (?x ?y)
+:precondition (and (on ?x ?y)
+(clear ?x)
+(handempty))
+:effect (and (holding ?x)
+(clear ?y)
+(not (clear ?x))
+(not (handempty))
+(not (on ?x ?y)))))
+C2
+Gripper
+A Gripper problem consists of a robot with two gripper arms that can pick up and drop balls and move between two rooms, A
+and B. The goal is to move all n balls from room A to B. The family of Gripper problems can be solved optimally in polynomial
+time (Helmert 2003). One optimal policy is to:
+• Always move to room A when both grippers are empty.
+• Once in room A, pick up as many balls as possible.
+• If in A and unable to pick more balls, move to room B.
+• In room B, drop all balls.
+• Repeat until all balls are in room B.
+While this domain is simple, extrapolation to larger instances is not trivial for learning algorithms. This is particularly true for
+transformers as the model must learn to keep track of the ball positions while dealing with plan token positions.
+(define (domain gripper)
+(:requirements :strips :negative-preconditions)
+(:predicates
+(room ?r)
+(ball ?b)
+(gripper ?g)
+(at-robby ?r)
+(at ?b ?r)
+(free ?g)
+(carry ?o ?g)
+)
+(:action move
+:parameters (?from ?to)
+:precondition (and
+(room ?from)
+(room ?to)
+(at-robby ?from)
+)
+:effect (and
+(at-robby ?to)
+(not (at-robby ?from))
+)
+)
+(:action pick
+:parameters (?obj ?room ?gripper)
+:precondition (and
+(ball ?obj)
+(room ?room)
+
+
+(gripper ?gripper)
+(at ?obj ?room)
+(at-robby ?room)
+(free ?gripper)
+)
+:effect (and
+(carry ?obj ?gripper)
+(not (at ?obj ?room))
+(not (free ?gripper))
+)
+)
+(:action drop
+:parameters (?obj ?room ?gripper)
+:precondition (and
+(ball ?obj)
+(room ?room)
+(gripper ?gripper)
+(carry ?obj ?gripper)
+(at-robby ?room)
+)
+:effect (and
+(at ?obj ?room)
+(free ?gripper)
+(not (carry ?obj ?gripper))
+)
+)
+)
+C3
+Logistics
+A Logistics problem consists of a set of trucks, locations, airports, cities, airplanes and packages. The goal is to move all packages
+from their initial locations to their goal locations. Cities have locations, some of which are airports. Trucks can move packages
+between locations within a city, while airplanes can move packages between airports. The Logistics domain is more complex
+than Gripper, and even state-of-the-art deep learning-based planners struggle to extrapolate to larger instances due to their
+expressive limitations (Ståhlberg, Bonet, and Geffner 2023). Finding optimal plans for Logistics is NP-complete (Helmert 2003),
+but suboptimal plans can be generated in polynomial time using a greedy algorithm that delivers one package at a time (Helmert,
+Mattmüller, and Röger 2006). While we do not expect our model to extrapolate to larger instances, we can still compare the
+interpolation performance to instances of similar size as the training instances. Furthermore, compared to Gripper, the Logistics
+domain has many different object types and PlanGPT assigns object names based on the object type. We use Logistics problems
+to compare the impact of this object assignment method compared to a fully-random assignment of object names.
+(define (domain logistics)
+(:requirements :strips)
+(:predicates
+(package ?obj)
+(truck ?truck)
+(airplane ?airplane)
+(airport ?airport)
+(location ?loc)
+(in-city ?obj ?city)
+(city ?city)
+(at ?obj ?loc)
+(in ?obj1 ?obj2))
+(:action load-truck
+:parameters (?obj ?truck ?loc)
+:precondition
+(and (package ?obj) (truck ?truck) (location ?loc)
+(at ?truck ?loc) (at ?obj ?loc))
+:effect
+
+
+(and (not (at ?obj ?loc)) (in ?obj ?truck)))
+(:action load-airplane
+:parameters (?obj ?airplane ?loc)
+:precondition
+(and (package ?obj) (airplane ?airplane) (location ?loc)
+(at ?obj ?loc) (at ?airplane ?loc))
+:effect
+(and (not (at ?obj ?loc)) (in ?obj ?airplane)))
+(:action unload-truck
+:parameters (?obj ?truck ?loc)
+:precondition
+(and (package ?obj) (truck ?truck) (location ?loc)
+(at ?truck ?loc) (in ?obj ?truck))
+:effect
+(and (not (in ?obj ?truck)) (at ?obj ?loc)))
+(:action unload-airplane
+:parameters (?obj ?airplane ?loc)
+:precondition
+(and (package ?obj) (airplane ?airplane) (location ?loc)
+(in ?obj ?airplane) (at ?airplane ?loc))
+:effect
+(and (not (in ?obj ?airplane)) (at ?obj ?loc)))
+(:action drive-truck
+:parameters (?truck ?loc-from ?loc-to ?city)
+:precondition
+(and (truck ?truck) (location ?loc-from) (location ?loc-to) (city ?city)
+(at ?truck ?loc-from) (in-city ?loc-from ?city) (in-city ?loc-to ?city))
+:effect
+(and (not (at ?truck ?loc-from)) (at ?truck ?loc-to)))
+(:action fly-airplane
+:parameters (?airplane ?loc-from ?loc-to)
+:precondition
+(and (airplane ?airplane) (airport ?loc-from) (airport ?loc-to)
+(at ?airplane ?loc-from))
+:effect
+(and (not (at ?airplane ?loc-from)) (at ?airplane ?loc-to)))
+)
+C4
+Visitall
+A problem in Visitall consists of a set of locations in a four-connected rectangular grid and an agent that has to visit all cells.
+Finding shortest paths that visit all cells in arbitrary rectangular grids is NP-complete (Itai, Papadimitriou, and Szwarcfiter 1982).
+However, there is a simple suboptimal policy that incurs at most twice the number of steps of an optimal plan: walk to a corner,
+then move in snake-like motion through all rows of the grid. We include the Visitall domain because even slight increases in the
+number of objects, i.e., the locations, make problems much harder to solve. Furthermore, PlanGPT assigns location names not
+arbitrarily as in the other domains, but based on the coordinates of the locations, which adds additional semantic meaning to the
+object names [personal communication with the authors of PlanGPT]. This implies that the model does not need to learn the
+meaning of the adjacent predicate, which is used to describe the adjacency of locations. Additionally, the model is fundamentally
+limited to the locations in the training set, as it cannot generalize to unseen locations.
+(define (domain grid-visit-all)
+(:requirements :strips :negative-preconditions)
+(:predicates
+(place ?x)
+(connected ?x ?y)
+(at-robot ?x)
+
+
+(visited ?x)
+)
+(:action move
+:parameters (?curpos ?nextpos)
+:precondition (and
+(place ?curpos)
+(place ?nextpos)
+(at-robot ?curpos)
+(connected ?curpos ?nextpos)
+)
+:effect (and
+(at-robot ?nextpos)
+(not (at-robot ?curpos))
+(visited ?nextpos)
+)
+)
+)
+
+
+D
+Decoding Strategies
+D1
+Greedy Plan Generation
+Algorithm 1 Greedy Plan Generation. Starting from the encoding of the planning problem, autoregressively generate a plan by
+appending the token with the highest predicted probability at each step.
+Require: Planning problem P = ⟨P, O, A, I, G⟩
+Require: Encoder function Encode(O, I, G)
+Require: Transformer model M
+Require: Beginning-of-sequence token <BOS>
+Require: End-of-sequence token <EOS>
+Require: Maximum plan length N
+Ensure: Predicted action sequence Plan
+1: E ←Encode(P, O, I, G)
+2: Plan ←⟨<BOS>⟩
+3: while Plan does not end with <EOS> and length(Plan) < N do
+4:
+InputSequence ←E ⊕Plan
+5:
+Predictions ←M(InputSequence)
+6:
+NextToken ←arg maxt Predictions
+7:
+append NextToken to Plan
+8: end while
+9: return Plan
+
+
+D2
+Applicability-Filtered Plan Generation
+Algorithm 2 Applicability-Filtered Plan Generation. At each step, select the highest probability action token. Before appending
+it to the plan, simulate its effect in the planning environment. If the action is invalid from the current state, it is masked, and the
+model’s probabilities for other actions are re-evaluated. Plan generation stops when the simulated state reaches the goal.
+Require: Planning problem P = ⟨P, O, A, I, G⟩
+Require: Encoder function Encode(P, O, I, G)
+Require: Transformer model M
+Require: Beginning-of-sequence token <BOS>
+Require: End-of-sequence token <EOS>
+Require: Maximum plan length N
+Require: Function ApplyPlan(InitialState, Plan) returns the final state after executing the plan
+Require: Function IsGoalState(State, Goal) returns True iff State satisfies Goal
+Require: Simulator function MaskInvalidTokens(State, ActionSeq, Predictions) sets probabilities of tokens corresponding to
+inapplicable actions in State to zero
+Ensure: Predicted action sequence Plan
+1: E ←Encode(P, O, I, G)
+2: Plan ←⟨<BOS>⟩
+3: while not IsGoalState(CurrentState, G) and length(Plan) < N do
+4:
+CurrentState ←ApplyPlan(I, Plan)
+5:
+InputSequence ←E ⊕Plan
+6:
+Predictions ←M(InputSequence)
+7:
+MaskedPredictions ←MaskInvalidTokens(CurrentState, Plan, Predictions)
+8:
+NextToken ←arg maxt MaskedPredictions[−1, t]
+9:
+append NextToken to Plan
+10: end while
+11: return Plan
+
+
+D3
+Regrounding Applicability-Filtered Plan Generation
+Algorithm 3 Regrounding Applicability-Filtered Plan Generation. At each step, the model’s output probabilities are filtered to
+only include valid actions applicable in the current simulated state. Among these valid actions, the model selects the one with the
+highest predicted probability autoregressively. The provided model state is then updated by simulating the selected action, and
+the process continues until a goal state is reached.
+Require: Planning problem P = ⟨P, O, A, I, G⟩
+Require: Encoder function Encode(P, O, I, G)
+Require: Transformer model M
+Require: Beginning-of-sequence token <BOS>
+Require: End-of-sequence token <EOS>
+Require: Maximum number of tokens N
+Require: Function IsAction(TokenSeq) tests if the token sequence is a complete action
+Require: Function ApplyAction(State, Action) returns the state reached by executing Action in State
+Require: Function IsGoalState(State, Goal) returns True iff State satisfies Goal
+Require: Simulator function MaskInvalidTokens(State, TokenSeq, Predictions) sets probabilities of tokens corresponding to
+inapplicable actions in State to zero
+Ensure: Executed action sequence Plan
+1: E ←Encode(P, O, I, G)
+2: CurrentState ←I
+3: Plan ←⟨⟩
+4: CurrentTokenSeq ←⟨<BOS>⟩
+5: while not IsGoalState(CurrentState, G) and length(Plan) < N do
+6:
+InputSequence ←E ⊕CurrentTokenSeq
+7:
+Predictions ←M(InputSequence)
+8:
+MaskedPredictions ←MaskInvalidTokens(CurrentState, CurrentTokenSeq, Predictions)
+9:
+NextToken ←arg maxt MaskedPredictions
+10:
+append NextToken to CurrentTokenSeq
+11:
+if IsAction(CurrentTokenSeq) then
+12:
+CurrentState ←ApplyAction(CurrentState, CurrentTokenSeq)
+13:
+append CurrentTokenSeq to Plan
+14:
+E ←Encode(P, O, CurrentState, G)
+15:
+CurrentTokenSeq ←⟨<BOS>⟩
+16:
+end if
+17: end while
+18: return Plan
+
+
+D4
+Greedy Heuristic Guidance
+Algorithm 4 Greedy Heuristic Guidance. Starting from the encoding of the planning problem, autoregressively generate a plan
+by appending the applicable action causing the lowest estimated number of steps to solve the planning problem.
+Require: Planning problem P = ⟨P, O, A, I, G⟩
+Require: Encoder function Encode(O, I, G)
+Require: Transformer model M estimates the number of steps to solve a planning problem
+Require: Maximum number of actions N
+Require: Function IsGoalState(State, Goal) returns True iff State satisfies Goal
+Require: Function GetApplicableActions(State) returns the actions applicable in the given state
+Ensure: Executed action sequence Plan
+1: CurrentState ←I
+2: Plan ←⟨⟩
+3: while not IsGoalState(CurrentState, G) and length(Plan) < N do
+4:
+E ←Encode(P, O, CurrentState, G)
+5:
+ApplicableActions ←GetApplicableActions(CurrentState)
+6:
+Action ←arg mina∈ApplicableActions M(Encode(P, O, ApplyAction(CurrentState, a), G))
+7:
+CurrentState ←ApplyAction(CurrentState, Action)
+8:
+Append Action to Plan
+9: end while
+10: return Plan
+
+
+E
+Experiments
+For PlanGPT as a baseline, we use the hyperparameters and architecture as described in the original paper (Rossetti et al. 2024),
+though sometimes augmented with our contrastive loss.
+Our encoder and encoder-decoder models consist of 12 layers (in each, encoder and decoder), with a hidden dimension of 768,
+and 12 attention heads. These are the equivalent as those the PlanGPT variant. However, we implement shared weights between
+all encoder and decoder layers and we do not use any layer normalization. For positional encoding, we use NoPE (Kazemnejad
+et al. 2023), which is a learned positional encoding.
+We train these models using the AdamW optimizer (Loshchilov and Hutter 2019) together with a linear warmup schedule and
+subsequent cosine decay, with:
+• Weight decay: 0.1
+• β1: 0.9
+• β2: 0.999
+• Maximum iterations for schedules: 500000
+To decide on the remainder of the optimizer hyperparameters, we performed a hyperparameter search, as described in Section E1.
+Parameters for the contrastive losses, such as weights w1, w2 and w3 are set to 1.0, and the projection size k, is fixed at 32 across
+all domains. This value for k was chosen since GNNs have been shown to only require 32-dimensional representations (e.g.,
+Ståhlberg, Bonet, and Geffner 2022a,b, 2023).
+The heuristic-prediction model (encoder) uses mean-squared error (MSE) loss while the plan-generation models (decoder and
+encoder-decoder) use cross-entropy loss. For the contrastive loss, we use MSE across all architectures.
+A model under training was considered to diverge if its training loss suddenly spiked and stabilized at a high plateau, see
+Figure E.1 for an example, or became NaN.
+0
+10000
+20000
+30000
+40000
+50000
+60000
+Steps
+0
+1
+2
+3
+4
+5
+Training Loss
+An Example of Divergence
+Not Divergent
+Divergent
+Figure E.1: An example of model divergence. One line (purple) shows a model that diverged, suddenly spiking and stabilizing at
+a high plateau. The other (green) shows a model that did not diverge, while the loss spiked it also quickly returned to low values.
+The models shown are from the main experiment, trained on the Blocksworld domain without contrastive loss. When applying
+our contrastive loss during the main experiments, we did not observe neither any divergences nor any spikes.
+For training, the PDDL instances are such that the state space can be exhaustively explored allowing for sampling optimal
+plans, a common practice in classical planning data generation (Ståhlberg, Bonet, and Geffner 2022b). Whenever we require a
+state-plan pair, we start by sampling a random problem from the training set. Following this, we sample a random goal distance
+which occurs in this problem. Then, we sample a state at this goal distance from which we lastly sample an optimal plan. All
+samples are done uniformly at random. For learning heuristics, we sample in the same way, but compute the optimal plan length
+
+
+h∗instead of an optimal plan. This approach helps guarantee diverse training data and avoids bias towards specific types of
+optimal plans. Renaming is then applied to these samples. Note that when batch sizes are reported below, they refer to the original
+number of samples before any renaming is applied. As such, the effective batch size is twice the reported batch size, as each
+sample is duplicated and renamed once.
+Possibly, use of suboptimal or close-to-optimal plans could lead to better performance, as the model would have increased
+exposure to recoveries from mistakes – though, likely at the cost of plan quality. However, this would require further ablation
+studies (e.g. degree of suboptimality). As such, we focus on optimal plans in this work.
+Each model was trained on a single NVIDIA A100 GPU with 40GB of memory, 32GB of RAM and an AMD Epyc 9534 CPU
+on an internal cluster.
+The number of test instances for interpolation and extrapolation is shown in Table E.1.
+Table E.1: Number of instances in the interpolation and extrapolation test sets.
+Domain
+Interpolation
+Extrapolation
+Blocksworld
+3
+20
+Gripper
+3
+16
+Logistics
+9
+18
+Visitall
+37
+219
+E1
+Hyperparameter Search
+We performed a hyperparameter search for the remaining optimization hyperparameters for the encoder-decoder architecture. We
+selected the following hyperparameters for the search:
+• Warmup Steps: Number of warmup steps for the learning rate scheduler.
+• Learning Rate: The initial learning rate for the optimizer.
+• Minimum LR: The minimum learning rate for the optimizer.
+• Dropout: The dropout rate used in the model.
+For each hyperparameter, we chose a base value. We then fixed all but one hyperparameter to these base values and varied the
+remaining one. The base values were as follows:
+• Warmup Steps: 2000
+• Learning Rate: 1.5e-4
+• Minimum LR: 1e-7
+• Dropout: 0
+The considered values for each hyperparameter were:
+• Warmup Steps: 1000, 2000, 5000
+• Learning Rate: 6e-4, 1.5e-4, 1e-4, 5e-5
+• Minimum LR: 1e-6, 1e-7, 1e-8
+• Dropout: 0, 0.1
+For each combination of hyperparameters, we train one model with our loss and one without it. Each model was trained with a
+timeout of 10 hours and up to a maximum of 40 epochs, each consisting of 20000 sampled states and plans, and a batch size of
+32. The same seed was used across all runs. The maximum number of objects was set to 30.
+The results are reported in Table E.2 and summarized in Table E.3. Note that all except one model reached the maximum
+number of epochs within the time limit, the exception reached epoch 37. The hyperparameters chosen are shown in Table E.3.
+Additionally, we report the number of runs and divergences for each choice of hyperparameters and note that the use of our
+contrastive loss led to a far lower divergence rate, showing that it increases the stability of the training process.
+In total, we trained 24 models using 191.5 hours of GPU time for this experiment.
+E2
+Main Experiments
+For the main experiments, we used the hyperparameters from the hyperparameter search in Section E1 for the encoder and
+encoder-decoder architectures. For this experiment, each epoch consisted of 100000 sampled states and plans and a batch size of
+64 was used. The maximum number of epochs was set to 70, with a timeout of 12 hours. Additionally, the maximum number of
+objects was set to 123, a value slightly higher than the maximum number of objects in any test instance across all domains (121).
+For each considered combination of domain, architecture and objective, we trained three models. The same three seeds were
+used for each combination, meaning that the models with and without the contrastive loss started from the same initial weights.
+During training, we scored the model on the validation test, saving the best performing model checkpoint. For this scoring, the
+following criteria were used (in decreasing order of importance):
+
+
+Table E.2: Results from hyperparameter search for the encoder-decoder model. These are summarized in Table E.3.
+Contrastive Loss Warmup
+LR
+Min LR Dropout Diverged Train Loss Validation Loss
+No
+1000
+1.5 × 10−4
+1 × 10−7
+0.00
+No
+0.0555
+0.1328
+No
+2000
+5.0 × 10−5
+1 × 10−7
+0.00
+No
+0.0606
+0.1163
+No
+2000
+1.0 × 10−4
+1 × 10−7
+0.00
+No
+0.0458
+0.1087
+No
+2000
+1.5 × 10−4
+1 × 10−8
+0.00
+Yes
+3.0080
+3.0180
+No
+2000
+1.5 × 10−4
+1 × 10−7
+0.00
+Yes
+NaN
+NaN
+No
+2000
+1.5 × 10−4
+1 × 10−7
+0.00
+Yes
+NaN
+NaN
+No
+2000
+1.5 × 10−4
+1 × 10−7
+0.00
+Yes
+NaN
+NaN
+No
+2000
+1.5 × 10−4
+1 × 10−7
+0.00
+Yes
+NaN
+NaN
+No
+2000
+1.5 × 10−4
+1 × 10−7
+0.10
+No
+0.0532
+0.1121
+No
+2000
+1.5 × 10−4
+1 × 10−6
+0.00
+Yes
+0.0764
+0.1575
+No
+2000
+6.0 × 10−4
+1 × 10−7
+0.00
+Yes
+0.3748
+0.4395
+No
+5000
+1.5 × 10−4
+1 × 10−7
+0.00
+No
+0.0791
+0.1261
+Yes
+1000
+1.5 × 10−4
+1 × 10−7
+0.00
+No
+0.0536
+0.1021
+Yes
+2000
+5.0 × 10−5
+1 × 10−7
+0.00
+No
+0.0864
+0.1105
+Yes
+2000
+1.0 × 10−4
+1 × 10−7
+0.00
+No
+0.0537
+0.1086
+Yes
+2000
+1.5 × 10−4
+1 × 10−8
+0.00
+No
+0.0540
+0.1081
+Yes
+2000
+1.5 × 10−4
+1 × 10−7
+0.00
+No
+0.0537
+0.1039
+Yes
+2000
+1.5 × 10−4
+1 × 10−7
+0.00
+No
+0.0537
+0.1039
+Yes
+2000
+1.5 × 10−4
+1 × 10−7
+0.00
+No
+0.0537
+0.1039
+Yes
+2000
+1.5 × 10−4
+1 × 10−7
+0.00
+No
+0.0537
+0.1039
+Yes
+2000
+1.5 × 10−4
+1 × 10−7
+0.10
+No
+0.0654
+0.1077
+Yes
+2000
+1.5 × 10−4
+1 × 10−6
+0.00
+No
+0.0543
+0.1071
+Yes
+2000
+6.0 × 10−4
+1 × 10−7
+0.00
+Yes
+NaN
+NaN
+Yes
+5000
+1.5 × 10−4
+1 × 10−7
+0.00
+No
+0.0556
+0.1088
+Table E.3: Summarized results from the hyperparameter search for the encoder-decoder model. Individual results are shown in
+Table E.2. Chosen hyperparameters have been bolded.
+Runs Divergences Divergence Rate [%] Training Loss Validation Loss
+CL
+Yes
+12
+1
+8.33
+0.0580
+0.1062
+No
+12
+7
+58.33
+0.0588
+0.1192
+Warmup
+1000
+2
+0
+0.00
+0.0545
+0.1175
+2000
+20
+8
+40.00
+0.0574
+0.1079
+5000
+2
+0
+0.00
+0.0674
+0.1175
+LR
+6.0 e-4
+2
+2
+100.00
+N/A
+N/A
+1.5 e-4
+18
+6
+33.33
+0.0571
+0.1100
+1.0 e-4
+2
+0
+0.00
+0.0498
+0.1087
+5.0 e-5
+2
+0
+0.00
+0.0735
+0.1134
+Min LR
+1 e-6
+2
+1
+50.00
+0.0543
+0.1071
+1 e-7
+20
+6
+30.00
+0.0588
+0.1107
+1 e-8
+2
+1
+50.00
+0.0540
+0.1081
+Dropout
+0
+22
+8
+36.36
+0.0581
+0.1103
+0.1
+2
+0
+0.00
+0.0593
+0.1099
+
+
+PlanGPT - Decoder (baseline) w/ CL
+SymTE (ours) w/o CL
+SymTED (ours) w/o CL
+greedy
+applicable
+regrounding
+greedy
+greedy
+applicable
+regrounding
+Blocks
+validation
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+1.00±.00
+1.00±.00
+.00±.00
+interpolation
+.67±.00
+.67±.00
+.00±.00
+.00±.00
+1.00±.00
+1.00±.00
+1.00±.00
+extrapolation
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.03±.02
+.15±.07
+.00±.00
+Gripper
+validation
+.00±.00
+.00±.00
+.00±.00
+1.00±.00
+.00±.00
+1.00±.00
+1.00±.00
+interpolation
+.00±.00
+.11±.16
+.00±.00
+1.00±.00
+.78±.16
+1.00±.00
+1.00±.00
+extrapolation
+.00±.00
+.00±.00
+.00±.00
+.04±.03
+.00±.00
+.10±.03
+.85±.13
+Visitall
+validation
+.00±.00
+.42±.12
+.00±.00
+.42±.03
+.15±.05
+.65±.17
+.96±.06
+interpolation
+.04±.03
+.86±.08
+.50±.07
+.80±.09
+.85±.03
+.98±.01
+1.00±.00
+extrapolation
+.00±.00
+.04±.02
+.00±.00
+.04±.00
+.00±.00
+.05±.00
+.47±.14
+Logistics
+validation
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+interpolation
+.15±.14
+.30±.23
+.22±.18
+.04±.05
+.11±.16
+.19±.10
+.04±.05
+extrapolation
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+Table E.4: Normalized coverage scores [(µ±σ)] for all ablation models (contrastive loss inverted) and plan generation strategies.
+A coverage score of 1.00 means that the configuration solves all tasks.
+• Percentage of solved problems (coverage) with greedy plan generation
+• Percentage of problems which reached the maximum number of tokens
+• Percentage of problems where an invalid action was generated
+• Percentage of problems where a malformed action was generated
+• Accuracy between the predicted and sampled plans
+• Loss
+all computed on the validation set. Though, note that the encoder architecture is unable to generate invalid or malformed actions.
+The statistics such as coverage (Table 2 and E.4) and quality scores (Tables E.5 - E.8) are computed using these best checkpoints.
+Tables E.5 - E.6 and tables E.7 - E.8 show the quality scores (QS) and the quality scores for solved problems (QSS), respectively.
+These scores are computed as follows:
+QS =
+1
+|P|
+X
+p∈P
+|π∗(p)|
+|π(p)|
+(1)
+QSS =
+1
+|{p ∈P : |π(p)| < ∞}|
+X
+p∈P
+|π∗(p)|
+|π(p)|
+(2)
+Where:
+• P is the set of problems considered, such as the training, validation or either test set
+• π(p) is the predicted plan for problem p. An unsolved problem is assigned |π(p)| = ∞.
+• π∗(p) is the shortest known plan for problem p. We obtained these values with the state-of-the-art Scorpion planner (Seipp,
+Keller, and Helmert 2020). For the few problems that could not be solved optimally by Scorpion within 5 hours and 64 GiB,
+we used the suboptimal LAMA planner (Richter and Westphal 2010) and a 2 hour limit to compute an upper bound on the
+optimal plan length instead.
+For a total of 11 problems which Scorpion could not solve optimally, our encoder-decoder model with regrounding was able to
+find solutions shorter than those found by LAMA. Our most successful checkpoint outperformed LAMA across 5 problems.
+Across all models and problems where we outperformed LAMA, we on average reduced the plan length by 5.06% (4.44%
+standard deviation) or 4.27 (4.76 standard deviation) steps. In the best case, we reduced a plan length by 16.3% (18 actions).
+Additionally, we report the number of divergences for each architecture and domain in Table E.9. No configuration using
+our contrastive loss diverged nor did any of the decoder-only models. For the encoder-only and encoder-decoder architectures
+without our contrastive loss, we observed a total of 9 (75%) and 3 (25%) divergences, respectively. Notably, no divergences ever
+occur in the Gripper domain.
+In total, we trained 72 models each with a timeout of 12 hours, using 1440 hours of GPU time for this experiment.
+
+
+PlanGPT - Decoder (baseline) w/o CL
+SymTE (ours) w/ CL
+SymTED (ours) w/ CL
+greedy
+applicable
+regrounding
+greedy
+greedy
+applicable
+regrounding
+Blocks
+validation
+.00±.00
+.00±.00
+.00±.00
+1.00±.00
+1.00±.00
+1.00±.00
+.00±.00
+interpolation
+.56±.16
+.56±.16
+.00±.00
+1.00±.00
+1.00±.00
+1.00±.00
+1.00±.00
+extrapolation
+.00±.00
+.00±.00
+.00±.00
+.05±.07
+.07±.02
+.13±.05
+.00±.00
+Gripper
+validation
+.00±.00
+.00±.00
+.00±.00
+.99±.02
+.17±.24
+.98±.03
+.99±.02
+interpolation
+.00±.00
+.36±.06
+.00±.00
+.89±.16
+.67±.00
+1.00±.00
+1.00±.00
+extrapolation
+.00±.00
+.00±.00
+.00±.00
+.02±.03
+.00±.00
+.14±.06
+.77±.14
+Visitall
+validation
+.00±.00
+.07±.05
+.00±.00
+1.00±.00
+.32±.10
+.76±.04
+.96±.02
+interpolation
+.05±.04
+.57±.15
+.41±.21
+1.00±.00
+.87±.02
+.96±.01
+1.00±.00
+extrapolation
+.00±.00
+.01±.01
+.00±.00
+.40±.09
+.00±.00
+.10±.03
+.60±.12
+Logistics
+validation
+.00±.00
+.08±.12
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+interpolation
+.07±.05
+.38±.04
+.19±.14
+.11±.00
+.22±.31
+.24±.30
+.22±.31
+extrapolation
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+Table E.5: Normalized quality scores (QS) [(µ ± σ)] for all base models and plan generation strategies. A quality score score of
+1.00 means that the configuration solves all problems optimally. The best results are highlighted in bold.
+PlanGPT - Decoder (baseline) w/ CL
+SymTE (ours) w/o CL
+SymTED (ours) w/o CL
+greedy
+applicable
+regrounding
+greedy
+greedy
+applicable
+regrounding
+Blocks
+validation
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+1.00±.00
+1.00±.00
+.00±.00
+interpolation
+.67±.00
+.67±.00
+.00±.00
+.00±.00
+1.00±.00
+1.00±.00
+1.00±.00
+extrapolation
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.03±.02
+.15±.07
+.00±.00
+Gripper
+validation
+.00±.00
+.00±.00
+.00±.00
+1.00±.00
+.00±.00
+.99±.02
+1.00±.00
+interpolation
+.00±.00
+.10±.14
+.00±.00
+1.00±.00
+.78±.16
+1.00±.00
+1.00±.00
+extrapolation
+.00±.00
+.00±.00
+.00±.00
+.04±.03
+.00±.00
+.09±.02
+.84±.12
+Visitall
+validation
+.00±.00
+.24±.07
+.00±.00
+.38±.03
+.15±.05
+.50±.12
+.91±.04
+interpolation
+.04±.03
+.76±.07
+.50±.07
+.77±.09
+.82±.03
+.95±.01
+.99±.00
+extrapolation
+.00±.00
+.02±.01
+.00±.00
+.03±.00
+.00±.00
+.03±.00
+.43±.13
+Logistics
+validation
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+interpolation
+.15±.14
+.27±.21
+.22±.18
+.04±.05
+.11±.16
+.12±.15
+.04±.05
+extrapolation
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+.00±.00
+Table E.6: Normalized quality scores (QS) [(µ ± σ)] for all ablation models (contrastive loss inverted) and plan generation
+strategies. A quality score score of 1.00 means that the configuration solves all problems optimally. The best results are
+highlighted in bold.
+
+
+PlanGPT - Decoder (baseline) w/o CL
+SymTE (ours) w/ CL
+SymTED (ours) w/ CL
+greedy
+applicable
+regrounding
+greedy
+greedy
+applicable
+regrounding
+Blocks
+validation
+N/A
+N/A
+N/A
+1.00±.00
+1.00±.00
+1.00±.00
+N/A
+interpolation
+1.00±.00
+1.00±.00
+N/A
+1.00±.00
+1.00±.00
+1.00±.00
+1.00±.00
+extrapolation
+N/A
+N/A
+N/A
+1.00±.00
+1.00±.00
+1.00±.00
+N/A
+Gripper
+validation
+N/A
+N/A
+N/A
+.99±.02
+1.00±.00
+.98±.03
+.99±.02
+interpolation
+N/A
+.85±.14
+N/A
+1.00±.00
+1.00±.00
+1.00±.00
+1.00±.00
+extrapolation
+N/A
+N/A
+N/A
+.95±.00
+N/A
+.95±.02
+.97±.02
+Visitall
+validation
+N/A
+.51±.08
+N/A
+1.00±.00
+.93±.06
+.82±.06
+.97±.01
+interpolation
+1.00±.00
+.86±.06
+.99±.01
+1.00±.00
+.99±.01
+.97±.00
+1.00±.00
+extrapolation
+N/A
+.42±.00
+N/A
+.98±.00
+.96±.04
+.63±.01
+.93±.02
+Logistics
+validation
+N/A
+1.00±.00
+N/A
+N/A
+N/A
+N/A
+N/A
+interpolation
+1.00±.00
+.89±.12
+1.00±.00
+1.00±.00
+1.00±.00
+.69±.31
+1.00±.00
+extrapolation
+N/A
+N/A
+N/A
+N/A
+N/A
+N/A
+N/A
+Table E.7: Normalized quality scores for solved problems (QSS) [(µ ± σ)] for all base models and plan generation strategies.
+A quality score for solved problems of 1.00 means that for every problem the configuration solves, it does so optimally. If the
+configuration failed to solve any problem, we report it as N/A. The best results are highlighted in bold.
+PlanGPT - Decoder (baseline) w/ CL
+SymTE (ours) w/o CL
+SymTED (ours) w/o CL
+greedy
+applicable
+regrounding
+greedy
+greedy
+applicable
+regrounding
+Blocks
+validation
+N/A
+N/A
+N/A
+N/A
+1.00±.00
+1.00±.00
+N/A
+interpolation
+1.00±.00
+1.00±.00
+N/A
+N/A
+1.00±.00
+1.00±.00
+1.00±.00
+extrapolation
+N/A
+N/A
+N/A
+N/A
+1.00±.00
+1.00±.00
+N/A
+Gripper
+validation
+N/A
+N/A
+N/A
+1.00±.00
+N/A
+.99±.02
+1.00±.00
+interpolation
+N/A
+.88±.00
+N/A
+1.00±.00
+1.00±.00
+1.00±.00
+1.00±.00
+extrapolation
+N/A
+N/A
+N/A
+.95±.00
+N/A
+.91±.09
+.99±.00
+Visitall
+validation
+N/A
+.57±.03
+N/A
+.90±.02
+.98±.01
+.78±.03
+.95±.02
+interpolation
+1.00±.00
+.88±.01
+1.00±.00
+.96±.00
+.97±.02
+.97±.02
+.99±.00
+extrapolation
+N/A
+.48±.02
+N/A
+.88±.01
+1.00±.00
+.62±.05
+.92±.02
+Logistics
+validation
+N/A
+N/A
+N/A
+N/A
+N/A
+N/A
+N/A
+interpolation
+1.00±.00
+.92±.00
+1.00±.00
+1.00±.00
+1.00±.00
+.43±.40
+1.00±.00
+extrapolation
+N/A
+N/A
+N/A
+N/A
+N/A
+N/A
+N/A
+Table E.8: Normalized quality scores for solved problems (QSS) [(µ ± σ)] for all ablation models (contrastive loss inverted)
+and plan generation strategies. A quality score for solved problems of 1.00 means that for every problem the configuration solves,
+it does so optimally. If the configuration failed to solve any problem, we report it as N/A. The best results are highlighted in bold.
+Table E.9: Number of divergences for all architectures and domains for the main experiments. We trained three models per
+configuration.
+PlanGPT
+SymTE
+SymTED
+No CL CL No CL CL No CL CL
+Blocksworld
+0
+0
+3
+0
+1
+0
+Gripper
+0
+0
+0
+0
+0
+0
+Logistics
+0
+0
+3
+0
+1
+0
+Visitall
+0
+0
+3
+0
+1
+0
+
+
+0
+10000
+20000
+30000
+40000
+50000
+60000
+Steps
+0
+1
+2
+3
+4
+5
+Validation Loss
+Validation Loss - Max 30 Objects
+Contrastive Loss
+No Contrastive Loss
+Figure E.2: Validation loss curves for the Visitall domain when supporting 30 objects, comparing encoder-only models with
+(blue) and without (orange) our contrastive learning objective. We trained three models per configuration. The line shows the
+mean and the shaded region shows the maximum and minimum loss across these three models.
+E3
+Effect of Number of Objects on Contrastive Loss
+The primary motivation for employing a contrastive learning objective is to mitigate the combinatorial explosion inherent in
+object assignments within planning problems. As such, we hypothesize that the objective’s effectiveness will be most pronounced
+when the number of potential object names is large.
+To investigate this, we examine training loss curves for the encoder-only architecture in the Visitall domain with varying
+numbers of objects. Figure E.2 illustrates results for the 30-object case (using Rename-One mode for object renaming), where
+both models with and without the contrastive objective converge to low loss values. However, the model incorporating the
+contrastive objective exhibits a lower final loss and faster convergence compared to the baseline without it on average. The
+benefits become significantly more apparent in the 123-object case (Figure E.3, also "Rename-One" mode). Here, the model with
+the contrastive learning objective successfully converges to a low loss, whereas models without the objective reach a plateau and
+fail to converge within the training duration. We observed similar behavior across other planning domains evaluated.
+An additional factor influencing performance is the choice of renaming mode. Specifically, preliminary experiments showed
+that applying the "Rename-Both" mode generally prevented encoder-only models from converging to a low loss. In this
+challenging setting, the contrastive learning objective again demonstrated its efficacy, enabling convergence to a low loss in one
+of the experimental runs, a result not achieved by models without the objective in this mode.
+For this experiment, we re-used the 123-object models trained in the main experiments, and as such only had to train the
+30-object models. This resulted in a total of 6 models trained, using 72 hours of total GPU time (12 hours per model).
+E4
+Preliminary Experiments
+A variety of preliminary experiments were also conducted to debug our implementation and to explore the impact of different
+design choices. However, note that we did not evaluate any models trained in these experiments on the test set. These experiments
+were less accurately tracked and we are unaware of the exact amount of GPU time used for them.
+
+
+0
+10000
+20000
+30000
+40000
+50000
+60000
+70000
+80000
+Steps
+0
+1
+2
+3
+4
+5
+Validation Loss
+Validation Loss - Max 123 Objects
+Contrastive Loss
+No Contrastive Loss
+Figure E.3: Validation loss curves for the Visitall domain when supporting 123 objects, comparing encoder-only models with
+(blue) and without (orange) our contrastive learning objective. We trained three models per configuration. The line shows the
+mean and the shaded region shows the maximum and minimum loss across these three models.

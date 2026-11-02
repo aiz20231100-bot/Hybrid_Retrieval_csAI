@@ -1,0 +1,2056 @@
+Policy-Guided Heuristic Search with Guarantees
+Laurent Orseau,1 Levi H. S. Lelis2
+1DeepMind, UK
+2Department of Computing Science, Alberta Machine Intelligence Institute (Amii), University of
+Alberta, Canada
+lorseau@google.com, levi.lelis@ualberta.ca
+Abstract
+The use of a policy and a heuristic function for guiding
+search can be quite effective in adversarial problems, as
+demonstrated by AlphaGo and its successors, which are
+based on the PUCT search algorithm. While PUCT can also
+be used to solve single-agent deterministic problems, it lacks
+guarantees on its search effort and it can be computationally
+inefﬁcient in practice. Combining the A* algorithm with a
+learned heuristic function tends to work better in these do-
+mains, but A* and its variants do not use a policy. Moreover,
+the purpose of using A* is to ﬁnd solutions of minimum cost,
+while we seek instead to minimize the search loss (e.g., the
+number of search steps). LevinTS is guided by a policy and
+provides guarantees on the number of search steps that relate
+to the quality of the policy, but it does not make use of a
+heuristic function. In this work we introduce Policy-guided
+Heuristic Search (PHS), a novel search algorithm that uses
+both a heuristic function and a policy and has theoretical
+guarantees on the search loss that relates to both the qual-
+ity of the heuristic and of the policy. We show empirically
+on the sliding-tile puzzle, Sokoban, and a puzzle from the
+commercial game ‘The Witness’ that PHS enables the rapid
+learning of both a policy and a heuristic function and com-
+pares favorably with A*, Weighted A*, Greedy Best-First
+Search, LevinTS, and PUCT in terms of number of problems
+solved and search time in all three domains tested.
+1
+Introduction
+In this work1 we are interested in tackling single-agent de-
+terministic problems. This class of problems includes nu-
+merous real-world applications such as robotics, planning
+and pathﬁnding, computational biology [Edelkamp et al.,
+2010], protein design [Allouche et al., 2019], and program
+synthesis [Cropper and Dumancic, 2020].
+AlphaGo [Silver et al., 2017], and descendants such as
+MuZero [Schrittwieser et al., 2020] combine a learned value
+function with a learned policy in the PUCT search algo-
+rithm [Rosin, 2011, Kocsis and Szepesv´ari, 2006], which
+is a Monte-Carlo tree search algorithm [Chang et al., 2005,
+Coulom, 2007], to tackle stochastic and adversarial games
+with complete information, and also a few single-agent
+games. The policy guides the search locally by favoring the
+1This is an extended version of the paper accepted at AAAI 2021 with
+the same title.
+most promising children of a node, whereas the value func-
+tion ranks paths globally, thus complementing each other.
+PUCT, based on UCT [Kocsis and Szepesv´ari, 2006] and
+PUCB [Rosin, 2011], is indeed designed for adversarial and
+stochastic games such as Go and Chess, and UCT and PUCB
+come with a guarantee that the value function converges to
+the true value function in the limit of exploration—however
+this guarantee may not hold when replacing actual rewards
+with an estimated value, as is done in the mentioned works.
+Although these algorithms perform impressively well for
+some adversarial games, it is not clear whether the level of
+generality of PUCT makes it the best ﬁt for difﬁcult determin-
+istic single-agent problems where a planning capability is
+necessary, such as the PSPACE-hard Sokoban problem [Cul-
+berson, 1999]. The more recent algorithm MuZero [Schrit-
+twieser et al., 2020] adapts AlphaZero to single-agent Atari
+games, but these games are mostly reactive and MuZero
+performs poorly on games that require more planning like
+Montezuma’s Revenge—although this may arguably pertain
+to MuZero needing to learn a model of the environment.
+In the context of single-agent search the value function
+is known as a heuristic function and it estimates the cost-
+to-go from a given state to a solution state. McAleer et al.
+[2019] used MCTS to learn a heuristic function—but not a
+policy—to tackle the Rubik’s cube, but later replaced MCTS
+entirely with weighted A* [Pohl, 1970, Ebendt and Drech-
+sler, 2009], which is a variant of the A* algorithm [Hart
+et al., 1968] that trades off solution quality for search time.
+They observe that “MCTS has relatively long runtimes and
+often produces solutions many moves longer than the length
+of a shortest path” [Agostinelli et al., 2019], and tackle a few
+more problems such as the sliding tile puzzle and Sokoban.
+Levin Tree Search (LevinTS) [Orseau et al., 2018] uses a
+learned policy to guide its search in single-agent problems
+and comes with an upper bound on the number of search
+steps that accounts for the quality of the policy.
+In this work we combine the policy-guided search of the
+LevinTS algorithm with the heuristic-guided search of A* in
+an algorithm we call Policy-guided Heuristic Search (PHS).
+PHS retains the upper bound of LevinTS—we also prove an
+almost matching lower bound—but we extend this guarantee
+to the use of a heuristic function, showing that an accurate
+heuristic can greatly reduce the number of search steps.
+We compare our algorithm with several policy-guided
+and heuristic search algorithms when learning is interleaved
+with search in the Bootstrap process Jabbari Arfaee et al.
+[2011]: LevinTS uses a policy; A*, Weighted A* (WA*) and
+1
+arXiv:2103.11505v1  [cs.AI]  21 Mar 2021
+
+
+Greedy Best-First Search (GBFS) [Doran et al., 1966] all
+use a heuristic, and PUCT uses both like PHS. We evaluate
+these algorithms on the 5×5 sliding-tile puzzle, Sokoban
+(Boxoban), and on a puzzle from the game ‘The Witness’.
+Our results show that PHS performs well on all three do-
+mains tested, while every other algorithm tested performs
+poorly in at least one of these domains.
+2
+Notation and Background
+Search algorithms solve single-agent problems by searching
+in the tree that deﬁnes the problem. Let N be the set of all
+nodes that can be part of such a tree. The root of the tree is
+denoted n0 ∈N. For any node n ∈N, its set of children is
+C(n), its single parent is par(n) (the root has no parent), its
+set of ancestors including n itself is anc∗(n), and its set of
+descendants including n itself is desc∗(n); its depth is d(n)
+(d(n0) = 0) and also deﬁne d0(n) = d(n) + 1.
+We say that a node is expanded when a search algorithm
+generates the set of children of the node. All search algo-
+rithms we consider are constrained to expand the root ﬁrst
+and, subsequently, a node n can be expanded only if its
+parent par(n) has already been expanded.
+A problem is deﬁned by a root node n0, a non-negative
+loss function ℓ: N →[0, ∞], a set of solution nodes
+NG ⊆desc∗(n0), and a
+state function deﬁned below.
+There is a predicate
+is_solution(n) available to the
+search algorithms to test whether n ∈NG, but it can be
+used on n only after par(n) has been expanded (i.e., n must
+have been generated). The loss ℓ(n) is incurred by the al-
+gorithm when expanding the node n. For simplicity of the
+formalism, we assume that a node which is tested positive
+with
+is_solution is implicitly expanded—thus incur-
+ring a loss—but has no children. The path loss g(n) of a
+node n is the sum of the losses from the root to n, that is
+g(n) = P
+n′∈anc∗(n) ℓ(n′). For example, if the loss is one
+for any expanded node n, then g(n) = d0(n). We assume
+that no inﬁnite path has ﬁnite path loss. For any search algo-
+rithm S, the search loss L(S, n) is the sum of the individual
+losses ℓ(n′) for all nodes n′ that have been expanded by the
+algorithm S, up to and including n, and L(S, n) = ∞if n
+is never expanded. For example, if the loss ℓ(n) is the time
+needed to expand node n, then L(S, n) corresponds to the
+computation time of the whole search when reaching n.
+A policy π : N →[0, 1] is deﬁned recursively for
+a child n′ of a node n: π(n′) = π(n)π(n′|n) where
+the conditional probability π(n′|n) ∈[0, 1] is such that
+P
+n′∈C(n) π(n′|n) ≤1, and π(n0) = 1. Therefore, π(n) =
+Q
+n′∈anc∗(n)\{n0} π(n′|par(n′)).
+Let S ⊆N be a set of ‘canonical nodes’. The function
+state : N →S associates a node to a state (a canoni-
+cal node), with the constraints that ℓ(n) = ℓ( state(n)),
+is_solution(n) =
+is_solution( state(n))
+and { state(n′) : n′ ∈C(n)} = C( state(n)). Search
+algorithms may use the
+state function to avoid expand-
+ing nodes with the same states.
+2.1
+Background
+The Best-First Search (BFS) search algorithm [Pearl, 1984]
+(see Algorithm 1) expands nodes by increasing value, start-
+ing from the root and always expanding children only if their
+parent has been expanded already. It does not expand nodes
+whose states have been visited before, and returns the ﬁrst
+solution node it expands.
+The A* search algorithm [Hart et al., 1968] uses both the
+function g and a heuristic function h : N →[0, ∞]. It uses
+BFS with the evaluation function f(n) = g(n)+h(n). If the
+heuristic h is admissible, i.e., g(n) + h(n) is a lower bound
+on the cost of the least-g-cost solution node below n, then
+A* is guaranteed 2 to return a solution with minimal g-cost.
+Weighted A* [Ebendt and Drechsler, 2009] is a variant of A*
+that uses the evaluation function fw(n) = g(n) + w · h(n)
+and has the guarantee that the ﬁrst solution found has a g-
+cost no more than a factor w of the minimum cost solution
+if h is admissible and w ≥1.
+LevinTS [Orseau et al., 2018] also uses the BFS algo-
+rithm, but with the evaluation function fπ = d0(n)/π(n)
+for a given policy π. LevinTS is guaranteed to expand no
+more than d0(n∗)/π(n∗) nodes until the ﬁrst solution n∗is
+found, that is, with ℓ(·) = 1 for all nodes, L(LevinTS, n∗) ≤
+d0(n∗)/π(n∗). Since d0(n∗) is ﬁxed, it shows that the better
+the policy π, the shorter the search time. Theorem 4 provides
+an almost-matching lower bound.
+The PUCT algorithm [Silver et al., 2016] is not based
+on BFS, but on UCT [Kocsis and Szepesv´ari, 2006], which
+learns a value function from rewards, and on PUCB [Rosin,
+2011], which additionally uses a policy prior. Both ingredi-
+ents are used to determine which node to expand next. The
+PUCT formula depends on the current number of node ex-
+pansions performed during search. This dependency prevents
+the algorithm from being able to use a priority queue which
+requires the node values to not change over time. Hence
+each time the algorithm performs a single node expansion,
+it has to go back to the root to potentially take a different
+path for the next expansion. In some cases, this additional
+cost can lead to a quadratic increase of the computation time
+compared to the number of node expansions. Although this
+search strategy can be effective in stochastic and adversarial
+environments, it is often wasteful for deterministic single-
+agent problems. The original UCT algorithm [Kocsis and
+Szepesv´ari, 2006] has regret-style guarantees, but as noted
+by Orseau et al. [2018], these guarantees are rarely meaning-
+ful in deterministic single-agent problems where rewards are
+often 0 until a solution is found; moreover, these guarantees
+do not hold for modern implementations that replace the
+rewards and the rollouts with a learned value function.
+2.2
+Deﬁnition of the Search Problem
+Our overarching objective is to design algorithms that,
+when given a set of unknown tasks, solve all of them as
+quickly as possible while starting with little to no knowl-
+edge about the tasks. That is, for K tasks, we want to de-
+vise an algorithm S that minimizes the total search loss
+P
+k∈[K] minn∗∈NG k Lk(S, n∗). Observe that this departs
+2Technically, this requires either that re-expansions are performed or
+that the heuristic is consistent.
+2
+
+
+from the more traditional objective of ﬁnding solutions
+of minimum path loss for all tasks, that is, of minimizing
+P
+k∈[K] g(n∗
+k) where n∗
+k is the solution node found by the
+algorithm for task k. Hence, we do not require the solu-
+tions encountered by the search algorithms to be path-cost
+optimal.
+To this end we embed our algorithms into the Bootstrap
+process [Jabbari Arfaee et al., 2011], which iteratively runs
+a search algorithm with a bound on the number of node
+expansions (or running time) on a set of training tasks. The
+problems solved in a given iteration are used to update the
+parameters of a model encoding a heuristic function and/or
+a policy. The process is then repeated with the newly trained
+model, possibly after increasing the budget. This process
+does not use or generate a curriculum, but assumes that there
+are problems of varying difﬁculties.
+Algorithm 1 The Policy-guided Heuristic Search algorithm
+(PHS), based on the Best-First Search algorithm (BFS). (Re-
+expansions are not performed.)
+def PHS(n0): return BFS(n0, ϕ)
+def BFS(n0, evaluate):
+q = priority_queue(order_by=evaluate)
+q.insert(n0)
+visited_states = {}
+while q is not empty:
+n = q.extract_min() # node of min value
+s = state(n)
+if s in visited_states:
+continue
+# pruning
+visited_states += {s}
+incur_loss ℓ(n)
+if is_solution(n):
+return n
+# Node expansion
+for n′ in children(n):
+q.insert(n′, evaluate(n′))
+return False
+3
+Policy-guided Heuristic Search
+For all our theoretical results, we assume that ∀n ∈N :
+state(n)=n to avoid having to deal with re-expansions,
+but see Appendix G for a more general treatment.
+We generalize LevinTS ﬁrst by considering arbitrary non-
+negative losses ℓ(n) rather than enforcing ℓ(n) = 1, and
+by introducing a heuristic factor η(n) ≥1. Our algorithm
+Policy-guided Heuristic Search (PHS) simply calls BFS (see
+Algorithm 1) with the evaluation function ϕ deﬁned as:
+ϕ(n) = η(n) g(n)
+π(n) ,
+where g and π were deﬁned in Section 2, and ϕ(n) = ∞
+if π(n) = 0; Orseau et al. [2018] discuss how to prevent
+π(n) = 0. The factor g(n)/π(n) can be viewed as an ap-
+proximation of the search loss L(PHS, n) when reaching n:
+g(n) is the loss of the path from the root to n, and 1/π(n)
+plays a similar role to an importance sampling weight that
+rescales the (local) path loss to the (global) search loss. Note
+that paths with large probability π are preferred to be ex-
+panded before paths with small π-values. The purpose of
+the new heuristic factor η(n) is to rescale the current esti-
+mate of the search loss L(·, n) to an estimate of the search
+loss L(·, n∗) at the least-cost solution node n∗that descends
+from n. This is similar to how f(n) is an estimate of g(n∗)
+in A*. If both η(·) and ℓ(·) are 1 everywhere, PHS reduces
+to LevinTS.
+Although for LevinTS fπ is monotone non-decreasing
+from parent to child [Orseau et al., 2018], this may not be
+the case anymore for ϕ due to η. Thus, for the sake of the
+analysis we deﬁne the monotone non-decreasing evaluation
+function ϕ+(n) = maxn′∈anc∗(n) ϕ(n′). Since in BFS nodes
+are expanded in increasing order of their value, and a node
+n cannot be expanded before any of its ancestors, it is guar-
+anteed in PHS that a node n is expanded before any other
+node n′ with ϕ+(n′) > ϕ+(n).
+Deﬁne η+(n) = ϕ+(n) π(n)
+g(n) ≥η(n), and η+(n) = η(n)
+if g(n) = 0, such that
+ϕ
++(n) = η
++(n) g(n)
+π(n) .
+Note that even if we ensure that η(n∗) = 1 for any solution
+node n∗∈NG, in general ϕ+(n∗) may still be larger than
+ϕ(n∗), that is, we may have η+(n∗) > 1.
+We now state our main result and explain it below. Deﬁne
+the set of nodes Nϕ(n) = {n′ ∈desc∗(n0) : ϕ+(n′) ≤
+ϕ+(n)} of value at most ϕ+(n) and its set of leaves Lϕ(n) =
+{n′ ∈Nϕ(n) : C(n′) ∩Nϕ(n) = ∅} that is, the set of nodes
+in Nϕ(n) that do not have any children in this set.
+Theorem 1 (PHS upper bound). For any non-negative
+loss function ℓ, for any set of solution nodes NG
+⊆
+desc∗(n0), and for any given policy π and any given heuris-
+tic factor η(·) ≥1, PHS returns a solution node n∗∈
+argminn∗∈NG ϕ+(n∗) and the search loss is bounded by
+L(PHS, n∗) ≤g(n∗)
+π(n∗)η
++(n∗)
+X
+n∈Lϕ(n∗)
+π(n)
+η+(n) .
+(1)
+Proof. Slightly abusing notation, for a set of nodes N ′, de-
+ﬁne L(N ′) = P
+n∈N ′ ℓ(n) to be the cumulative loss over
+the nodes in N ′. Since ϕ+ is non-decreasing from parent
+to child, Nϕ(n) forms a tree rooted in n0 and therefore
+all the nodes in Nϕ(n) are expanded by BFS(n0, ϕ) be-
+fore any other node not in Nϕ(n). Therefore, L(PHS, n) ≤
+L(Nϕ(n)). Then,
+L(Nϕ(n)) = L
+
+[
+n′∈Lϕ(n)
+anc∗(n′)
+
+≤
+X
+n′∈Lϕ(n)
+L(anc∗(n′))
+=
+X
+n′∈Lϕ(n)
+g(n′) ≤ϕ
++(n)
+X
+n′∈Lϕ(n)
+π(n′)
+η+(n′)
+where the last inequality follows from η+(n′) g(n′)
+π(n′)
+=
+ϕ+(n′) ≤ϕ+(n). Finally, since this is true for any n, the
+result holds for the returned n∗∈NG.
+3
+
+
+We can derive a ﬁrst simpler result:
+Corollary 2 (PHS upper bound with no heuristic). From
+Theorem 1, if furthermore ∀n, η(n) = 1 then
+L(PHS, n∗) ≤g(n∗)
+π(n∗) .
+(2)
+Proof. Follows from Theorem 1 and P
+n′∈Lϕ(n) π(n′) ≤1
+for all n [Orseau et al., 2018, Theorem 3].
+The bound in Eq. (2) is similar to the bound provided for
+LevinTS (and equal when ℓ(n) = 1 everywhere) and shows
+the effect of the quality of the policy on the cumulative
+loss during the search: Since necessarily L(PHS, n∗) ≥
+g(n∗), the bound says that the search becomes more efﬁcient
+as π(n∗) gets closer to 1. Conversely, with an uninformed
+policy π the probability decreases exponentially with the
+depth, which means that the search becomes essentially a
+breadth-ﬁrst search. The bound in Eq. (1) furthermore shows
+the effect of the heuristic function where the additional factor
+can be interpreted as the ratio of the heuristic value η+(n∗)
+at the solution to the (preferably larger) average heuristic
+value at the leaves of the search tree when reaching n∗. If the
+heuristic is good, then this bound can substantially improve
+upon Eq. (2)—but it can also degrade with a poor heuristic.
+Example 3. Consider a binary tree where the single solu-
+tion node n∗is placed at random at depth d. Assume that
+π(n′|n) = 1/2 for both children n′ of any node n. As-
+sume that η(n) = ∞for all nodes except η(n) = 1 for
+the nodes on the path from the root to n∗, which makes
+PHS expand only the d + 1 nodes on the path from the root
+to n∗. Take ℓ(n) = 1 for all nodes. Then Eq. (2) tells us
+that the search loss (which is here the number of expanded
+nodes) is bounded by (d+1)2d+1, which is correct but rather
+loose. By taking the (very informative) heuristic information
+into account, we have P
+n∈Lϕ(n∗)
+π(n)
+η+(n) = π(n∗)/η(n∗)
+and thus Eq. (1) tells us that the search loss is bounded by
+g(n∗) = d + 1, which is tight.
+△
+The following lower bound is close to the bound of Eq. (2)
+in general, and applies to any algorithm, whether it makes
+use of the policy or not. First, we say that a policy π is proper
+if for all nodes n, P
+n′∈C(n) π(n′|n) = 1.
+Theorem 4 (Lower bound). For every proper policy π and
+non-negative loss function ℓsuch that ℓ(n0) = 0, for every
+search algorithm S—that ﬁrst expands the root and sub-
+sequently expands only children of nodes that have been
+expanded—there are trees rooted in n0 and sets of solution
+nodes NG such that
+min
+n∗∈NG L(S, n∗) ≥g(ˆn∗)
+π(n∗),
+with ˆn∗= par(par(n∗)) .
+Proof. Consider the following inﬁnite tree: The root n0
+has m children, n1,1, n2,1 . . . nm,1 and each child ni,1 is
+assigned an arbitrary conditional probability π(ni,1|n0) ≥0
+such that P
+i∈[m] π(ni,1|n0) = 1. Each node ni,j has a
+single child ni,j+1 with π(ni,j+1|ni,j) = 1, and is as-
+signed an arbitrary loss ℓ(ni,j) ≥0. Observe that π(ni,j) =
+π(ni,1|n0).
+Now let the given search algorithm expand nodes in any
+order, as long as parents are always expanded before their
+children, until at least one node is expanded in each branch
+with positive probability—if this is not met then the bound
+holds trivially. Then stop the search after any ﬁnite number
+of steps. Let ˆni be the last expanded node in each branch
+i ∈[m]. Then pick the node ˆn∗among the ˆni with small-
+est g(ˆni)/π(ˆni). Since this node ˆn∗has been expanded, its
+unique child ˆn′ may have already been tested for solution,
+but not its grand-child since ˆn′ has not yet been expanded. So
+we set n∗to be the unique child of ˆn′, and set NG = {n∗}.
+For each branch i we have g(ˆni)/π(ˆni) ≥g(ˆn∗)/π(ˆn∗).
+Therefore, recalling that the policy is proper, the cumulative
+loss before testing if n∗is a solution is at least
+X
+i∈[m]
+g(ˆni) ≥
+X
+i∈[m]
+π(ˆni) g(ˆn∗)
+π(ˆn∗) = g(ˆn∗)
+π(ˆn∗) = g(ˆn∗)
+π(n∗) .
+3.1
+Admissible Heuristics
+We say that η is PHS-admissible (by similarity to admissi-
+bility of heuristic functions for A*) if for all nodes n, for
+all solution nodes n∗below n (i.e., n∗∈desc∗(n) ∩NG),
+we have ϕ(n) ≤ϕ(n∗) and η(n∗) = 1, that is, ϕ(n∗) =
+g(n∗)/π(n∗). This means that ϕ(n) always underestimates
+the cost of any descendant solution. This ensures that for
+solution nodes, ϕ+(n∗) = ϕ(n∗) = g(n∗)/π(n∗). Note that
+we may still not have ϕ+(n) = ϕ(n) for non-solution nodes.
+Also observe that taking η(n) = 1 for all n is admissible,
+but not informed, similarly to h(n) = 0 in A*.
+Hence, ideally, if η(n) = ∞when desc∗(n) ∩NG = ∅,
+and η(n) =
+min
+n∗∈desc∗(n)∩NG
+g(n∗)/π(n∗)
+g(n)/π(n) ,
+then ϕ(n) =
+min
+n∗∈desc∗(n)∩NG g(n∗)/π(n∗)
+and thus, similarly to A*, PHS does not expand any node
+which does not lead to a solution node of minimal ϕ-value.
+When the heuristic is PHS-admissible but not necessarily
+ideal, we provide a reﬁned bound of Eq. (1):
+Corollary 5 (Admissible upper bound). If η is PHS-
+admissible, then the cumulative loss incurred by PHS before
+returning a solution node n∗∈argminn∗∈NG ϕ+(n∗) is up-
+per bounded by
+L(PHS, n∗) ≤g(n∗)
+π(n∗)
+X
+n∈Lϕ(n∗)
+π(n)
+η+(n)
+|
+{z
+}
+Σ
+.
+(3)
+Proof. Follows from Eq. (1) with ϕ+(n∗) = ϕ(n∗) due to
+the PHS-admissibility of η.
+Corollary 5 offers a better insight into the utility of a
+heuristic factor η, in particular when it is PHS-admissible.
+First, observe that P
+n′∈Lϕ(n) π(n′) ≤1, which means that
+the sum term Σ can be interpreted as an average. Second,
+since η+(·) ≥1, then necessarily Σ ≤1, which means that
+Corollary 5 is a strict improvement over Eq. (2). Σ can thus
+be read as the average search reduction factor at the leaves
+of the search tree when ﬁnding node n∗. Corollary 5 shows
+4
+
+
+that using a PHS-admissible heuristic factor η can help the
+search, on top of the help that can be obtained by using a
+good policy. In light of this, we can now interpret η+(n∗)
+in Eq. (1) as an excess estimate for inadmissible η, and a
+trade-off appears between this excess and the potential gain
+in the Σ term by the heuristic. Interestingly, this trade-off
+disappears when the heuristic factor is PHS-admissible, that
+is, the bounds suggest that using a PHS-admissible heuristic
+is essentially ‘free.’
+A number of traditional problems have readily available
+admissible heuristics for A*. We show that these can be used
+in PHS too to deﬁne a PHS-admissible η. Let h be a heuristic
+for A*. Making the dependency on h explicit, deﬁne
+ηh(n) = g(n) + h(n)
+g(n)
+,
+then ϕh(n) = g(n) + h(n)
+π(n)
+.
+Theorem 6 (A*-admissible to PHS-admissible). If h is an
+admissible heuristic for A*, then ηh is PHS-admissible.
+Proof. Since h is admissible for A*, we have g(n)+h(n) ≤
+g(n∗) for any solution node n∗descending from n. Hence
+ϕh(n) ≤g(n∗)/π(n) ≤g(n∗)/π(n∗) = ϕh(n∗) and thus
+ηh is PHS-admissible.
+Deﬁne h+(n) = π(n) maxn′∈anc∗(n) ϕh(n′) −g(n) ≥
+h(n) which is such that ϕ
++
+h(n) = maxn′∈anc∗(n) ϕh(n′) is
+monotone non-decreasing. Then η
++
+h(n) = 1 + h+(n)/g(n).
+Corollary 7 (Admissible upper bound with h). Given a
+heuristic function h, if η = ηh is PHS-admissible, then the
+cumulative loss incurred before returning a solution node
+n∗∈argminn∗∈NG ϕ+(n∗) is upper bounded by
+L(PHS, n∗) ≤g(n∗)
+π(n∗)
+X
+n∈Lϕ(n∗)
+π(n)
+1 + h+(n)/g(n) .
+Proof. Follows by Corollary 5 and the deﬁnition of η
++
+h.
+Corollary 7 shows that the larger h(n) (while remaining
+admissible), the smaller the sum, and thus the smaller the
+bound. A well tuned heuristic can help reduce the cumulative
+loss by a large factor compared to the policy alone.
+We call PHSh the variant of PHS that takes an A*-like
+heuristic function h and uses η = ηh.
+3.2
+A More Aggressive Use of Heuristics
+Similarly to A*, the purpose of the heuristic factor is to esti-
+mate the g-cost of the least-cost descendant solution node.
+But even when h is admissible and accurate, ηh is often not
+an accurate estimate of the cumulative loss at n∗due to miss-
+ing the ratio π(n)/π(n∗)—and quite often π(n∗) ≪π(n).
+Hence if h is the only known heuristic information, we pro-
+pose an estimate ˆηt that should be substantially more accu-
+rate if conditional probabilities and losses are sufﬁciently
+regular on the path to the solution, by approximating π(n∗)
+as [π(n)1/g(n)]g(n)+h(n): Take g(n) = d(n) for intuition,
+then π(n)1/g(n) = p is roughly the average conditional prob-
+ability along the path from the root to n, and thus pg(n)+h(n)
+is an estimate of the probability at depth d(n∗), that is, an
+estimate of π(n∗). This gives
+ˆηh(n) = 1 + h(n)/g(n)
+π(n)h(n)/g(n) , ˆϕh(n) =
+g(n) + h(n)
+π(n)1+h(n)/g(n)
+(4)
+so that ˆϕh(n) is an estimate of g(n∗)/π(n∗). The drawback
+of ˆηh is that it may not be PHS-admissible anymore, so while
+Theorem 1 still applies, Corollary 5 does not.
+We call PHS* the variant of PHS that deﬁnes η as in
+Eq. (4) based on some given (supposedly approximately
+admissible) heuristic function h.
+4
+Learning the Policy
+We consider K tasks, and quantities indexed by k ∈[K]
+have the same meaning as before, but for task k. We assume
+that the policy πθ is differentiable w.r.t. its parameters θ ∈Θ.
+Ideally, we want to optimize the policy so as to minimize the
+total search loss, i.e., the optimal parameters of the policy
+are
+θ∗= argmin
+θ∈Θ
+X
+k∈[K]
+min
+n∗∈NG k
+Lk(PHSθ, n∗) .
+Unfortunately, even if we assume the existence of a dif-
+ferentiable close approximation ˜Lk of Lk, the gradient of
+the sum with respect to θ can usually not be obtained. In-
+stead the upper bound in Eq. (1) can be used as a surrogate
+loss function. However, it is not ideally suited for optimiza-
+tion due to the dependence on the set of leaves Lϕ(n∗).
+Hence we make a crude simpliﬁcation of Eq. (1) and as-
+sume that for task k, Lk(PHSθ, n∗
+k) ≈ckg(n∗
+k)/πθ(n∗
+k)
+for some a priori unknown constant ck assumed indepen-
+dent of the parameters θ of the policy: indeed the gradient
+of the term in Eq. (1) that ck replaces should usually be
+small since πθ(n) is often an exponentially small quantity
+with the search depth and thus ∇θπθ(n) ≈0. Then, since
+df(x)/dx = f(x)d log f(x)/dx,
+∇θ ˜Lk(PHSθ, n∗
+k) = ˜Lk(PHS, n∗
+k)∇θ log ˜Lk(PHSθ, n∗
+k)
+≈˜Lk(PHSθ, n∗
+k)∇θ log
+
+ck
+g(n∗
+k)
+πθ(n∗
+k)
+
+≈Lk(PHSθ, n∗
+k)∇θ log
+1
+πθ(n∗
+k) .
+(5)
+Note that Lk(PHSθ, n∗
+k) can be calculated during the search,
+and that the gradient does not depend explicitly on the heuris-
+tic function h, which is learned separately. In the experi-
+ments, we use this form to optimize the policy for PHS and
+LevinTS.
+5
+Experiments
+We use ℓ(·) = 1 everywhere, so the search loss L corre-
+sponds to the number of node expansions. We test the algo-
+rithms A*, GBFS, WA* (w=1.5), PUCT (c=1), PHSh (using
+η = ηh) and PHS* (using η = ˆηh), and LevinTS. Each al-
+gorithm uses one neural network to model the policy and/or
+5
+
+
+the heuristic to be trained on the problems it manages to
+solve (architectures in Appendix D). For PUCT, we nor-
+malize the Q-values [Schrittwieser et al., 2020], and use a
+virtual loss [Chaslot et al., 2008] of unit increment with the
+following selection rule for a child n′ of a node n,
+¯h(n′) = (h(n′) + virtual loss(n′) −hmin)/(hmax −hmin)
+PUCT(n′; n) = ¯h(n) −cπ(n′|n)
+qP
+n′′∈C(n) N(n′′)
+1 + N(n′)
+where N(n) is the number of times the node n has been
+visited, c is a constant set to 1 in the experiments, and keep
+in mind that h corresponds to losses—hence the negative
+sign. The node n′ with minimum PUCT value is selected.
+The virtual loss allows for evaluating the nodes in batch: we
+ﬁrst collect 32 nodes for evaluation using the PUCT rule and
+only then evaluate all nodes in batch with the neural network.
+The virtual loss allows us to sample different paths of the
+MCTS tree to be evaluated. Similarly, for the BFS-based
+algorithms, 32 nodes are evaluated in batch with the neural
+network before insertion in the priority queue [Agostinelli
+et al., 2019]. This batching speeds up the search for all
+algorithms.
+Since we want to assess the cooperation of search and
+learning capabilities of the different algorithms without using
+domain-speciﬁc knowledge, our experiments are not directly
+comparable with domain-speciﬁc solvers (see Pereira et al.
+[2016] for Sokoban). In particular, no intermediate reward is
+provided, by contrast to Orseau et al. [2018] for example.
+5.1
+Domains
+Sokoban (10×10)
+Sokoban is a PSPACE-hard grid-world
+puzzle where the player controls an avatar who pushes boxes
+to particular spots (boxes cannot be pulled). We use the ﬁrst
+50 000 problems training problems and the provided 1 000
+test problems from Boxoban [Guez et al., 2018].
+The Witness (4×4)
+The Witness domain is a NP-
+complete puzzle extracted from the video game of the same
+name [Abel et al., 2020] and consists in ﬁnding a path on a
+2D grid that separates cells of different colors. 3
+Sliding Tile Puzzle (5×5)
+The sliding tile puzzle is a tra-
+ditional benchmark in the heuristic search literature where
+heuristic functions can be very effective [Korf, 1985, Felner
+et al., 2004]. The training set is generated with random walks
+from the 5×5 solution state with walks of lengths between
+50 and 1 000 steps—this is a difﬁcult training set as there
+are no very easy problems. Test problems are generated ran-
+domly and unsolvable problems are ﬁltered out by a parity
+check; note that this is like scrambling inﬁnitely often, which
+makes the test problems often harder than the training ones.
+5.2
+Training and Testing
+Each search algorithm start with a uniform policy and/or an
+uninformed heuristic and follow a variant of the Bootstrap
+3Datasets and code are at https://github.com/levilelis/h-levin.
+process [Ernandes and Gori, 2004, Jabbari Arfaee et al.,
+2011]: All problems are attempted with an initial search step
+budget (2 000 for Witness and Sokoban, 7 000 for the sliding
+tile puzzle) and the search algorithm may solve some of
+these problems. After 32 attempted problems, a parameter
+update pass of the models is performed, using as many data
+points as the lengths of the solutions of the solved problems
+among the 32. If no new problem has been solved at the
+end of the whole Bootstrap iteration, the budget is doubled.
+Then the next iteration begins with all problems again. The
+process terminates when the total budget of 7 days is spent
+(wall time, no GPU). We use the mean squared error (MSE)
+loss for learning the heuristic functions: For a found solution
+node n∗the loss for node n ∈anc∗(n∗) is [(d(n∗)−d(n))−
+h(n)]2, where h(n) is the output of the network. Note that
+this loss function tends to make the heuristic admissible. The
+cross-entropy loss is used to learn the policy for PUCT. The
+policy for LevinTS and our PHS variants are based on the
+approximate gradient of the ˜Lk loss (see Section 4).
+Testing follows the same process as training (with a total
+computation time of 2 days), except that parameters are
+not updated, and the budget is doubled unconditionally at
+each new Bootstrap iteration. The test problems are not
+used during training. Each algorithm is trained 5 times with
+random initialization of the networks. For fairness, we test
+each algorithm using its trained network that allowed the
+search algorithm to solve the largest number of training
+problems.
+5.3
+Results
+The learning curves and test results are in Fig. 1 and Table 1
+(more information and results can be found in Appendices E
+and F).
+Sokoban
+PHSh and PHS* obtain the best results on this
+domain, showing the effectiveness of combining a policy and
+a heuristic function with BFS’s efﬁcient use of the priority
+queue. LevinTS and WA* follow closely. A* takes signif-
+icantly more time but ﬁnds shorter solutions, as expected.
+By contrast to the other algorithms, GBFS is entirely de-
+pendent on the quality of the heuristic function and cannot
+compensate an average-quality heuristic with a complete
+search (A* and WA* also use the g-cost to help drive the
+search). After the training period, PUCT could not yet learn
+a good policy and a good heuristic from scratch: PUCT is
+designed for the larger class of stochastic and adversarial
+domains and takes a large amount of time just to expand
+a single new node. Some variants of PUCT commit to an
+action after a ﬁxed number of search steps (e.g., Racani`ere
+et al. [2017]); although once a good value function has been
+learned this may help with search time, it also makes the
+search incomplete, which is not suitable when combining
+search and learning from scratch. Agostinelli et al. [2019]
+report better results than ours for WA* (about 1 050 000
+expansions in total on the test set), but their network has
+more than 30 times as many parameters, and they use 18
+times as many training problems, while also using a back-
+ward model to generate a curriculum. For LevinTS, Orseau
+et al. [2018] reported 5 000 000 expansions, using a larger
+network, 10 times as many training steps and intermediate
+6
+
+
+Figure 1: Learning curves using the Bootstrap process. Each point is a Bootstrap iteration. Lines correspond to the training
+runs with the least remaining unsolved problems at the end of the run. All 5 training runs per algorithm lie within the
+colored areas.
+rewards. Our improved results for LevinTS are likely due
+to the cooperation of search and learning during training,
+allowing to gather gradients for harder problems.
+The Witness
+This domain appears to be difﬁcult for learn-
+ing a good heuristic function, with the policy-guided BFS-
+based algorithms being the clear winners. Even for PHS,
+the heuristic function does not seem to help compared to
+LevinTS; it does not hurt much either though, showing the
+robustness of PHS. PUCT and WA* learned slowly during
+training but still manage to solve (almost) all test problems,
+at the price of many expansions. GBFS performs poorly be-
+cause it relies exclusively on the quality of the heuristic—by
+contrast, A* and WA* use the g-cost to perform a systematic
+search when the heuristic is not informative.
+Sliding Tile Puzzle
+Only WA* and PHS* manage to solve
+all test problems. PHSh seems to not be using the heuristic
+function to its full extent, by contrast to PHS*. The trend
+in the learning curves (see Fig. 1 and also Appendix F)
+suggests that with more training LevinTS, PHSh, and A*
+would achieve better results, but both GBFS and PUCT
+seem to be stuck. Possibly the training set is too difﬁcult
+for these algorithms and adding easier problems or an initial
+heuristic could help.
+6
+Conclusion
+We proposed a new algorithm called PHS that extends the
+policy-based LevinTS to using general non-negative loss
+functions and a heuristic function. We provided theoreti-
+cal results relating the search loss with the quality of both
+the policy and the heuristic. If the provided heuristic func-
+tion is PHS-admissible, a strictly better upper bound can be
+shown for PHS than for LevinTS. In particular, an admis-
+sible heuristic for A* can be turned into a PHS-admissible
+heuristic, leading to the variant PHSh. We also provided a
+lower bound based on the information carried by the policy,
+that applies to any search algorithm. The more aggressive
+variant PHS* is the only algorithm which consistently solves
+all test problems in the three domains tested. It would be
+Alg.
+Solved
+Length
+Expansions
+Time (s)
+Sokoban 10×10 (test)
+PUCT, c=1
+229
+24.9
+10 021.3
+39.7
+GBFS
+914
+36.4
+5 040.0
+34.0
+A*
+995
+32.7
+8 696.8
+61.7
+WA*, w=1.5
+1 000
+34.5
+3 729.1
+25.5
+LevinTS
+1 000
+40.1
+2 640.4
+19.5
+PHSh
+1 000
+39.1
+2 130.4
+18.6
+PHS*
+1 000
+37.6
+1 522.1
+11.3
+The Witness 4×4 (test)
+GBFS
+290
+13.3
+10 127.9
+44.6
+A*
+878
+13.6
+9 022.3
+53.9
+WA*, w=1.5
+999
+14.6
+18 345.2
+71.5
+PUCT, c=1
+1 000
+15.4
+4 212.1
+23.6
+PHS*
+1 000
+15.0
+781.5
+5.4
+LevinTS
+1 000
+14.8
+520.2
+3.2
+PHSh
+1 000
+15.0
+408.1
+3.0
+Sliding Tile Puzzle 5×5 (test)
+GBFS
+0
+—
+—
+—
+PUCT, c=1
+0
+—
+—
+—
+A*
+3
+87.3
+34 146.3
+27.2
+PHSh
+4
+119.5
+58 692.0
+55.3
+LevinTS
+9
+145.1
+39 005.6
+31.1
+PHS*
+1 000
+224.0
+2 867.2
+2.8
+WA*, w=1.5
+1 000
+129.8
+1 989.8
+1.6
+Table 1: Results on the tests sets. Lengths are the solution
+depths, and the last three columns are averaged over solved
+problems only; hence numbers such as 123 cannot be prop-
+erly compared with.
+useful to derive more speciﬁc bounds showing when PHS* is
+expected to work strictly better than PHSh. In this paper, the
+learned heuristic corresponds to the distance to the solution
+as for A*, but it may be better to directly learn the heuris-
+tic η to estimate the actual search loss at the solution. This
+may however introduce some difﬁculties since the heuristic
+7
+
+
+function to learn would now depend on the policy, making
+learning possibly less stable.
+Acknowledgements
+We would like to thank Tor Lattimore, Marc Lanctot,
+Michael Bowling, Ankit Anand, Th´eophane Weber, Joel Ve-
+ness and the AAAI reviewers for their feedback and helpful
+comments. This research was enabled by Compute Canada
+(www.computecanada.ca) and partially funded by Canada’s
+CIFAR AI Chairs program.
+References
+Stefan Edelkamp, Stefan Schroedl, and Sven Koenig. Heuris-
+tic Search: Theory and Applications. Morgan Kaufmann
+Publishers Inc., San Francisco, CA, USA, 2010. ISBN
+0123725127.
+David Allouche, Sophie Barbe, Simon De Givry, George Kat-
+sirelos, Yahia Lebbah, Samir Loudni, Abdelkader Ouali,
+Thomas Schiex, David Simoncini, and Matthias Zytnicki.
+Cost Function Networks to Solve Large Computational
+Protein Design Problems. In Operations Research and
+Simulation in healthcare. Springer, 2019.
+Andrew Cropper and Sebastijan Dumancic. Learning large
+logic programs by going beyond entailment. In Proceed-
+ings of the Twenty-Ninth International Joint Conference
+on Artiﬁcial Intelligence, IJCAI 2020, pages 2073–2079.
+ijcai.org, 2020.
+David Silver, Thomas Hubert, Julian Schrittwieser, Ioannis
+Antonoglou, Matthew Lai, Arthur Guez, Marc Lanctot,
+Laurent Sifre, Dharshan Kumaran, Thore Graepel, Tim-
+othy P. Lillicrap, Karen Simonyan, and Demis Hassabis.
+Mastering chess and shogi by self-play with a general
+reinforcement learning algorithm. CoRR, abs/1712.01815,
+2017.
+Julian Schrittwieser, Ioannis Antonoglou, Thomas Hubert,
+Karen Simonyan, Laurent Sifre, Simon Schmitt, Arthur
+Guez, Edward Lockhart, Demis Hassabis, Thore Graepel,
+Timothy Lillicrap, and David Silver. Mastering atari, go,
+chess and shogi by planning with a learned model. Nature,
+588(7839):604–609, December 2020.
+Christopher D. Rosin. Multi-armed bandits with episode
+context. Annals of Mathematics and Artiﬁcial Intelligence,
+61(3):203–230, March 2011.
+Levente Kocsis and Csaba Szepesv´ari. Bandit based monte-
+carlo planning. In ECML, pages 282–293. Springer Berlin
+Heidelberg, 2006.
+Hyeong Soo Chang, Michael C. Fu, Jiaqiao Hu, and Steven I.
+Marcus.
+An adaptive sampling algorithm for solving
+markov decision processes. Operations Research, 53(1):
+126–139, 2005.
+R´emi Coulom. Efﬁcient selectivity and backup operators in
+monte-carlo tree search. In Computers and Games, pages
+72–83. Springer Berlin Heidelberg, 2007.
+Joseph C. Culberson. Sokoban is PSPACE-Complete. In
+Fun With Algorithms, pages 65–76, 1999.
+Stephen McAleer, Forest Agostinelli, Alexander Shmakov,
+and Pierre Baldi. Solving the rubik’s cube with approx-
+imate policy iteration. In International Conference on
+Learning Representations (ICRL), 2019.
+Ira Pohl. Heuristic search viewed as path ﬁnding in a graph.
+Artiﬁcial Intelligence, 1(3):193 – 204, 1970.
+R¨udiger Ebendt and Rolf Drechsler. Weighted a∗search –
+unifying view and application. Artiﬁcial Intelligence, 173
+(14):1310 – 1342, 2009.
+P. E. Hart, N. J. Nilsson, and B. Raphael. A formal basis
+for the heuristic determination of minimum cost paths.
+IEEE Transactions on Systems Science and Cybernetics,
+SSC-4(2):100–107, 1968.
+Forest Agostinelli, Stephen McAleer, Alexander Shmakov,
+and Pierre Baldi. Solving the rubik’s cube with deep
+reinforcement learning and search. Nature Machine Intel-
+ligence, 1, 07 2019.
+Laurent Orseau, Levi Lelis, Tor Lattimore, and Theophane
+Weber. Single-agent policy tree search with guarantees.
+In Advances in Neural Information Processing Systems
+31, pages 3201–3211. Curran Associates, Inc., 2018.
+Shahab Jabbari Arfaee, Sandra Zilles, and Robert C. Holte.
+Learning heuristic functions for large state spaces. Artiﬁ-
+cial Intelligence, 175(16):2075–2098, 2011.
+J. E. Doran, D. Michie, and David George Kendall. Experi-
+ments with the graph traverser program. Proceedings of
+the Royal Society of London. Series A. Mathematical and
+Physical Sciences, 294(1437):235–259, 1966.
+Judea Pearl. Heuristics - intelligent search strategies for
+computer problem solving.
+Addison-Wesley series in
+artiﬁcial intelligence. Addison-Wesley, 1984. ISBN 978-
+0-201-05594-8.
+David Silver, Aja Huang, Chris J Maddison, Arthur Guez,
+Laurent Sifre, George Van Den Driessche, Julian Schrit-
+twieser, Ioannis Antonoglou, Veda Panneershelvam, Marc
+Lanctot, et al. Mastering the game of Go with deep neural
+networks and tree search. Nature, 529(7587):484–489,
+2016.
+Guillaume M. J. B. Chaslot, Mark H. M. Winands, and
+H. Jaap van den Herik. Parallel monte-carlo tree search.
+In Computers and Games, pages 60–71. Springer Berlin
+Heidelberg, 2008.
+Andr´e Grahl Pereira, Robert Holte, Jonathan Schaeffer, Lu-
+ciana Salete Buriol, and Marcus Ritt. Improved heuristic
+and tie-breaking for optimally solving sokoban. In Inter-
+national Joint Conference on Artiﬁcial Intelligence, 2016.
+Arthur Guez, Mehdi Mirza, Karol Gregor, Rishabh Kabra,
+Sebastien Racaniere, Theophane Weber, David Raposo,
+Adam Santoro, Laurent Orseau, Tom Eccles, Greg Wayne,
+David Silver, Timothy Lillicrap, and Victor Valdes.
+8
+
+
+An investigation of model-free planning: boxoban lev-
+els. https://github.com/deepmind/boxoban-levels/, 14 Dec
+2018, 2018.
+Zachary Abel, Jeffrey Bosboom, Michael J. Coulombe,
+Erik D. Demaine, Linus Hamilton, Adam Hesterberg,
+Justin Kopinsky, Jayson Lynch, Mikhail Rudoy, and
+Clemens Thielen. Who witnesses the witness? ﬁnding
+witnesses in the witness is hard and sometimes impossible.
+Theor. Comput. Sci., 839:41–102, 2020.
+Richard E. Korf. Depth-ﬁrst iterative-deepening. Artiﬁcial
+Intelligence, 27(1):97 – 109, 1985.
+A. Felner, R. E. Korf, and S. Hanan.
+Additive pattern
+database heuristics. Journal of Artiﬁcial Intelligence Re-
+search, 22:279–318, 2004.
+Marco Ernandes and Marco Gori. Likely-admissible and sub-
+symbolic heuristics. In Proceedings of the 16th European
+Conference on Artiﬁcial Intelligence, ECAI’04, pages 613–
+617. IOS Press, 2004.
+S´ebastien Racani`ere, Theophane Weber, David Reichert,
+Lars Buesing, Arthur Guez, Danilo Jimenez Rezende,
+Adri`a Puigdom`enech Badia, Oriol Vinyals, Nicolas Heess,
+Yujia Li, Razvan Pascanu, Peter Battaglia, Demis Has-
+sabis, David Silver, and Daan Wierstra.
+Imagination-
+augmented agents for deep reinforcement learning. In
+Advances in Neural Information Processing Systems 30,
+pages 5690–5701. Curran Associates, Inc., 2017.
+Diederik P. Kingma and Jimmy Ba. Adam: A method for
+stochastic optimization. In Yoshua Bengio and Yann Le-
+Cun, editors, 3rd International Conference on Learning
+Representations, ICLR 2015, San Diego, CA, USA, May
+7-9, 2015, Conference Track Proceedings, 2015. URL
+http://arxiv.org/abs/1412.6980.
+Silvia Richter and Matthias Westphal. The lama planner:
+Guiding cost-based anytime planning with landmarks.
+Journal of Artiﬁcial Intelligence Research, 39(1):127–177,
+2010.
+Malte Helmert, Tor Lattimore, Levi H. S. Lelis, Laurent
+Orseau, and Nathan R. Sturtevant. Iterative budgeted
+exponential search. In Proceedings of the Twenty-Eighth
+International Joint Conference on Artiﬁcial Intelligence,
+IJCAI 2019, Macao, China, August 10-16, 2019, pages
+1249–1257. ijcai.org, 2019.
+9
+
+
+A
+Table of Notation
+A summary of the notation used in the paper can be found
+in Table 5 (on the last page for convenience).
+B
+Machine Speciﬁcations
+All experiments were run on 2.4 GHz CPUs with 8 GB of
+RAM (except 12 GB for Sokoban), with Python 3.6, Tensor-
+ﬂow 2.0 with Keras. The training procedure was parallelized
+with 6 CPUs. Tests were performed on a single CPU. No
+GPU was used.
+C
+Additional
+Implementation
+Re-
+marks
+Some values (π(n), ϕ(n)) for LevinTS and PHS are main-
+tained in log-space to avoid numerical issues. For PHS, the
+heuristic value is enforced to be lower bounded by 0.
+For all algorithms (including PUCT in particular) no du-
+plicate queries to the network are performed.
+Ties for f and ϕ are broken in favor of largest g-costs.
+However, with learned real-valued heuristics, it is unlikely
+that two nodes have the same values.
+D
+Neural Network Architectures
+The various NN architectures are as follow. All convolution
+layers (Conv) have 32 ﬁlters of size 2x2 (ReLU) and are
+not padded. All fully connected layers (FC) have 128 ReLU
+units.
+Policy-based algorithms (LevinTS):
+In →Conv →Conv →FC →4 linear + log-softmax
+Heuristic-based algorithms (A*, WA*, GBFS):
+In →Conv →Conv →FC →1 linear (heuristic)
+Policy- and heuristic-based algorithms (PHS, PUCT):
+In →Conv →Conv →
+
+
+
+
+
+FC →1 linear
+(heuristic)
+FC →4 linear
++ log-softmax
+(policy)
+We use an Adam optimization [Kingma and Ba, 2015]
+with a step size of 10−4, L2 regularization with constant
+10−3. We did not try any other hyperparameter values than
+the ones we report.
+Network Inputs
+The input for Sokoban (10×10) is a one-hot encoding tensor
+with shape 10×10×4 with the 4 features being: wall, avatar,
+boxes, and goal positions.
+The input for The Witness (4×4) is a one-hot encoding
+tensor of shape 8×8×9, where the 9 features are the 4 bullet
+colors, the entrance, the exit, the separating line being drawn
+Figure 2: A state of a Boxoban problem.
+by the player, cells without bullets, and the tip of the line.
+We use images of size 8×8 in our representation despite the
+problem being represented on a 4×4 grid because the line
+occupies the spaces in-between the grid cells.
+The input for the sliding-tile puzzle (5×5) is a one-hot
+encoding tensor of shape 5 × 5 × 25, with one image 5 × 5
+for each tile.
+Detailed Description of Domains
+Sokoban
+Figure 2 shows one Sokoban problem of the
+Boxoban set [Guez et al., 2018]. In this game the goal is
+to make the avatar (shown in green) to push (not pull) all
+boxes (shown in yellow) to their goal positions (shown in
+red). For the state shown in the ﬁgure, there are four children
+nodes, one for moving up, down, left and right, but moving
+down leads to the same state as the current one and thus a
+state pruning may be performed to avoid unnecessary node
+expansions. Similarly, the policy can also assign a probability
+0 to moving down; but note that the heuristic may not be able
+to assign a large number to repeating states if the heuristic
+value depends only on the current state.
+The Witness
+We use the puzzle from the commercial
+game The Witness where one needs to ﬁnd a path connecting
+the bottom left corner of a 4×4 grid to an exit point. This
+path must separate the cells in the grid into regions with
+cells of the same color—cells without bullets do not matter.
+Figure 3 shows one such problem. The cells of the puzzles
+we used in our experiments could be either empty or contain
+a bullet with one of four colors. The path from the bottom
+left corner to the exit point cannot go more than once over a
+black dot marking the intersection of the cells.
+Sliding-Tile Puzzle
+On a grid of 5×5 cells, there is one
+empty cell and 24 tiles, labelled from 1 to 24. The only
+possible moves are to slide one tile onto the empty cell,
+which means there are always between 2 and 4 possible
+moves. The goal is to slides the tiles until reaching the goal
+state as depicted on the left-hand-side of Figure 4. The initial
+state of the problems we used are scrambled and the goal
+is to ﬁnd how to restore the conﬁguration shown on the
+left-hand side of the ﬁgure.
+10
+
+
+Figure 3: The initial state of a 4×4 witness puzzle problem
+with four different colors. The entrance is at the bottom-left
+and the exit at the center-right.
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+1
+6
+2
+3
+4
+5
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+16
+8
+22
+14
+5
+20
+23
+9
+17
+3
+4
+10
+1
+6
+2
+24
+12
+11
+18
+7
+15
+21
+19
+13
+Figure 4: Sliding tile puzzle (5×5). Left: The goal state.
+Middle: Two moves away from the goal state. Right: A test
+problem.
+E
+Learning Curves
+Figure 6 shows the number of remaining problems for each
+domain over the Bootstrap iterations, for 5 different training
+runs of each algorithm. All runs lie within the shadowed
+areas. The plotted lines correspond to the runs with the
+fewest remaining unsolved problems and the end of training,
+which correspond to the networks that are used for testing.
+Note that solving more problems means spending more time
+doing optimization, which is why the number of expansions
+is shorter for algorithms that learn more.
+Sokoban
+Algorithms that use a policy (LevinTS, PHSh,
+PHS*), except PUCT, solve more problems than the
+heuristic-based algorithms, but combining both types of in-
+formation in PHSh and PHS* gives the best results.
+The Witness
+This domain appears to be easier to learn
+for policy-driven algorithms. In particular, PUCT shines
+compared to A*, WA* and GBFS, but PHSh, PHS* and in
+particular LevinTS learn even faster.
+Sliding Tile Puzzle
+On this domain, GBFS solves at most
+4 problems and cannot get off the ground during training.
+This appears to be because GBFS with a random heuristic
+does not perform a systematic search like A* for example.
+PUCT also performs poorly, but still makes steady progress,
+solving about 40 more problems per Bootstrap iteration, for
+a total of less than 500 solved problems after exhausting
+the time budget. This is likely because PUCT has very long
+running times in particular for long solutions, as is the case
+in this domain. Even though LevinTS and PHSh solve fewer
+problems than A*, the trend at the end suggests that they
+would soon surpass A* after some more training. In this
+domain, the policy does not seem very helpful, and only
+learning a strong heuristic appears to be working.
+F
+More Test Results
+Test proﬁles
+Figure 5 shows the number of expansions (on log scale)
+per problem, when problems are sorted from easy to hard
+for each individual solver. The networks used are the ones
+with the best training scores. On the sliding tile puzzle,
+PUCT did not solve any problem, and A* and LevinTS
+barely solved a few problems. We also report the proﬁles of
+PUCT and PHSh when using the neural network trained by
+PHS* (dashed lines). This shows a substantial improvement
+for both algorithms when supplied with a good neural net-
+work, PHSh’s performance almost matching that of PHS*.
+Similarly on Sokoban, PUCT vastly beneﬁts from using the
+network trained with PHS*, but it is still far less efﬁcient
+than PHS* with the same network, and solves less than 800
+problems—while being allocated more time than all the
+other algorithms.
+Best test results
+In Table 3 we report the best test results over the 5 trained
+networks per algorithm, along with a few more parameters
+values for WA* and PUCT. The results from the domain-
+independent LAMA planner [Richter and Westphal, 2010]
+on Sokoban are as reported by [Orseau et al., 2018].
+Tests with a ﬁxed time limit per problem
+As for training, we used Bootstrap during testing. This is a
+little unusual and it is more traditional to use a ﬁxed time
+limit per problem. Both settings have issues. With a ﬁxed
+time limit, a rank reversal between solvers can happen by
+increasing the time limit. With Bootstrap, such a rank rever-
+sal can happen by increasing the total time or by re-ordering
+the problems. However, in both schemes, these issues do not
+happen if the solvers solve all problems within the allocated
+time.
+Using the Bootstrap process during testing ensures that
+algorithms that solve most problems quickly but need a
+long time to solve a few problems can try hard to solve
+all problems. But comparing with a ﬁxed time limit can
+be informative too. However, for 1000 problems, two days
+of computation (as used with Bootstrap) correspond to a
+ﬁxed limit of less than 3 minutes per problem. Clearly, using
+such a low limit will neither provide meaningful results for
+slower algorithms, nor allow faster algorithms to tackle the
+few problems where they may take more than 3 minutes.
+11
+
+
+Alg.
+Solved
+Length
+Expansions
+Time(s)
+Sokoban 10×10 (test)
+GBFS
+856
+36.0
+7096.0
+52.4
+PUCT, c=1
+902
+42.6
+11329.8
+83.8
+A*
+1000
+31.1
+9043.5
+51.8
+WA*, w=1.5
+1000
+33.6
+5461.8
+36.8
+LevinTS
+1000
+38.1
+1760.5
+11.9
+PHSh
+1000
+38.0
+1696.2
+10.6
+PHS*
+1000
+37.6
+1522.1
+11.5
+The Witness 4×4 (test)
+GBFS
+444
+15.4
+23986.0
+95.5
+WA*, w=1.5
+927
+14.1
+19411.9
+90.0
+A*
+1000
+14.2
+20390.4
+97.7
+PUCT, c=1
+1000
+15.0
+3798.8
+21.0
+LevinTS
+1000
+14.9
+903.4
+4.9
+PHSh
+1000
+14.9
+869.4
+4.7
+PHS*
+1000
+15.0
+781.5
+4.1
+Sliding Tile Puzzle 5×5 (test)
+PUCT, c=1
+786
+220.9
+30722.6
+115.7
+A*
+835
+153.3
+112369.6
+81.4
+WA*, w=1.5
+916
+175.4
+117187.5
+80.8
+GBFS
+998
+390.2
+72444.5
+50.0
+LevinTS
+1000
+233.9
+3175.5
+2.4
+PHSh
+1000
+231.1
+3026.7
+2.5
+PHS*
+1000
+224.0
+2867.2
+2.5
+Table 2: Test performance of the search algorithms when
+using the neural network trained with PHS* with the best
+training performance. Lengths are solution lengths, and the
+last three columns are averaged over solved problems only;
+hence results like 123 cannot be properly compared with.
+†Reported from Orseau et al. [2018].
+So instead we compare the algorithms on 100 problems
+with a time limit of 30 minutes per problem. The results are
+shown in Table 4. As can be observed, the results for the best
+algorithms are consistent with the results using Bootstrap
+during testing.
+Comparing algorithms with ﬁxed parameters
+Although this paper is more interested with the question of
+how a search algorithm helps the learning process, it is also
+interesting to consider how the solvers compare when using
+a ﬁxed policy and a ﬁxed heuristic function.
+To be fair and accurate, several different policies and
+heuristic functions should be considered. But to get a ﬁrst
+insight into this question, we can use the network trained by
+PHS*—which is the only network with both a policy head
+and a heuristic head with good results.
+Results are reported Table 2. The caveat is of course that
+because it was trained with PHS*, it may not be so surprising
+that PHS* obtains the best results. Nevertheless, these results
+show that combining the heuristic function with the policy
+gives better results than using each independently.
+G
+PHS with Safe State Pruning
+We say that a state pruning is performed when the
+continue instruction is triggered in Algorithm 1.
+The theorems of the main text hold for Algorithm 1 when
+state(n) = n for all n, i.e., no state pruning ever hap-
+pens. If the latter condition is not true, it may happen that a
+solution node below a node that was pruned has a ϕ+-value
+lower than any other solution node, and pruning prevents
+the algorithm from ﬁnding and returning it. But when many
+nodes represent the same states, it may be inefﬁcient to not
+perform state pruning.
+In Algorithm 2, we propose a variant that performs safe
+state pruning if some assumptions (deﬁned below) are sat-
+isﬁed, thus avoiding following paths that provably lead to
+solutions with larger ϕ+-values.
+Algorithm 2 The Policy-guided Heuristic Search algorithm
+(PHS) with safe state pruning. Assumes that π(·|n) and η(n)
+depend only on
+state(n).
+def PHS_safe_state_pruning(n0):
+q = priority_queue(order_by=ϕ)
+q.insert(n0)
+visited_states = {}
+while q is not empty:
+n = q.extract_min() # node of min ϕ-value
+s = state(n)
+(ϕs, πs) = visited_states.get(s,
+default=(∞, 0))
+if ϕs ≤ϕ(n) and πs ≥π(n):
+# Can safely prune the search here
+continue
+# state pruning
+if πs ≤π(n):
+visited_states.set(s, (ϕ(n), π(n)))
+incur_loss ℓ(n)
+if is_solution(n):
+return n
+# Node expansion
+for n′ in children(n):
+q.insert(n′, ϕ(n′))
+return False
+For simplicity of the formalism but without loss of gen-
+erality, we assume that states are ‘canonical’ nodes, that is,
+S ⊆N, and the function
+state(n) maps a node n to
+its canonical node n′. Though, in practice, a state can be
+anything such as a string or an integer.
+Assumptions 8. a) Most quantities depend only on the state:
+For all nodes n′ ∈C(n),
+ℓ(n) = ℓ( state(n)),
+is_solution(n) =
+is_solution( state(n)),
+{ state(n′) : n′ ∈C(n)} = C( state(n)),
+∀n′ ∈C(n′) : π(n′|n) = π( state(n′)| state(n)),
+and η(n) = η( state(n)),
+and, b) PHS is deﬁned as in Algorithm 2.
+Some remarks:
+12
+
+
+• These assumptions are met in all three domains and
+neural networks tested in the main text.
+• The path loss is still dependent on the path, and thus in
+general g(n)̸ = g( state(n)).
+• Taking
+state(n) = n satisﬁes all of Assump-
+tions 8a.
+Recall that ϕ+(n) = maxn′∈anc∗(n) ϕ(n) and that if
+ϕ+(n1) < ϕ+(n2) then PHS extracts n1 from the priority
+queue before n2, unless an ancestor of n1 has been pruned.
+Lemma 9 (Safe state pruning). Under Assumptions 8,
+let any two nodes n1 and n2 such that
+state(n1) =
+state(n2) and n1 is expanded before n2 is extracted from
+the priority queue. Let n′
+1 ∈C(n1) and n′
+2 ∈C(n2) such that
+state(n′
+1) =
+state(n′
+2). Then if ϕ(n1) ≤ϕ(n2) and
+π(n1) ≥π(n2), for any solution node n∗
+2 ∈NG ∩desc∗(n2)
+there exists a solution node n∗
+1 ∈NG ∩desc∗(n1) such that
+ϕ+(n∗
+1) ≤ϕ+(n∗
+2).
+Proof. First, observe that, as for BFS, since n1 is expanded
+before n2 is extracted from the queue then necessarily
+ϕ+(n1) ≤ϕ+(n2). Then,
+ϕ(n1)
+(a)
+≤ϕ(n2)
+⇔g(n1)
+π(n1)
+(b)
+≤g(n2)
+π(n2)
+⇔g(n1) + ℓ(n′
+1)
+π(n1)
+(c)
+≤g(n2) + ℓ(n′
+2)
+π(n2)
+⇔η(n′
+1) g(n1) + ℓ(n′
+1)
+π(n1)π(n′
+1|n1)
+(d)
+≤η(n′
+2) g(n2) + ℓ(n′
+2)
+π(n2)π(n′
+2|n2)
+⇔ϕ(n′
+1)
+(e)
+≤ϕ(n′
+2)
+⇒max{ϕ
++(n1), ϕ(n′
+1)} ≤max{ϕ
++(n1), ϕ(n′
+2)}
+⇔ϕ
++(n′
+1)
+(f)
+≤ϕ
++(n′
+2)
+where (a) by assumption, (b) since η(n1) = η(n2), (c)
+using ℓ(n′
+1) = ℓ(n′
+2) and 1/π(n1) ≤1/π(n2), (d) using
+π(n′
+1|n1) = π(n′
+2|n2) and η(n′
+1) = η(n′
+2) (e) by deﬁnition
+of ϕ, (f) using ϕ+(n1) ≤ϕ+(n2) and by deﬁnition of ϕ+.
+Furthermore, since π(n′
+1|n1) = π(n′
+2|n2) we also have
+π(n′
+1) ≥π(n′
+2), and therefore the result holds by induction.
+Lemma 9 means that we can safely prune n2 and that
+Algorithm 2 will still return a node in argminn∗∈NG ϕ+(n∗).
+We can now prove that performing state pruning as in Algo-
+rithm 2 does not harm the bound of Theorem 1:
+Theorem 10 (PHS bound with safe state pruning). Under
+Assumptions 8, the statement of Theorem 1 holds.
+Proof. Follows from Lemma 9, and the rest is as in the proof
+of Theorem 1.
+If many states are pruned during the search, then this can
+only improve L(PHS, .) over Theorem 10, that is, the bound
+displayed in Theorem 1 can become loose.
+It can also happen that many state prunings are missed
+due to the necessity of performing only safe pruning. In such
+cases, the bound of Theorem 10 still holds, but the algorithm
+could be more efﬁcient. For such cases one can use the IBEX
+framework [Helmert et al., 2019] which iteratively increases
+the cost bound (here, we would choose log ϕ+(·)) at the
+price of a log-cost factor compared to the ideal algorithm
+that orders the search optimally so as to perform as many
+state prunings as possible.
+13
+
+
+Alg.
+Solved
+Length
+Expansions
+Time(s)
+Sokoban 10×10 (test)
+PUCT, c=2
+154
+22.8
+9 244.7
+34.7
+PUCT, c=1.5
+171
+22.4
+9 664.0
+36.2
+PUCT, c=1
+229
+24.9
+10 021.3
+39.7
+GBFS
+945
+37.7
+7 284.2
+49.2
+A*
+999
+32.9
+9 487.3
+67.4
+WA*, w=2.5
+1 000
+36.2
+4 754.8
+32.9
+WA*, w=2
+1 000
+35.6
+3 298.5
+22.8
+LAMA†
+1 000
+51.6
+3 151.3
+N/A
+WA*, w=1.5
+1 000
+34.6
+3 092.6
+21.5
+LevinTS
+1 000
+40.1
+2 640.4
+19.5
+PHSh
+1 000
+38.9
+1 962.2
+14.8
+PHS*
+1 000
+37.6
+1 522.1
+11.3
+The Witness 4×4 (test)
+GBFS
+290
+13.3
+10 127.9
+44.6
+WA*, w=3
+673
+13.8
+12 195.6
+48.9
+WA*, w=2.5
+674
+14.0
+13 988.0
+51.9
+WA*, w=2
+835
+14.2
+14 305.2
+55.5
+A*
+975
+14.1
+13 058.9
+65.5
+WA*, w=1.5
+999
+14.6
+18 345.2
+71.5
+PUCT, c=1.5
+1 000
+15.4
+3 639.7
+22.7
+PUCT, c=1
+1 000
+15.3
+3 602.7
+20.8
+PUCT, c=2
+1 000
+15.4
+2 890.6
+18.2
+PHSh
+1 000
+14.6
+221.5
+1.8
+LevinTS
+1 000
+14.8
+219.7
+1.6
+PHS*
+1 000
+14.4
+190.5
+1.7
+Sliding Tile Puzzle 5×5 (test)
+GBFS
+0
+—
+—
+—
+PUCT, c=1
+0
+—
+—
+—
+PUCT, c=1.5
+0
+—
+—
+—
+PUCT, c=2
+0
+—
+—
+—
+A*
+3
+87.3
+34 146.3
+27.2
+PHSh
+4
+119.5
+58 692.0
+55.3
+LevinTS
+30
+159.6
+65 544.6
+56.7
+PHS*
+1 000
+222.8
+2 764.0
+3.0
+WA*, w=1.5
+1 000
+127.3
+1 860.5
+1.4
+WA*, w=3
+1 000
+134.3
+1 840.0
+1.4
+WA*, w=2
+1 000
+130.3
+1 801.6
+1.5
+WA*, w=2.5
+1 000
+133.6
+1 793.1
+1.4
+Table 3: Best test results among the 5 trained networks
+for each algorithm. Lengths are solution lengths, and the
+last three columns are averaged over solved problems only;
+hence results like 123 cannot be properly compared with.
+†Reported from Orseau et al. [2018].
+Alg.
+Solved
+Length
+Expansions
+Time(s)
+Sokoban 10×10 (test)
+PUCT, c=1
+41
+38.2
+60 012.5
+425.0
+GBFS
+99
+37.7
+9 841.0
+63.9
+A*
+100
+32.5
+7 064.4
+49.4
+WA*, w=1.5
+100
+34.1
+1 863.5
+13.7
+LevinTS
+100
+40.0
+1 392.5
+10.5
+PHSh
+100
+39.5
+848.2
+6.7
+PHS*
+100
+37.3
+717.3
+5.6
+The Witness 4×4 (test)
+GBFS
+100
+14.7
+44 428.2
+135.7
+WA*, w=1.5
+100
+13.8
+11 503.8
+39.9
+A*
+100
+13.6
+11 337.7
+52.0
+PUCT, c=1
+100
+14.6
+3 075.3
+20.8
+PHSh
+100
+13.8
+193.6
+1.3
+LevinTS
+100
+13.9
+187.1
+1.2
+PHS*
+100
+13.7
+181.1
+1.4
+Sliding Tile Puzzle 5×5 (test)
+GBFS
+0
+—
+—
+—
+PUCT, c=1
+0
+—
+—
+—
+A*
+2
+87.0
+897 140.5
+440.8
+PHSh
+14
+155.4
+1 314 654.1
+907.0
+LevinTS
+22
+154.5
+1 074 269.4
+676.9
+PHS*
+100
+225.2
+2 883.0
+1.7
+WA*, w=1.5
+100
+128.9
+1 957.8
+0.9
+Table 4: Test results for the networks with the best training
+scores for each algorithm, with a ﬁxed time limit of 30 min-
+utes per problem. Lengths are the average solution lengths.
+The last three columns (Length, Expansions, and Time) are
+averaged over solved problems only; hence results like 123
+cannot be properly compared with.
+14
+
+
+Figure 5: Test proﬁles: Number of node expansions (log scale) per problem on the test set, for the networks with the best
+training results for each algorithm. Horizontal dashed lines are the powers of 2. A dashed line with label A/B is for the
+search algorithm A that uses the neural network trained with algorithm B.
+15
+
+
+Figure 6: Number of unsolved problems compared to the cumulative number of nodes expanded (left) or cumulative time
+(right) over the Bootstrap iterations. Lines correspond to the runs with the least remaining unsolved problems. All 5 training
+runs per algorithm lie within the colored areas.
+16
+
+
+Symbol
+Meaning
+n0
+The root of the tree
+n
+A node in the tree
+n∗
+A solution node or some target node
+par(n)
+Parent node of n
+anc∗(n)
+Ancestors of n and n itself
+desc∗(n)
+Descendants of n and n itself
+d(n)
+Depth of node n (d(n0) = 0)
+d0(n)
+= d(n) + 1
+N
+Set of nodes
+ℓ(n)
+Instantaneous loss function at a node n
+g(n)
+Path loss from the root to a node n
+L(S, n)
+Search loss of algorithm S when reaching n
+ϕ(·)
+Evaluation function of PHS
+ϕ+(·)
+Like ϕ, but made monotone non-decreasing
+from parent to child
+h(n)
+Estimate of the g-cost of a solution node
+below n (A*-like heuristic)
+η(·)
+Heuristic factor
+η+(·)
+Heuristic factor corresponding to ϕ+
+ηh(·)
+η that uses an A*-like heuristic h;
+PHS-admissible if h is A*-admissible
+ˆηh(·)
+Like ηh but aggressively rescaled
+PHS
+Policy-guided Heuristic Search
+PHSh
+PHS where η = ηh for given h
+PHS*
+PHS where η = ˆηh for given h
+Table 5: Notation used in the paper.
+17

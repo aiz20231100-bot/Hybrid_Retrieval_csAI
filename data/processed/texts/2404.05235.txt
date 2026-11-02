@@ -1,0 +1,1570 @@
+Novelty Heuristics, Multi-Queue Search, and Portfolios for Numeric Planning
+Dillon Z. Chen1,2, Sylvie Thi´ebaux1,2
+1LAAS-CNRS, Universit´e de Toulouse
+2Australian National University
+{dillon.chen, sylvie.thiebaux}@laas.fr
+Abstract
+Heuristic search is a powerful approach for solving planning
+problems and numeric planning is no exception. In this pa-
+per, we boost the performance of heuristic search for numeric
+planning with various powerful techniques orthogonal to im-
+proving heuristic informedness: numeric novelty heuristics,
+the Manhattan distance heuristic, and exploring the use of
+multi-queue search and portfolios for combining heuristics.
+1
+Introduction
+Numeric planning is an expressive extension of classical
+planning where states are able to exhibit real-valued vari-
+ables. It was formalised in PDDL2.1 (Fox and Long 2003)
+and is undecidable in the general case (Helmert 2002). How-
+ever, it is PSPACE-complete when variables are integer and
+bounded, and there also exist compilations from numeric to
+classical planning with certain features that preserve plan
+length (Gigante and Scala 2023). Similarly to classical plan-
+ning, the two main approaches for solving numeric planning
+problems in the literature consist in either heuristic search
+or compilation into a sequence of satisfiability problems
+for constraint-based solvers. A recent SAT Modulo The-
+ory (SMT) approach, PATTY, has been proposed (Cardellini,
+Giunchiglia, and Maratea 2024) which provably encodes
+fewer variables and constraints than previous constraint-
+based approaches (Scala et al. 2016b; Bofill, Espasa, and
+Villaret 2017). Compared to heuristic search, it provides bet-
+ter performance on highly numeric planning problems which
+do not require long plans.
+On the other hand, the state of the art for heuristic search
+in numeric planning still consists of a search with a sin-
+gle heuristic derived from a relaxation of the problem. Such
+heuristics include the numeric extensions of classical plan-
+ning heuristics: metric FF (Hoffmann 2002, 2003), LP-
+based heuristics for computing tighter bounds on the relaxed
+planning graph (Coles et al. 2008), interval-based, subgoal-
+ing, and set-additive derivations of hadd (Scala, Haslum,
+and Thi´ebaux 2016; Scala et al. 2016a, 2020a,b), land-
+marks (Scala et al. 2017), admissible IP-based heuristics (Pi-
+acentini et al. 2018), LM-cut and operator counting heuris-
+tics (Kuroiwa et al. 2021, 2022; Kuroiwa, Shleyfman, and
+Copyright © 2024, Association for the Advancement of Artificial
+Intelligence (www.aaai.org). All rights reserved.
+Beck 2023). Alternatively, Illanes and McIlraith (2017) use
+a partial policy computed from an abstraction of numeric
+planning into classical planning for search guidance. Other
+techniques orthogonal to defining new heuristics for numeric
+planning also exist, such as abstracting linear numeric prob-
+lems into simple numeric problems, enabling the use of
+simple numeric heuristics (Li et al. 2018), and computing
+state space symmetries with the numeric problem descrip-
+tion graph (Shleyfman, Kuroiwa, and Beck 2023).
+In this paper, we boost the performance of heuristic search
+for numeric planners in several orthogonal directions by
+porting search techniques from classical planning. This in-
+cludes (1) formalising novelty heuristics for numeric plan-
+ning, (2) constructing the simple but effective Manhattan
+distance heuristic, (3) extending the ENHSP planner (Scala
+et al. 2020b) with multi-queue search, and (4) building naive
+portfolios. We provide a systematic set of experiments that
+demonstrate the effectiveness of these approaches on the
+Numeric Track of the 2023 International Planning Compe-
+tition (NT-IPC) (Arxer and Scala 2023) and highlight the
+complementary nature of heuristic search and constraint-
+based approaches for numeric planning.
+2
+Background
+A numeric planning task (Fox and Long 2003) is given by
+a tuple Π = ⟨Xp, Xn, A, s0, G⟩where Xp is a finite set of
+Boolean variables with domains {⊤, ⊥} and Xn is a finite
+set of numeric variables with domains R. Let X = Xp ∪Xn
+denote the set of state variables. Let S denote the set of pos-
+sibly infinitely many states in Π, where a state is a total
+assignment to Boolean and numeric variables. Let s0 ∈S
+be the initial state. A propositional condition is a positive
+literal, and a numeric condition has the form ξ ⊵0 where
+ξ is an arithmetic expression over numeric variables and
+⊵∈{≥, >, =}. Let [x]s and [ξ]s denote the value of x and
+ξ in s, respectively. The goal condition G is a set of propo-
+sitional and numeric conditions, and we say that a state s
+satisfies G if s satisfies all conditions in G. An action a
+consists of preconditions and effects. Action preconditions
+pre(a) are sets of propositional and numeric conditions, and
+action effects eff(a) assign Boolean values to Boolean vari-
+ables, and assign the value of a numeric variable using an
+arithmetic expression. An action a is applicable in a state s
+if s satisfies pre(a), in which case its successor a(s) is the
+arXiv:2404.05235v2  [cs.AI]  11 Apr 2024
+
+
+state where the effects eff(a) are applied to the variables in
+state s. If a is not applicable in s, we set a(s) = s⊥̸ ∈S.
+A plan for a numeric planning task is a sequence of actions
+a1, . . . , an such that si = ai(si−1)̸ = s⊥for all 1 ≤i ≤n
+and sn satisfies G. A numeric planning task is solvable if
+there exists a plan for it.
+3
+Boosting Search for Numeric Planning
+In this section, we outline various techniques to boost the
+performance of satisficing numeric planning solvers. Firstly,
+we extend and combine novelty heuristics into a single
+framework for numeric planning. We then introduce a sim-
+ple extension of the goal count heuristic for numeric plan-
+ning which outperforms more sophisticated numeric plan-
+ning heuristics for single queue search. Lastly, we make use
+of multi-queue search and portfolios for numeric planning.
+3.1
+Numeric Novelty Heuristics
+Let S<N denote the set of all finite sequences of states in a
+numeric planning task, and ⟨T⟩a finite sequence of states.
+We write Tk for the state of index k in ⟨T⟩, and ⟨T⟩.s for the
+sequence obtained by appending state s at the end of ⟨T⟩.
+Moreover, let ⟨T⟩[: s] stand for the substring of ⟨T⟩that
+ends in the element before s, and
+
+T=h(s)
+
+for the substring
+of ⟨T⟩consisting of the states s′ such that h(s′) = h(s),
+where h is a heuristic function. We also assume an enumer-
+ation x1, . . . , xN of variables in X, where N = |X|.
+Definition 3.1 (Novelty Feature). A novelty feature is a
+function f : S<N × S →(R ∪{⊥})N.
+We provide two examples of novelty features for nu-
+meric planning. The first example is the assignment feature
+A, which has been explored in the context of control sys-
+tems (Ram´ırez et al. 2018). The function maps a state to a
+vector of its assignments. More specifically, the i-th element
+of A(⟨T⟩, s) is the value of xi in s if xi is a numeric variable
+and otherwise if xi = ⊤the element is 1 and else ⊥. Note
+that the function is agnostic to the ⟨T⟩input.
+The next example is the boundary extension encoding fea-
+ture (Teichteil-K¨onigsbuch, Ram´ırez, and Lipovetzky 2020)
+B, which maps a state to a vector whose component for a
+particular variable reflects the number of times this variable
+reached a new extreme value in the past before reaching its
+current value. More formally, for a variable xi and state s
+such that [xi]s > [xi]s0, the novelty feature I(⟨T⟩, s, i) is
+the number of times xi is strictly greater than its value in
+all preceding states in T before reaching a state sj where
+[xi]sj ≥[xi]s. That is
+I(⟨T⟩, s, i) =
+JI
+X
+k=1
+k−1
+^
+l=1
+[xi]Tk > [xi]Tl
+
+,
+(1)
+where JI ≤| ⟨T⟩| is the smallest index j such that [xi]Tj ≥
+[xi]s, and the boolean expression evaluates to 1 or 0. The
+case where [xi]s < [xi]s0 is similar, but we now look at
+decreasing values of xi with
+D(⟨T⟩, s, i) =
+JD
+X
+k=1
+k−1
+^
+l=1
+[xi]Tk < [xi]Tl
+
+,
+(2)
+where JD ≤| ⟨T⟩| is the smallest index j such that [xi]Tj ≤
+[xi]s. We can then define the boundary extension encoding
+feature B on its individual component variables
+B(⟨T⟩, s)i =
+
+
+
+0,
+if [xi]s = [xi]s0
+I(⟨T⟩.s, s, i),
+if [xi]s > [xi]s0
+−D(⟨T⟩.s, s, i),
+if [xi]s < [xi]s0.
+(3)
+Next, we move on to defining a novelty heuristic given a
+novelty feature and a base heuristic. We note that the defini-
+tion can be generalised to take as input a tuple of heuristics
+but we omit this for simplicity of notation.
+Definition 3.2 (Novelty Heuristic). Given a novelty feature
+f and a heuristic h, a novelty heuristic is a function nh
+f :
+S<N × S →R.
+We again provide two examples of novelty heuristics. The
+first is the partition novelty (PN) measure heuristic. It was
+first introduced for solving planning problems in polynomial
+time with an incomplete search (Lipovetzky and Geffner
+2012) and later adapted for heuristic search (Lipovetzky and
+Geffner 2017; Corrˆea and Seipp 2022). Given an integer k ≥
+1, we extend its definition to numeric planning by the func-
+tion kPNh
+f where kPNh
+f(⟨T⟩, s) is the smallest n ≤k for
+which there is an n-subset of variable indices i1, . . . , in such
+that none of xij = ⊥in s and f(
+
+T=h(s)
+
+, s)[i1, . . . , in]
+differs from f(
+
+T=h(s)
+
+[: s′] , s′)[i1, . . . , in] for all s′ ∈
+
+T=h(s)
+
+, and k + 1 if no such subset exists. The original
+partition novelty operates on a tuple of heuristics and it is
+easy to extend this definition to do so.
+Another example of a novelty heuristic is the quantified
+both (QB) novelty function (Katz et al. 2017). The weak-
+ness of the partition novelty measure is that its value does not
+prioritise states with the same partition novelty based on the
+base heuristic value. For example, two states with heuristic
+values 5 and 3 and the same partition novelty measure will
+be treated equally in the search, unless a tie-breaking strat-
+egy is used. Furthermore, non-novel states are also treated
+the same. The quantified both novelty function addresses
+these issues by making use of the base heuristic value and
+also distinguishing non-novel states. We extend the quanti-
+fied both novelty function to the numeric case and also to
+operate on k-subsets of variables instead of just single facts.
+With abuse of notation, we omit ⟨T⟩and the novelty fea-
+ture f from various helper function arguments. Firstly, we
+quantify the novelty of subsets of variables by the function
+N(J, s) =
+min
+s′∈T,f(⟨T ⟩,s)i=f(⟨T ⟩,s′)i,∀i∈J h(s′)
+(4)
+where min returns ∞if the set it operates over is empty. The
+function returns the minimum value of the heuristic over the
+past states that share the same features as s for the consid-
+ered variable subset. Then we define φ(J, s) = h(s) <
+N(J, s) and ψ(J, s) = h(s) > N(J, s) where the Boolean
+output evaluates to 0 or 1. The function φ states that the J
+values of s are novel if h(s) is strictly lower than the heuris-
+tic value of all previously seen states with the same J val-
+ues. Similarly, ψ denotes non-novelty by noting whether the
+heuristic value is strictly greater than the minimum heuristic
+
+
+value of previously seen states with the same J values. Let
+N
+n
+	
+be the set of n-subsets of variable indices of s and
+ N
+n
+
+its cardinality. Given an integer k ≥1, we can define the
+quantified both novelty function kQBh
+f by
+kQBh
+f(⟨T⟩, s) =
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+1
+X
+n=1
+ N
+n
+
+−
+X
+J∈{
+N
+1}
+φ(J, s),
+if ∃J ∈
+N
+1
+	
+, φ(J, s)
+...
+k
+X
+n=1
+ N
+n
+
+−
+X
+J∈{
+N
+k}
+φ(J, s),
+if ∃J ∈
+N
+k
+	
+, φ(J, s)
+k
+X
+n=1
+ N
+n
+
++
+X
+J∈{
+N
+k}
+ψ(J, s),
+otherwise,
+(5)
+where cases are tie-broken by priority from the top. Unlike
+the partition novelty measure, it is not as straightforward
+to define the quantified both novelty function for tuples of
+heuristics. This is because Eqn. (4) would return a Pareto
+set for the min function if multiple heuristic were used. One
+would then require defining φ(J, s) over Pareto sets in which
+case there are several ways to do so.
+3.2
+Manhattan Distance Heuristic
+The goal count heuristic hgc for classical planning is the
+simplest non-degenerate heuristic which counts the num-
+ber of achieved goal propositions in a state. It has been
+extended to numeric planning by counting the number of
+achieved propositional and numeric goal conditions in the
+current state. However, we can easily refine the heuristic for
+numeric conditions ξ ⊵0 by measuring the error of the ex-
+pression ξ evaluated in the current state. To formally define
+this more refined goal count heuristic, let G = Gp ∪Gn
+be the goal of our problem where Gp is the set of proposi-
+tional conditions and Gn the set of numeric conditions. Let
+[l]s = 1 if s satisfies the literal l and 0 otherwise. Then,
+given a goal condition G we define the Manhattan distance
+heuristic hmd by
+hmd(s) =
+X
+l∈Gp
+[l]s +
+X
+c=ξ⊵0∈Gn
+γ(c, s)
+(6)
+where the error is γ(c, s) = 0 if s satisfies c and |[ξ]s| other-
+wise. It is possible to further refine hmd by dividing the error
+of each numeric condition ξ ⊵0 by some constant computed
+from the set of actions relevant to ξ. For example, we could
+choose the constant to be either the min or max action effect
+that brings |ξ| closer to 0 if the condition is not yet satisfied.
+3.3
+Multi-Queue Search
+Multi-queue search is an effective method for combining
+heuristics for satisficing search by maintaining a separate
+queue in greedy best first search for each heuristic (Helmert
+2006; R¨oger and Helmert 2010). More specifically, given n
+heuristics, we have n priority queues from which we pop
+nodes to expand in a round-robin manner. After a node is
+expanded, the children are evaluated by each heuristic and
+Numeric Heuristics
+Novelty Heuristics
+hgc
+hmd
+haibr
+hadd
+hradd
+hmrp
+hmrp+hj
+hadd
+⟨A,PN⟩
+hadd
+⟨B,PN⟩
+hadd
+⟨A,QB⟩
+hadd
+⟨B,QB⟩
+117
+200
+119
+183
+171
+176
+217
+178
+181
+215
+236
+Table 1: Total coverage of single queue GBFS with a selec-
+tion of ENHSP heuristics and hadd novelty heuristics. The
+top three scores are indicated by the cell colour intensity.
+inserted into the corresponding priority queues. In our im-
+plementation, we assume no node reopening which means
+states are expanded at most once over all queues, at the
+cost of potentially lower quality solutions. Naturally, when a
+novelty heuristic and its base heuristic are used in the same
+multi-queue search, we can save computing the base heuris-
+tic’s value twice. We note that multi-queue search is not lim-
+ited to using heuristic values for determining queues, as we
+may also construct queues from preferred operators (Richter
+and Helmert 2009; Richter and Westphal 2010) or total or-
+ders of states (Garrett, Kaelbling, and Lozano-P´erez 2016).
+3.4
+Portfolios
+Given that there is no single numeric planner configuration
+that performs best for all domains, the research community
+introduced portfolios and automatic configuration selection
+of planners, both of which combine standalone planners to
+maximise coverage over a diverse set of domains. Both port-
+folios and automatic configuration selection methods usu-
+ally perform well on optimal and satisficing tracks of the
+International Planning Competitions. Portfolios (Helmert,
+R¨oger, and Karpas 2011) statically select a set of planners
+to run in sequence, each with a set amount of timeout such
+that the sum of their timeout is equal to the total timeout of
+the portfolio planner. The partitioning of time resources for
+planners can be selected from training data or can simply be
+uniform (Seipp et al. 2012). Similarly to portfolios, one may
+also just learn to choose a specific planner for a given do-
+main (Fawcett et al. 2011; Katz et al. 2018; Ma et al. 2020).
+To reduce overfitting to benchmarks and to give a better un-
+derstanding of the state of numeric planning domains, we
+opt to only use uniform portfolios in our experiments.
+4
+Experiments
+We evaluate the effectiveness of novelty heuristics and
+multi-queue search for numeric planning on the Numeric
+Track of the 2023 International Planning Competition (NT-
+IPC) (Arxer and Scala 2023). Its benchmark suite consists of
+20 domains with 20 problems each. Action effects are lim-
+ited to either linear or simple effects. Heuristics we consider
+are goal count (hgc), Manhattan distance (hmd), the addi-
+tive interval-based relaxation (haibr) (Scala et al. 2016a), the
+subgoaling additive heuristic with (hradd) and without (hadd)
+redundant constraints (Scala, Haslum, and Thi´ebaux 2016),
+and the multi-repetition relaxed plan heuristic (hmrp) with
+successors restricted to states generated by up-to-jumping
+actions (hmrp+hj). Given a novelty feature f, a heuristic h,
+
+
+S GBFS
+M GBFS
+P GBFS
+SMT
+num. tasks
+hmd
+hadd
+hmrp+hj
+hmd
+⟨B,QB⟩
+hadd
+⟨B,QB⟩
+hmrp
+⟨B,QB⟩+hj
+M(3h)
+M(3n)
+M(3h∥3n)
+P(3h)
+P(3n)
+P(3h∥3n)
+PATTY
+400
+200
+183
+217
+185
+236
+222
+261
+244
+274
+290
+292
+315
+262
+Table 2: Total coverage of single queue (S), multi-queue (M), and portfolio (P) GBFS configurations, and the PATTY solver.
+The top three scores are indicated by the cell colour intensity.
+and a novelty heuristic n, we write h⟨f,n⟩for the correspond-
+ing heuristic. The first entry in f(⟨T⟩, s) is given by the
+sequence of previously evaluated states during search. We
+let 3h denote the list of top 3 performing ENHSP heuris-
+tics hmd, hadd, and hmrp+hj, 3n the list of their correspond-
+ing novelty heuristics hmd
+⟨B,QB⟩, hadd
+⟨B,QB⟩, and hmrp
+⟨B,QB⟩+hj with
+k = 2, and 3h ∥3n the concatenation of these two lists. We
+choose the novelty heuristic extension ⟨B, QB⟩as it is the
+best forming novelty heuristic overall. Then M(·) denotes
+a multi-queue search with a queue for each input heuris-
+tic, and P(·) a portfolio with a uniform partitioning of time
+for each input heuristic. PATTY denotes the SMT planner
+by Cardellini, Giunchiglia, and Maratea (2024). All exper-
+iments are run with a 600 second timeout and 8GB mem-
+ory limit on a single Intel Xeon 3.2 GHz CPU core. To help
+with the evaluation of the effectiveness of the outlined search
+techniques, we perform experiments to answer the following
+questions. We refer to the appendix for more detailed plots
+and tables.
+How effective is hmd?
+From Tab. 1, we notice that hmd
+is the best performing heuristic behind hmrp+hj. This can be
+attributed to its fast evaluation speed rather than its infor-
+mativeness as it generally expands more nodes than other
+heuristics on problems which both hmd and another heuris-
+tic solves. Exceptions to this rule are the fo-farmland and
+tpp domains in which delete relaxation heuristics perform
+poorly. Nevertheless it generally expands far fewer nodes
+than hgc. Unfortunately, hmd returns the worst plan length
+on almost all problems compared to all other heuristics.
+What is the best novelty heuristic for numeric planning?
+From Tab. 1, we notice that hadd
+⟨B,QB⟩is the best performing
+novelty heuristic in terms of coverage. Observing the per-
+formance of configurations, the effect of choosing QB over
+PN for novelty heuristic is greater than choosing B over A
+for the novelty feature. This is supported by the fewer expan-
+sions of the QB variants compared to their PN counterparts
+over almost all domains. On the other hand, the compari-
+son of plan length depends on the domain. The performance
+improvement over the base heuristic also depends on the do-
+main. We lastly note that choosing k = 2 almost always pro-
+vides better performance than k = 1 for all configurations
+of novelty heuristics.
+Is multi-queue search or using portfolios better for com-
+bining heuristics?
+Multi-queue search saves computation
+by reducing redundant node expansions and is able to make
+use of the exploration vs. exploitation paradigm when us-
+ing multiple diverse heuristics. On the other hand, portfolios
+make use of the fact that some heuristics perform better on
+some domains than others. From Tab. 2, we notice that port-
+folios overall achieve higher coverage even when using the
+simple uniform partitioning scheduling. The P(3h∥3n) con-
+figuration achieves strictly better coverage than M(3h∥3n)
+on 9 domains, and strictly lower coverage on 5 domains.
+This suggests that some domains can be solved efficiently
+by a single heuristic, while on other domains, we require
+the exploration effect of multi-queue search when none of
+the heuristics perform well. Furthermore, it depends on the
+domain whether the best heuristic or multi-queue search ex-
+pands fewer nodes and returns better quality plans.
+Which domains are more suited to constraint-based
+solvers and which to heuristic search?
+We note that
+the best performing constraint-based solver PATTY solves
+strictly more problems than P(3h∥3n) on 5 domains, and
+strictly fewer problems on 9 domains. The problems in
+which PATTY performs well generally have a high ratio of
+numeric variables and short rolled up plans, such as the fo-
+counters and fo-sailing domains. These problems have in-
+finitely large state spaces and it is more likely for search-
+based methods to get lost. However, search-based methods
+perform better on domains which require long sequential
+plans or traversal over maps with many locations, such as de-
+livery, drone, ext-plant-watering, markettrader and tpp. This
+is because SMT encodings may require many decision vari-
+ables to represent problems with complex, sequential plans.
+However, we note that PATTY generally returns poorer qual-
+ity plans with plan lengths up to an order of magnitude
+longer than search planners.
+5
+Conclusion
+We have ported search techniques from classical plan-
+ning to boost the performance of satisficing numeric plan-
+ning solvers. We have formalised novelty heuristics for nu-
+meric planning, constructed a simple but powerful Man-
+hattan distance heuristic, and extended the ENHSP plan-
+ner with multi-queue search and naive portfolios. Experi-
+ments demonstrate the effectiveness of these techniques on
+the recent Numeric Track of the 2023 International Plan-
+ning Competition (NT-IPC). Results also suggest a need for
+more diverse numeric planning benchmarks, as 78.8% of the
+problems from the NT-IPC are solved by our new P(3h∥3n)
+configuration in the ENHSP planner within 5 minutes, and
+89.2% of the problems by either P(3h∥3n) or PATTY.
+
+
+Acknowledgments
+The authors thank the reviewers for the helpful comments and sug-
+gestions, most notably with the naming of the Manhattan distance
+heuristic by connecting the computation of errors to the L1 met-
+ric. We also thank Enrico Scala for providing the source code for
+ENHSP. The computing resources for the project was supported by
+the Australian Government through the National Computational In-
+frastructure (NCI) under the ANU Startup Scheme This work was
+supported by Australian Research Council grant DP220103815, by
+the Artificial and Natural Intelligence Toulouse Institute (ANITI)
+under the grant agreement ANR-19-PI3A-000, and by the Euro-
+pean Union’s Horizon Europe Research and Innovation program
+under the grant agreement TUPLES No. 101070149.
+References
+Arxer, J. E.; and Scala, E. 2023. International Planning Compe-
+tition 2023 - Numeric Tracks. https://ipc2023-numeric.github.io.
+Accessed: 2024-02-19.
+Bofill, M.; Espasa, J.; and Villaret, M. 2017. Relaxed Exists-Step
+Plans in Planning as SMT. In IJCAI, 563–570.
+Cardellini, M.; Giunchiglia, E.; and Maratea, M. 2024. Symbolic
+Numeric Planning with Patterns. In AAAI, 20070–20077.
+Coles, A.; Fox, M.; Long, D.; and Smith, A. 2008.
+A Hybrid
+Relaxed Planning Graph-LP Heuristic for Numeric Planning Do-
+mains. In ICAPS, 52–59.
+Coles, A. J.; Coles, A.; Fox, M.; and Long, D. 2013. A Hybrid
+LP-RPG Heuristic for Modelling Numeric Resource Flows in Plan-
+ning. J. Artif. Intell. Res., 46: 343–412.
+Corrˆea, A. B.; and Seipp, J. 2022.
+Best-First Width Search for
+Lifted Classical Planning. In ICAPS, 11–15.
+Fawcett, C.; Helmert, M.; Hoos, H.; Karpas, E.; R¨oger, G.; and
+Seipp, J. 2011. FD-Autotune: Domain-Specific Configuration us-
+ing Fast Downward. In ICAPS 2011 Workshop on Planning and
+Learning.
+Fox, M.; and Long, D. 2003. PDDL2.1: An Extension to PDDL for
+Expressing Temporal Planning Domains. J. Artif. Intell. Res., 20:
+61–124.
+Garrett, C. R.; Kaelbling, L. P.; and Lozano-P´erez, T. 2016. Learn-
+ing to Rank for Synthesizing Planning Heuristics. In IJCAI, 3089–
+3095.
+Gigante, N.; and Scala, E. 2023. On the Compilability of Bounded
+Numeric Planning. In IJCAI, 5341–5349.
+Helmert, M. 2002.
+Decidability and Undecidability Results for
+Planning with Numerical State Variables. In AIPS, 44–53.
+Helmert, M. 2006. The Fast Downward Planning System. J. Artif.
+Intell. Res., 191–246.
+Helmert, M.; R¨oger, G.; and Karpas, E. 2011.
+Fast Downward
+Stone Soup: A Baseline for Building Planner Portfolios. In ICAPS
+2011 Workshop on Planning and Learning.
+Hoffmann, J. 2002. Extending FF to Numerical State Variables. In
+ECAI, 571–575.
+Hoffmann, J. 2003. The Metric-FF Planning System: Translating
+”Ignoring Delete Lists” to Numeric State Variables. J. Artif. Intell.
+Res., 24: 685–758.
+Illanes, L.; and McIlraith, S. A. 2017. Numeric Planning via Ab-
+straction and Policy Guided Search. In IJCAI, 4338–4345.
+Katz, M.; Lipovetzky, N.; Moshkovich, D.; and Tuisov, A. 2017.
+Adapting Novelty to Classical Planning as Heuristic Search. In
+ICAPS, 172–180.
+Katz, M.; Sohrabi, S.; Samulowitz, H.; and Sievers, S. 2018. Delfi:
+Online planner selection for cost-optimal planning.
+Kuroiwa, R.; Shleyfman, A.; and Beck, J. C. 2023. Extracting and
+Exploiting Bounds of Numeric Variables for Optimal Linear Nu-
+meric Planning. In ECAI, 1332–1339.
+Kuroiwa, R.; Shleyfman, A.; Piacentini, C.; Castro, M. P.; and
+Beck, J. C. 2021. LM-cut and Operator Counting Heuristics for
+Optimal Numeric Planning with Simple Conditions.
+In ICAPS,
+210–218.
+Kuroiwa, R.; Shleyfman, A.; Piacentini, C.; Castro, M. P.; and
+Beck, J. C. 2022. The LM-Cut Heuristic Family for Optimal Nu-
+meric Planning with Simple Conditions. J. Artif. Intell. Res., 75:
+1477–1548.
+Li, D.; Scala, E.; Haslum, P.; and Bogomolov, S. 2018. Effect-
+Abstraction Based Relaxation for Linear Numeric Planning.
+In
+IJCAI, 4787–4793.
+Lipovetzky, N.; and Geffner, H. 2012. Width and Serialization of
+Classical Planning Problems. In ECAI, 540–545.
+Lipovetzky, N.; and Geffner, H. 2017. Best-First Width Search: Ex-
+ploration and Exploitation in Classical Planning. In AAAI, 3590–
+3596.
+Ma, T.; Ferber, P.; Huo, S.; Chen, J.; and Katz, M. 2020.
+On-
+line Planner Selection with Graph Neural Networks and Adaptive
+Scheduling. In AAAI, 5077–5084.
+Piacentini, C.; Castro, M. P.; Cir´e, A. A.; and Beck, J. C. 2018. Lin-
+ear and Integer Programming-Based Heuristics for Cost-Optimal
+Numeric Planning. In AAAI, 6254–6261.
+Ram´ırez, M.; Papasimeon, M.; Lipovetzky, N.; Benke, L.; Miller,
+T.; Pearce, A. R.; Scala, E.; and Zamani, M. 2018. Integrated Hy-
+brid Planning and Programmed Control for Real Time UAV Ma-
+neuvering. In AAMAS, 1318–1326.
+Richter, S.; and Helmert, M. 2009. Preferred Operators and De-
+ferred Evaluation in Satisficing Planning. In ICAPS, 273–280.
+Richter, S.; and Westphal, M. 2010. The LAMA Planner: Guid-
+ing Cost-Based Anytime Planning with Landmarks. J. Artif. Intell.
+Res., 39: 127–177.
+R¨oger, G.; and Helmert, M. 2010. The More, the Merrier: Com-
+bining Heuristic Estimators for Satisficing Planning. In ICAPS,
+246–249.
+Scala, E.; Haslum, P.; Magazzeni, D.; and Thi´ebaux, S. 2017.
+Landmarks for Numeric Planning Problems. In IJCAI, 4384–4390.
+Scala, E.; Haslum, P.; and Thi´ebaux, S. 2016. Heuristics for Nu-
+meric Planning via Subgoaling. In IJCAI, 3228–3234.
+Scala, E.; Haslum, P.; Thi´ebaux, S.; and Ram´ırez, M. 2016a.
+Interval-Based Relaxation for General Numeric Planning. In ECAI,
+655–663.
+Scala, E.; Haslum, P.; Thi´ebaux, S.; and Ram´ırez, M. 2020a. Sub-
+goaling Techniques for Satisficing and Optimal Numeric Planning.
+J. Artif. Intell. Res., 68: 691–752.
+Scala, E.; Ram´ırez, M.; Haslum, P.; and Thi´ebaux, S. 2016b. Nu-
+meric Planning with Disjunctive Global Constraints via SMT. In
+ICAPS, 276–284.
+Scala, E.; Saetti, A.; Serina, I.; and Gerevini, A. E. 2020b. Search-
+Guidance Mechanisms for Numeric Planning Through Subgoaling
+Relaxation. In ICAPS, 226–234.
+Seipp, J.; Braun, M.; Garimort, J.; and Helmert, M. 2012. Learning
+Portfolios of Automatically Tuned Planners. In ICAPS, 368–372.
+Shleyfman, A.; Kuroiwa, R.; and Beck, J. C. 2023. Symmetry De-
+tection and Breaking in Linear Cost-Optimal Numeric Planning. In
+ICAPS, 393–401.
+
+
+Teichteil-K¨onigsbuch, F.; Ram´ırez, M.; and Lipovetzky, N. 2020.
+Boundary Extension Features for Width-Based Planning with Sim-
+ulators on Continuous-State Domains. In IJCAI, 4183–4189.
+
+
+A
+Benchmark Domains
+Domain
+Effects
+|A|
+|B|
+|N|
+block-grouping
+simple
+4
+0
+6
+counters
+simple
+2
+0
+2
+delivery
+simple
+5
+7
+4
+drone
+simple
+8
+1
+14
+expedition
+simple
+4
+2
+3
+ext-plant-watering
+simple
+10
+0
+12
+farmland
+simple
+2
+1
+2
+fo-counters
+linear
+4
+0
+4
+fo-farmland
+linear
+3
+2
+3
+fo-sailing
+linear
+10
+2
+4
+hydropower
+simple
+3
+7
+4
+markettrader
+simple
+4
+2
+7
+mprime
+simple
+4
+3
+2
+pathwaysmetric
+simple
+6
+6
+14
+rover
+simple
+10
+26
+2
+sailing
+simple
+8
+1
+3
+settlersnumeric
+simple
+25
+19
+7
+sugar
+simple
+13
+11
+20
+tpp
+linear
+3
+1
+6
+zenotravel
+simple
+5
+2
+8
+Table 3: NT-IPC (Arxer and Scala 2023) domains used in the experiments. |A|, |B|, and |N| are the number of action schemata,
+predicates and functions in each domain, respectively.
+B
+Scatter Plots
+Please refer to Figures 2, 3, and 4 for scatter plots comparing various planners in terms of plan length and node expansions, and
+Fig. 1 for the legend of domains.
+block-grouping
+counters
+delivery
+drone
+expedition
+ext-plant-watering
+farmland
+fo-counters
+fo-farmland
+fo-sailing
+hydropower
+markettrader
+mprime
+pathwaysmetric
+rover
+sailing
+settlersnumeric
+sugar
+tpp
+zenotravel
+Figure 1: Legend of domains.
+100
+101
+102
+103
+104
+MQ(3h, 3n)
+100
+101
+102
+103
+104
+best h
+plan length
+100
+101
+102
+103
+104
+105
+106
+MQ(3h, 3n)
+100
+101
+102
+103
+104
+105
+106
+best h
+expanded
+100
+101
+102
+103
+104
+MQ(3h, 3n)
+100
+101
+102
+103
+104
+Patty
+plan length
+Figure 2: Left and center: best h, the best SQ GBFS planner for each problem,
+vs M(3h∥3n) on sequential plan length and number of expanded nodes. Right:
+PATTY vs M(3h∥3n) on sequential plan length. Points on the top left triangle
+favour M(3h∥3n) and points on the bottom right favour best h and PATTY on the
+respective plots.
+
+
+100
+101
+102
+103
+104
+105
+106
+hgdc
+100
+101
+102
+103
+104
+105
+106
+hgc
+expanded
+100
+101
+102
+103
+104
+105
+106
+hgdc
+100
+101
+102
+103
+104
+105
+106
+hadd
+expanded
+100
+101
+102
+103
+104
+105
+106
+hgdc
+100
+101
+102
+103
+104
+105
+106
+hradd
+expanded
+100
+101
+102
+103
+104
+105
+106
+hgdc
+100
+101
+102
+103
+104
+105
+106
+hmrp
+expanded
+100
+101
+102
+103
+104
+105
+106
+hgdc
+100
+101
+102
+103
+104
+105
+106
+hmrp + hj
+expanded
+100
+101
+102
+103
+104
+hgdc
+100
+101
+102
+103
+104
+hgc
+plan length
+100
+101
+102
+103
+104
+hgdc
+100
+101
+102
+103
+104
+hadd
+plan length
+100
+101
+102
+103
+104
+hgdc
+100
+101
+102
+103
+104
+hradd
+plan length
+100
+101
+102
+103
+104
+hgdc
+100
+101
+102
+103
+104
+hmrp
+plan length
+100
+101
+102
+103
+104
+hgdc
+100
+101
+102
+103
+104
+hmrp + hj
+plan length
+Figure 3: hmd (x-axis) vs. various heuristics (y-axis) in terms of plan length and number of nodes expanded during search. Top
+left points benefit hmd and bottom right points the y-axis configuration.
+100
+101
+102
+103
+104
+105
+106
+hadd
+⟨B,QB⟩
+100
+101
+102
+103
+104
+105
+106
+hadd
+expanded
+100
+101
+102
+103
+104
+105
+106
+hadd
+⟨B,QB⟩
+100
+101
+102
+103
+104
+105
+106
+hadd
+⟨A,PN⟩
+expanded
+100
+101
+102
+103
+104
+105
+106
+hadd
+⟨B,QB⟩
+100
+101
+102
+103
+104
+105
+106
+hadd
+⟨B,PN⟩
+expanded
+100
+101
+102
+103
+104
+105
+106
+hadd
+⟨B,QB⟩
+100
+101
+102
+103
+104
+105
+106
+hadd
+⟨A,QB⟩
+expanded
+100
+101
+102
+103
+104
+hadd
+⟨B,QB⟩
+100
+101
+102
+103
+104
+hadd
+plan length
+100
+101
+102
+103
+104
+hadd
+⟨B,QB⟩
+100
+101
+102
+103
+104
+hadd
+⟨A,PN⟩
+plan length
+100
+101
+102
+103
+104
+hadd
+⟨B,QB⟩
+100
+101
+102
+103
+104
+hadd
+⟨B,PN⟩
+plan length
+100
+101
+102
+103
+104
+hadd
+⟨B,QB⟩
+100
+101
+102
+103
+104
+hadd
+⟨A,QB⟩
+plan length
+Figure 4: hadd
+⟨B,QB⟩(x-axis) vs. hadd and other novelty extensions (y-axis) in terms of plan length and number of nodes expanded
+during search. Top left points benefit hadd
+⟨B,QB⟩and bottom right points the y-axis configuration.
+
+
+C
+Full coverage details
+The total coverage of planners over each domain is shown in Table 4. Almost all domains have all problems solved by at least
+one planner (block-grouping, counters, drone, ext-plant-watering, farmland, fo-counters, fo-farmland, fo-sailing, hydropower,
+markettrader, pathwaysmetric, sailing, sugar, tpp, and zenotravel). This can either be attributed to small problem sizes, a planner
+being designed or motivated primarily for the domain, or the problem becomes trivial when not considering plan quality, such
+as farmland, markettrader or tpp.
+The two domains which are difficult for the selected planners are expedition and settlersnumeric. Expedition is a resource
+transportation problem with the problem that the agent(s) must go back and forth along the transportation path due to having
+limited fuel and carrying capacity. The considered heuristics cannot reason about the requirement of going back and forth due to
+being derived from delete relaxation. Settlersnumeric is modelling a civilisation-like game which requires managing resources
+to build town structures. There is a large number of predicates in this problem and again delete relaxation heuristics cannot
+detect long range dependencies of resources, e.g. wood is needed to build a saw mill which in turn also needs wood to create
+timber. The domain is solved well by LP-RPG (Coles et al. 2013) whose paper introduced and was motivated by the domain.
+SQ GBFS
+MQ GBFS
+PF GBFS
+SMT
+domain
+hmd
+hadd
+hmrp+hj
+hmd
+⟨B,QB⟩
+hadd
+⟨B,QB⟩
+hmrp
+⟨B,QB⟩+hj
+M(3h)
+M(3n)
+M(3h∥3n)
+P(3h)
+P(3n)
+P(3h∥3n)
+PATTY
+best
+block-grouping
+15
+16
+19
+15
+15
+19
+16
+12
+15
+18
+16
+17
+20
+20
+counters
+13
+13
+20
+10
+10
+20
+14
+9
+11
+20
+19
+20
+20
+20
+delivery
+17
+14
+10
+14
+11
+10
+19
+10
+17
+18
+12
+16
+5
+19
+drone
+20
+11
+17
+5
+15
+17
+16
+18
+17
+19
+16
+19
+4
+20
+expedition
+3
+2
+-
+3
+6
+-
+3
+5
+8
+3
+6
+6
+3
+8
+ext-plant-watering
+12
+12
+20
+1
+19
+20
+17
+20
+20
+20
+20
+20
+6
+20
+farmland
+20
+20
+20
+20
+20
+20
+20
+20
+20
+20
+20
+20
+20
+20
+fo-counters
+9
+7
+-
+15
+12
+-
+9
+14
+14
+8
+14
+10
+20
+20
+fo-farmland
+20
+5
+13
+20
+20
+14
+20
+20
+20
+20
+20
+20
+20
+20
+fo-sailing
+-
+4
+-
+-
+1
+-
+3
+-
+-
+3
+1
+4
+20
+20
+hydropower
+3
+2
+-
+18
+20
+-
+3
+20
+20
+2
+20
+20
+20
+20
+markettrader
+17
+4
+-
+20
+20
+-
+15
+20
+20
+17
+20
+19
+-
+20
+mprime
+7
+16
+16
+12
+18
+16
+19
+18
+17
+17
+18
+18
+14
+19
+pathwaysmetric
+-
+2
+12
+-
+2
+13
+3
+2
+3
+12
+13
+12
+20
+20
+rover
+10
+4
+7
+12
+5
+7
+13
+12
+16
+11
+12
+12
+16
+16
+sailing
+-
+18
+20
+-
+17
+20
+20
+19
+20
+20
+20
+20
+20
+20
+settlersnumeric
+-
+2
+3
+-
+-
+4
+4
+-
+2
+4
+3
+5
+-
+5
+sugar
+1
+9
+16
+-
+8
+18
+12
+9
+9
+18
+18
+19
+20
+20
+tpp
+20
+3
+4
+5
+4
+4
+17
+4
+7
+20
+4
+20
+3
+20
+zenotravel
+13
+19
+20
+15
+13
+20
+18
+12
+18
+20
+20
+18
+11
+20
+sum
+200
+183
+217
+185
+236
+222
+261
+244
+274
+290
+292
+315
+262
+367
+Table 4: Coverage of various configurations of single queue (S), multi-queue (M), and portfolio (P) GBFS, and the PATTY
+solver on the NT-IPC domains. The rightmost column records the highest coverage for each domain. The top scores for each
+row except the rightmost column are indicated by the cell colour intensity with the top score being highlighted in bold.

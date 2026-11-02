@@ -1,0 +1,2213 @@
+Pseudo-Boolean Proof Logging for Optimal Classical Planning
+Simon Dold*1, Malte Helmert*1, Jakob Nordstr¨om*2, 3, Gabriele R¨oger*1, Tanja Schindler*1
+1University of Basel,
+{simon.dold, malte.helmert, gabriele.roeger, tanja.schindler}@unibas.ch,
+2University of Copenhagen, 3Lund University
+jn@di.ku.dk
+Abstract
+We introduce lower-bound certificates for classical planning
+tasks, which can be used to prove the unsolvability of a task
+or the optimality of a plan in a way that can be verified by an
+independent third party. We describe a general framework for
+generating lower-bound certificates based on pseudo-Boolean
+constraints, which is agnostic to the planning algorithm used.
+As a case study, we show how to modify the A∗algorithm
+to produce proofs of optimality with modest overhead, us-
+ing pattern database heuristics and hmax as concrete exam-
+ples. The same proof logging approach works for any heuris-
+tic whose inferences can be efficiently expressed as reasoning
+over pseudo-Boolean constraints.
+Introduction
+Optimal classical planning algorithms make three promises:
+that the plans they produce are correct, that no cheaper plans
+achieving the goal exist, and that any task reported as un-
+solvable actually is. As McConnell et al. (2011) argue in
+their seminal work on certifying algorithms, there are many
+good reasons not to accept such promises blindly. Instead, a
+certifying planning algorithm outputs some kind of proof (a
+certificate) that an independent third party can use to verify
+the truthfulness of the planner’s claims.
+For the correctness of plans, such a verification is per-
+formed routinely: the generated plans themselves serve as
+certificates for this, and plan validation tools such as VAL
+(Howey and Long 2003) or INVAL (Haslum 2016) can be
+used to check that the produced plans are correct. For un-
+solvability, Eriksson et al. (Eriksson, R¨oger, and Helmert
+2017, 2018; Eriksson and Helmert 2020) recently introduced
+two forms of unsolvability certificates that cover very di-
+verse planning algorithms.
+Certifying the optimality of plans, in contrast, is still in its
+infancy. The only existing work in this direction is a paper
+by Mugdan, Christen, and Eriksson (2023) which describes
+two approaches: one based on a compilation to unsatisfia-
+bility, and one based on an extension of the unsatisfiabil-
+ity proof system of Eriksson, R¨oger, and Helmert (2018).
+The first approach is in general not computationally feasible,
+as it requires a task reformulation that increases the num-
+ber of state variables and actions exponentially in the size
+*These authors contributed equally.
+of the planning task. The second approach does not share
+this weakness, but is not sufficiently general to encompass
+a wide range of planning approaches. Mugdan, Christen,
+and Eriksson identify five essential properties for optimal-
+ity certificates: soundness (if an optimality certificate is ac-
+cepted by the verifier, then optimality holds), completeness
+(if a solution is optimal, then a certificate of its optimal-
+ity exists), efficient generation (a non-certifying algorithm
+can be changed to produce certificates with reasonable, at
+most polynomial overhead), efficient verification (the veri-
+fier runtime is polynomial in the task and certificate size),
+and generality (certificates can be efficiently produced by a
+wide variety of different planning algorithms rather than be-
+ing algorithm-specific).
+Mugdan, Christen, and Eriksson show that their approach
+is sound and complete, but critically comment that “the other
+three properties for practical usability do not have clear-cut
+answers”. Compared to the unsolvability proof system of
+Eriksson et al., their approach appears much more specific
+to heuristic forward search using heuristics that are them-
+selves based on some kind of forward search, such as the
+hmax heuristic (Bonet and Geffner 2001). For example, it is
+not at all clear how to certify heuristics computed in a back-
+ward direction, such as pattern databases (Edelkamp 2001)
+or other abstraction heuristics without redoing the abstract
+state space exploration for every heuristic evaluation.
+While in the planning community the interest in certifying
+algorithms is quite recent, they are standard in the SAT com-
+munity, where unsatisfiability certificates based on proof
+systems like DRAT (Heule, Hunt, and Wetzler 2013) and
+LRAT (Cruz-Filipe et al. 2017) are required for participat-
+ing in SAT competitions and supported by formally verified
+checkers (Tan, Heule, and Myreen 2023; Lammich 2020).
+A recently proposed alternative are pseudo-Boolean proofs
+based on cutting planes, which are supported by the for-
+mally verified checker VeriPB (Bogaerts et al. 2022). Unlike
+the other proof systems mentioned, cutting planes are able
+to directly incorporate linear arithmetic, making them very
+appealing for optimization problems such as optimal clas-
+sical planning. Indeed, VeriPB has been applied to a wide
+range of optimization problems such as MaxSAT (Berg et al.
+2023), ILP presolving (Hoen et al. 2024), constraint pro-
+gramming (Gocht, McCreesh, and Nordstr¨om 2022; McIl-
+ree and McCreesh 2023; McIlree, McCreesh, and Nordstr¨om
+arXiv:2504.18443v2  [cs.AI]  3 May 2025
+
+
+Planning
+System
+Plan Validator
+(VAL, INVAL)
+optimality
+certificate
+plan
+Optimality Verifier
+PB Proof
+Checker
+(VeriPB)
+planning
+task
+validity,
+plan cost
+Figure 1: Interaction of Components
+2024), and dynamic programming (Demirovi´c et al. 2024).
+In this work, we propose to certify plan optimality by
+means of such pseudo-Boolean proofs. We claim that our
+optimality certificates have all five desirable properties dis-
+cussed above: they are sound, complete, efficiently generat-
+able, efficiently verifiable, and general. (For space reasons,
+the generality of the proof system must remain a conjecture
+for the time being, but at least we show that we can cover
+the techniques covered by Mugdan et al. as well as pattern
+database heuristics that their approach struggles with.)
+The overall concept is shown in Figure 1. In addition to
+a plan, the certifying planning system produces an optimal-
+ity certificate that proves that the input task has no cheaper
+solution. A plan validator such as VAL verifies that the plan
+solves the task and determines its cost. The optimality veri-
+fier has access to the original task, the plan cost determined
+by the validator, and the certificate from the planning sys-
+tem. On this basis it verifies that the plan is indeed optimal.
+The certificate is based on cutting planes proofs with reifi-
+cation (Bogaerts et al. 2023), in which the atomic pieces
+of knowledge are pseudo-Boolean constraints. Such con-
+straints allow us to reason conveniently about costs of ac-
+tions and bounds on costs to reach a state. Roughly speak-
+ing, the certificate describes an overapproximation of which
+states can be reached at which cost and shows that no goal
+state can be reached at a cost below the claimed optimal plan
+cost. The heart of the proof is a standard pseudo-Boolean
+proof that can be verified by an off-the-shelf proof checker
+such as the VeriPB system.
+The paper is structured as follows: we introduce the gen-
+eral framework for certifying plan optimality by provid-
+ing an encoding of planning tasks as pseudo-Boolean con-
+straints and defining lower-bound certificates. Next, we de-
+fine heuristic certificates, which represent the concept of an
+admissible heuristic estimate as pseudo-Boolean constraints.
+We then show how heuristic certificates can be used to inte-
+grate proof-logging into A∗, capturing the arguments for op-
+timality of A∗with an admissible heuristic on a given state
+space as pseudo-Boolean constraints. Finally, we describe
+how heuristic certificates for pattern database heuristics and
+hmax can be generated, which amounts to proving the admis-
+sibility of these heuristics with pseudo-Boolean constraints.
+Background
+We first introduce the STRIPS planning formalism (Fikes
+and Nilsson 1971), followed by pseudo-Boolean constraints
+and the cutting planes with reification proof system.
+STRIPS Planning Tasks
+A STRIPS planning task Π = ⟨V, A, I, G⟩consists of a fi-
+nite set V of propositional state variables, a finite set A of
+actions, the initial state I ⊆V and the goal G ⊆V.
+A state s ⊆V of Π induces a variable assignment ρs
+that maps every v ∈s to 1 and every v /∈s to 0. Each
+action a ∈A is a tuple ⟨pre(a), add(a), del(a), cost(a)⟩,
+where pre(a) ⊆V is the set of preconditions, add(a) ⊆V
+is the set of add effects, del(a) ⊆V \ add(a) is the set of
+delete effects, and cost(a) ∈N0 is the cost of a. We write
+evars(a) for the set add(a) ∪del(a) of affected variables.
+Action a is applicable in state s if pre(a) ⊆s. The suc-
+cessor state is sJaK = (s \ del(a)) ∪add(a). For a sequence
+π = a1, . . . , an of actions that are successively applicable in
+state s, we write sJπK for the resulting state sJa1K . . . JanK.
+If this state is a goal state, i.e. G ⊆sJπK, then π is a plan for
+s. A plan for the initial state I is a plan for task Π. The cost
+of π is cost(π) = Pn
+i=1 cost(ai). A plan is optimal if there
+is no plan of lower cost. Task Π is solvable if there is a plan
+for Π, otherwise it is unsolvable.
+Pseudo-Boolean Formulas
+A Boolean variable has domain {0, 1}. A literal ℓis a
+Boolean variable x or its negation ¯x. The negation of a lit-
+eral ℓ= ¯x is ¯ℓ= x. A pseudo-Boolean (PB) constraint
+(in normalized form) over a finite set X = {x1, . . . , xn} of
+Boolean variables is an inequality
+X
+i aiℓi ≥A,
+where all literals ℓi are over distinct variables from X,
+A ∈N0 and all coefficients ai are from N0. We will
+also write linear constraints more flexibly, but they can al-
+ways be transformed to normalized form by simple alge-
+braic transformations. As syntactic sugar, we will also write
+(ℓ1 ∧· · ·∧ℓn) →ℓas abbreviation for ℓ1 +...+ℓn +ℓ≥1.
+A solution of the constraint is an assignment ρ : X →
+{0, 1} such that the inequality is satisfied by replacing every
+variable xi with ρ(xi) and every negated variable ¯xi with
+1−ρ(xi). We also use assignments for all literals, implicitly
+requiring that ρ(¯x) = 1 −ρ(x) for all variables x.
+For constraint C .= P
+i aiℓi ≥A, the negation ¬C is the
+normalized form of P
+i aiℓi ≤A −1.
+A pseudo-Boolean (PB) formula (Buss and Nordstr¨om
+2021) is a finite set C of pseudo-Boolean constraints over
+a set X of variables. An assignment ρ : X →{0, 1} is a
+model of the formula if it is a solution of all constraints. If C
+has no model, it is unsatisfiable. We say that a constraint C
+is implied by a PB formula C (written C |= C) if every model
+of C is a solution of C and that PB formula D is implied by
+C (written C |= D) if C |= D for all D ∈D.
+For a partial variable assignment ρ : X ↛{0, 1} and
+constraint C, we write C↾ρ for the constraint obtained from
+C by replacing each variable v in the domain of ρ by ρ(v)
+and normalizing.
+Cutting Planes with Reification Proof System
+The VeriPB proof system (Bogaerts et al. 2023) is an exten-
+sion of the cutting planes proof system. We use a subset of
+
+
+the VeriPB proof system which we call cutting planes with
+reification (CPR).
+Proofs in the cutting planes proof system (Cook, Coullard,
+and Tur´an 1987) are built from one axiom and three deriva-
+tion rules. For any literal ℓ, the literal axiom allows us to
+derive ℓ≥0 without prerequisites. If we already have
+P
+i aiℓi ≥A and P
+i biℓi ≥B, we can derive
+• P
+i(cAai + cBbi)ℓi ≥cAA + cBB
+for every cA, cB ∈N0 (linear combination),
+• P
+i⌈ai/c⌉ℓi ≥⌈A/c⌉
+for every c ∈N+ (division), and
+• P
+i min{ai, A}ℓi ≥A (saturation).
+All constraints that can be derived from a PB formula C
+by these rules are implied by C.
+Reverse Unit Propagation
+A constraint C ∈C unit prop-
+agates literal ℓunder partial assignment ρ if all models of
+C↾ρ assign ℓto 1. When this happens, we can extend ρ with
+ℓ7→1 and unit-propagate further literals under the extended
+assignment. If this process derives a conflict (assigning 0
+and 1 to the same variable) starting from the empty variable
+assignment, then C is unsatisfiable.
+Formula C implies constraint C by reverse unit propaga-
+tion (RUP) if C ∪{¬C} unit propagates to a conflict from
+the empty assignment. Any constraint implied by RUP can
+be derived by a cutting plane proof. As in VeriPB, our proof
+system allows adding any constraint implied by RUP di-
+rectly in a single step. This is a useful shortcut that drasti-
+cally compresses many cutting plane proofs.
+Reification
+In addition to cutting planes reasoning, our
+proof system also allows reification, i.e., introducing a new
+variable that represents the truth value of a constraint. If C
+is a constraint and r is a new variable, we write r ⇔C to
+express that variable r must be 1 if C is true under the as-
+signment and 0 otherwise. If C is P
+i aiℓi ≥A, this is a
+shorthand notation for the two constraints
+A¯r +
+X
+i aiℓi ≥A, and
+(M −A + 1)r +
+X
+i ai¯ℓi ≥M −A + 1
+where M = P
+i ai. We use the notation r ⇒C for the first
+and r ⇐C for the second constraint.
+To summarize, a CPR proof consists of a sequence of
+derivation steps from the cutting plane proof system (literal
+axiom, linear combination, division, and saturation), con-
+straints derived by RUP, and reifications. In addition, we al-
+low the redundance-based strengthening (RED) rule from
+VeriPB, which can be understood as a form of proof by con-
+tradiction. We only use it in the appendix and therefore de-
+scribe it there.
+Lower-Bound Certificates
+We propose certificates that prove that there is no plan of
+lower cost than a given bound B. A typical, but not the only,
+application of such lower-bound certificates is to certify that
+a plan of cost B is optimal. Before we define the full frame-
+work, we first introduce how we encode planning tasks by
+means of PB formulas.
+Encoding Planning Tasks
+The PB encoding of task Π = ⟨V, A, I, G⟩uses the proposi-
+tional variables from V as Boolean variables, and variables
+Vc = {c0, . . . , c⌈log2(B)⌉} as a binary representation of a
+number in the range 0, . . . , B. These variables allow us to
+represent pairs ⟨s, c⟩consisting of a state s and a number
+c ≤B. In the following, one can use the intuition that s is a
+state of the task, which has been reached incurring cost c. In
+addition, we introduce a number of reification variables.
+Reification variable rI is true in a model iff the state vari-
+ables encode the initial state:
+rI ⇔
+X
+v∈I
+v +
+X
+v∈V\I
+¯v ≥|V|
+(1)
+For the goal, we introduce a reification variable rG, which
+is true in a model iff the state variables encode a goal state:
+rG ⇔
+X
+v∈G
+v ≥|G|
+(2)
+For the actions, we encode transitions from a state s to
+successor state sJaK in a similar way to symbolic search
+(e.g., Edelkamp and Kissmann 2009) or planning as satis-
+fiability (e.g., Rintanen, Heljanko, and Niemel¨a 2006), en-
+coding the successor state by means of additional variables
+v′ for each state variable v. The variables ci encode a cost
+by which state s can be reached, and analogously we use a
+variable c′
+i for each ci to encode the cost to reach sJaK via
+this transition. For this purpose, we need constraints that en-
+sure that the difference between the two values corresponds
+to the cost of the action. We do this by means of additional
+reification variables ∆c=k that express that the difference
+between the two numbers is k:
+∆c=k ⇔
+X⌈log2 B⌉
+i=0
+2ic′
+i −
+X⌈log2 B⌉
+i=0
+2ici = k
+(3)
+To express that the variables ci or c′
+i encode a value that
+is at least k for some k ∈{0, . . . , B}, we use reification
+variables cost≥k and cost′
+≥k:
+cost≥k ⇔
+X⌈log2 B⌉
+i=0
+2ici ≥k
+(4)
+cost′
+≥k ⇔
+X⌈log2 B⌉
+i=0
+2ic′
+i ≥k
+(5)
+Note that we do not introduce these reification variables
+for all values of k up to B, which would require an exponen-
+tial number of variables in the encoding size of B. Rather,
+we lazily introduce only the variables used by the proof.
+For handling the state variables v that are not affected by
+an action, we introduce reification variables eqv,v′ that are
+true in a model iff it assigns v and v′ the same value:
+eqv,v′ ⇔leqv,v′ + geqv,v′ ≥2
+geqv,v′ ⇔v + v′ ≥1
+leqv,v′ ⇔¯v + v′ ≥1
+(6)
+For each action a ∈A we introduce a variable ra ex-
+pressing that whenever the action is applied, the cost is in-
+creased by cost(a), the action precondition is satisfied, the
+
+
+primed variables truthfully represent the successor state, and
+the successor cost is within the cost bound:
+ra ⇒∆c=cost(a) +
+X
+v∈pre(a)
+v +
+X
+v∈add(a)
+v′ +
+X
+v∈del(a)
+v′
++
+X
+v∈V\evars(a)
+eqv,v′ + cost′
+≥B ≥2 + |pre(a)| + |V|
+(7)
+Observe that this constraint represents a conjunction: all
+literals must be true to meet the bound 2 + |pre(a)| + |V|.
+Finally, reification variable rT encodes that a state transi-
+tion happens, i.e., some action variable is selected:
+rT ⇔
+X
+a∈A
+ra ≥1
+(8)
+This representation allows selecting several actions at the
+same time, but only if they all lead to the same state change
+under the same cost.
+Definition 1. For planning task Π = ⟨V, A, I, G⟩and cost
+bound B ∈N0, a PB task encoding is a tuple EΠ =
+⟨CΠ, rI, rG, rT ⟩, where CΠ = ⟨Cinit, Cgoal, Ctrans, C≥⟩such
+that Cinit, Cgoal, Ctrans and C≥are sets of reifications from
+equations (1)–(8), Cinit from (1) and (4), Cgoal from (2) and
+(4), Ctrans from (3)–(8), C≥from (3)–(5) and rI, rG, and rT
+are the reification variables introduced in (1), (2), and (8).
+Certifying Unsolvability under Cost Bound
+A certificate shows that the task is unsolvable under a cost
+bound B, i.e., there is no plan π with cost(π) < B.
+Intuitively, it is based on an invariant φ which represents
+an overapproximation of the reachable state-cost pairs. An
+invariant in general is a property that is preserved through
+action applications, i.e. (1) whenever φ is true for state s
+and cost c, and action a is applicable in s, then φ is true for
+state sJaK and cost c + cost(a).1 In addition, we require that
+(2) φ is true for the initial state and cost 0. Together, (1) and
+(2) ensure that φ is true in all reachable state-cost pairs. If
+in addition, (3) φ is not true for any goal state with a cost
+strictly lower than B, this implies that the task cannot be
+solved with cost < B: initially, the invariant is true (2), it is
+impossible to change this by an action application (1), so for
+all reachable goal states the incurred cost is at least B (3).
+In our certificates, the invariant will be defined by a se-
+quence of PB reifications, and the certificate must prove
+the three properties above by means of three separate CPR
+proofs. We call property (1) the inductivity lemma, property
+(2) the initial state lemma and property (3) the goal lemma.
+We can think of the representation of the invariant as a
+circuit where each gate evaluates a PB constraint. The state
+variables and cost bits ci are the inputs to the circuit, and the
+output of the circuit determines whether the invariant is true
+for the input state-cost pair. We now formalize this notion.
+Definition 2. A PB circuit with input variables V is a pair
+R = ⟨R, r⟩, where
+1For unsolvability under a cost bound, it is sufficient to only re-
+quire the invariant property for action applications within the cost
+bound. We implicitly do this because our task encoding only per-
+mits such action applications, cf. Eq. (7).
+• R is a sequence ⟨r1 ⇔φ1, . . . , rn ⇔φn⟩of PB reifica-
+tions such that each PB constraint φi only has non-zero
+coefficients for variables from V ∪{rj | j < i}, and
+• r ∈{r1, . . . , rn} is the output variable.
+Slightly abusing notation, we also interpret a sequence of
+PB constraints as the PB formula consisting of its compo-
+nents (i.e., treat the sequence as a set). For a PB circuit ⟨R, r⟩
+with input variables V ∪Vc, we will write M(R, r) for the
+represented set of pairs ⟨s, c⟩. In other words, M(R, r) con-
+tains the pair ⟨s, c⟩iff there exists a model ρ of R∪{r = 1},
+such that s = {v ∈V | ρ(v) = 1} and c = P
+i 2iρ(ci).
+Putting the pieces together, we get the following formal
+definition of lower-bound certificates. Remember that in the
+encoding of the planning task, V contains the state variables
+and Vc the binary variables for representing cost.
+Definition 3. Let Π = ⟨V, A, I, G⟩be a planning task and
+B ∈N0 a cost bound. Let EΠ = ⟨CΠ, rI, rG, rT ⟩be a PB
+task encoding for Π and B.
+A lower-bound certificate for Π with bound B is a tuple
+⟨⟨Cφ, rφ⟩, Pinit, Pind, Pgoal⟩, where
+• ⟨Cφ, rφ⟩is a PB circuit with input variables V ∪Vc not
+mentioning a primed variable.
+• initial state lemma: Pinit is a CPR proof for
+Cinit ∪Cφ ∪C≥|= (rI ∧cost≥1) →rφ.
+• goal lemma: Pgoal is a CPR proof for
+Cgoal ∪Cφ ∪C≥|= (rG ∧rφ) →cost≥B.
+• inductivity lemma: Pind is a CPR proof for
+Ctrans ∪Cφ ∪C′
+φ ∪C≥|= (rφ ∧rT ) →r′
+φ, where C′
+φ is
+a copy of Cφ where all PB variables are replaced with
+their primed version.
+Lower-bound certificates are sound:
+Theorem 1. If there is a lower-bound certificate for plan-
+ning task Π with bound B, then the task has no plan π with
+cost(π) < B.
+Proof. Assume there is a plan π
+= ⟨a1, . . . , an⟩with
+cost(π) < B. It induces a sequence of state-cost pairs
+⟨s0, g0⟩, . . . , ⟨sn, gn⟩such that s0 is the initial state, g0 = 0,
+and for all i ∈{1, . . . , n}, si = si−1JaiK and gi = gi−1 +
+cost(ai). Note that sn is a goal state and gn = cost(π) < B.
+By the initial state lemma, ⟨s0, g0⟩is in M(Cφ, rφ). In
+rT , the PB encoding captures all action applications that do
+not exceed the cost bound, which is the case for the ac-
+tion applications in π because cost(π) < B. Thus, by the
+inductivity lemma, we get that ⟨si, gi⟩∈M(Cφ, rφ) for
+all i ∈{1, . . . , n}. By the goal lemma, we have for all
+⟨s, g⟩∈M(Cφ, rφ) that g ≥B if s is a goal state. Since
+sn is a goal state, and ⟨sn, gn⟩∈M(Cφ, rφ), this implies
+that gn ≥B, a contradiction to gn < B.
+The verifier component (see Fig. 1) receives the plan-
+ning task, the lower-bound certificate, and the validated plan
+cost. Inside, it confirms that the reifications in EΠ are a sys-
+tem of pseudo-Boolean constraints that encode the original
+planning task. Additionally, it generates ⟨C′
+φ, r′
+φ⟩based on
+⟨Cφ, rφ⟩by creating a copy of each PB reification in Cφ
+
+
+where all variables are replaced by their primed counter-
+parts. It then verifies that the proofs Pinit, Pgoal and Pind ac-
+tually derive the statements in Definition 3. Only if all these
+steps are successful, the verifier confirms that the provided
+plan cost is optimal.
+This concludes our formalization of lower-bound certifi-
+cates and their verification. Lower-bound certificates are ef-
+ficiently verifiable: the verifier runs in polynomial time be-
+cause the underlying PB proof checker does and all steps
+other than the proof checking are easy to perform in polyno-
+mial time. In the rest of the paper we describe a case study
+of how certain optimal classical planning algorithms can be
+augmented to efficiently generate lower-bound certificates.
+Because the algorithms we discuss are complete, this also
+shows that lower-bound certificates are complete.
+Proof-Logging Heuristic Search
+We now examine how a planner can be transformed into
+a proof-logging system, in our case a planner that emits a
+lower-bound certificate for the cost of the found plan. The
+idea is to already log most relevant information about its
+internal reasoning during its normal operation, keeping the
+overhead for generating the proof low.
+A∗search (Hart, Nilsson, and Raphael 1968) with an ad-
+missible heuristic h, i.e. a distance estimator that provides
+a lower bound on the goal distance of a state, is the most
+common approach for optimal planning as heuristic search.
+It maintains a priority queue Open of states s, ordered by
+f = g + h(s), where g is the best known cost to reach s
+from the initial state. The open list is initialized with the
+initial state. A∗removes a state s from the list and expands it
+until it removes a goal state. A state expansion generates all
+successor states and adds them to the open list if the implicit
+path via s improves its g-value.
+One challenge when transforming the approach into a
+proof-logging system is that the bound B that should be cer-
+tified is only known once a plan has been found. To handle
+this, we will use “placeholder” PB variables K≥l and K′
+≥l
+with integers l. Once B is known, the proof will be aug-
+mented by reifications that give them the intended meaning.
+The idea is that they represent cost≥l and cost′
+≥l, but l will
+not necessarily be in the range {0, . . . , B}. For l < 0, we
+will instead use 0, and for l > B, we will use B. So the
+reifications for these variables will be
+K≥l ⇔cost≥min{B,max{0,l}} and
+(9)
+K′
+≥l ⇔cost′
+≥min{B,max{0,l}}
+(10)
+By K, we denote the (infinite) set of all such variables. Upon
+termination A∗adds a set CK of reifications for the finitely
+many such variables that actually occur in the proof. In the
+proofs in this paper, we will silently switch from K≥··· to
+the corresponding cost≥··· expression, implicitly using (9).
+The following two lemmas establish that these clipped
+costs behave as expected.2 Intuitively, the first lemma says
+2Throughout the paper, we omit proofs of technical lemmas that
+do not provide further insight. These proofs are included in the
+appendix.
+that if the costs represented by the variables in Vc exceed
+j + k, they also exceed the smaller value j:
+Lemma 1. Let j ∈Z and k ∈N0. It is possible to derive
+cost≥min{B,max{0,j+k}} →cost≥min{B,max{0,j}} from C≥.
+The second lemma informally states that if the costs al-
+ready exceed l and we spend cost m, the successor cost ex-
+ceeds l + m (clipping all costs into {0, . . . , B}).
+Lemma
+2.
+For
+l
+∈
+Z
+and
+m
+∈
+N0
+it
+is
+possible to derive (cost≥min{B,max{0,l}} ∧∆c=m)
+→
+cost′
+≥min{B,max{0,l+m}} from C≥.
+Proof-Logging Heuristics
+Parts of the overall proof must be contributed by the heuris-
+tic. Intuitively, this contribution can be seen as a certificate
+that shows that it is impossible to reach the goal with a total
+cost strictly less than B from a state s that has been reached
+incurring a cost of at least c. For an admissible heuristic, this
+will naturally be the case for all c where c + h(s) ≥B. We
+will later see examples for different heuristics where some
+use the same invariant for all states and others generate a
+new invariant for each evaluated state.
+Throughout its execution (a potential initialization phase
+and evaluations for a number of states), the heuristic main-
+tains its own PB circuit ⟨H, rh⟩with input variables V and
+K. We assume that the heuristic uses its own namespace, so
+it does not introduce reification variables that are also intro-
+duced by the search or some other heuristic. Whenever the
+search uses the heuristic to evaluate a state s, the heuristic
+not only returns the estimate but also a PB variable rh
+s with
+the following requirements:
+• M(H, rh
+s ) contains all pairs ⟨s, ˆc⟩with ˆc + h(s) ≥B.
+• If M(H, rh
+s ) contains pair ⟨ˆs, ˆc⟩, it contains all pairs
+⟨˜s, ˜c⟩such that ˜s is reachable from ˆs with overall cost
+˜c < B (i.e., there is an action sequence π with ˆsJπK = ˜s
+and ˜c = ˆc + cost(π) < B).
+• M(H, rh
+s ) contains no pair ⟨ˆs, ˆc⟩where ˆs is a goal state
+and ˆc < B.
+This motivation leads to the following definition:
+Definition 4. Let Π = ⟨V, A, I, G⟩be a planning task and
+B ∈N0 a cost bound. Let ⟨CΠ, rI, rG, rT ⟩be the PB task
+encoding for Π and B and s be a state over V.
+A heuristic certificate for state s of Π with bound B is a
+tuple ⟨⟨H, rh
+s ⟩, Ph
+s , Ph
+s,ind, Ph
+s,goal⟩, where
+• ⟨H, rh
+s ⟩is a PB circuit with input variables V ∪K not
+mentioning a primed variable.
+• state lemma: Ph
+s is a CPR proof for
+Cs ∪H ∪C≥∪CK |= (rs ∧cost≥max{0,B−h(s)}) →rh
+s ,
+where Cs = {rs ⇔P
+v∈s v + P
+v∈V\s ¯v ≥|V|}.
+• goal lemma: Ph
+s,goal is a CPR proof for
+Cgoal ∪H ∪C≥∪CK |= (rG ∧rh
+s ) →cost≥B.
+• inductivity lemma: Ph
+s,ind is a CPR proof for
+Ctrans ∪H ∪H′ ∪C≥∪CK |= (rh
+s ∧rT ) →r′h
+s,
+where H′ is a copy of H where all PB variables are re-
+placed with their primed version.
+
+
+As mentioned earlier, heuristic certificates can be seen as
+certificates for state s where some cost of at least B −h(s)
+has already been spent to reach s. Thus it is no coinci-
+dence that these heuristic certificates also structurally resem-
+ble lower-bound certificates under cost bound B.
+We will later showcase for pattern database heuristics and
+hmax how such heuristic certificates can be generated. But
+first we show how they contribute to the overall lower-bound
+certificate generated by A∗.
+Proof-Logging A∗
+The invariant from a proof-logging A∗search will conceptu-
+ally cover two aspects: (1) the invariant is true for all closed
+states with their corresponding cost from the initial state.
+For these states, the heuristic estimates cannot rule out that
+they could be traversed with the corresponding cost by an
+optimal plan. (2) the invariant is also true for any state-cost
+pair for which any invariant is true that was produced by the
+heuristic to actually rule states out. The first part considers
+the distances from the initial state to the states in the closed
+list, while the second part considers the distances from the
+states in the open list to a goal.
+Proof-logging A∗maintains a sequence A of reifications
+and a proof log L of derivations. During its initialization, the
+heuristic already writes some information to A and L.
+Whenever A∗removes a state s with g-value g from the
+open list, it adds a reification
+rs,g≥g ⇔
+X
+v∈s
+v +
+X
+v∈V\s
+¯v + cost≥g ≥|V| + 1
+(11)
+to A, characterizing all pairs ⟨s, ˜g⟩with ˜g ≥g. In addi-
+tion, it adds ⟨s, g⟩to the initially empty collection Closed.
+It also logs some derivations in L that we describe later. If a
+successor s′ with g-value g′ is not added to Open because
+A∗’s duplicate detection is aware of an earlier encounter
+with g′′ ≤g′, it uses Lemma 1 and logs
+K′
+≥g′ →K′
+≥g′′.
+(12)
+Whenever the search uses the heuristic to evaluate a state,
+the heuristic can extend A with further reifications, adds
+derivations for the corresponding state lemma, inductivity
+lemma and goal lemma to L and returns the corresponding
+PB variable rh
+s to the search. In addition, we require it to log
+a proof for the state lemma in terms of the primed variables.
+When the search terminates, it adds to A a reification
+rA∗⇔
+X
+⟨s,g⟩∈Closed
+rs,g≥g +
+X
+⟨s,g,h⟩∈Open
+rh
+s ≥1
+(13)
+and prepends A with the necessary reifications (9) and (10),
+where B is the cost of the found plan.
+In the following we explain how we can generate the three
+proofs Pinit, Pind and Pgoal for the PB circuit ⟨A, rA∗⟩. This
+generation relies on the correctness of A∗. However, the ver-
+ifier receiving the generated proofs relies only on the cor-
+rectness of the derivation rules of CPR. We start by showing
+how L can be extended to Pinit.
+Lemma 3. RUP can derive the initial state lemma (rI ∧
+cost≥1) →rA∗from Cinit ∪A ∪C≥.
+Proof. Assume (a) rI ≥1, (b) cost≥1 ≥1, and (c) rA∗≥1.
+From (a) and (1), we receive (d) v ≥1 for each v ∈I and
+v ≥1 for each v ∈V \ I. Reification (4) and (b) express
+P⌈log2 B⌉
+i=0
+2ici < 1, from them we get for all ci ∈Vc that
+ci ≥1. With (4), we receive cost≥0, which with (d) and (11)
+gives rI,g≥0 ≥0. Since ⟨I, 0⟩is in Closed, with (a) and (13)
+we get rA∗≥1, contradicting (c).
+The proof Pgoal builds on the goal lemmas logged by the
+heuristic:
+Lemma 4. It is possible to derive the goal lemma (rG ∧
+rA∗) →cost≥B from Cgoal ∪A ∪C≥.
+Proof. The heuristic certificate can derive the goal lemma
+for all open states. The rest is then by RUP, assuming (a)
+rG ≥1, (b) rA∗≥1 and (c) cost≥B ≥1.
+From (2) and (a) we get that (d) v ≥1 for all goal vari-
+ables. For all closed pairs ⟨s, g⟩, s is not a goal state or it is
+the reached goal state s⋆with g = B. If s is not a goal state,
+then some v ∈G is false in s and (11) yields with (d) that
+rs,g≥g ≥1. We also get rs⋆,g≥B ≥1 from (11), using (c).
+For all variables rh
+s , the goal lemma provided by the
+heuristic implies with (a) and (c) that rhs ≥1, so overall
+we get with (13) that rA∗≥1, contradicting (b).
+To support the derivation of the inductivity lemma, A∗al-
+ready extends L upon every expansion for every action with
+the derivation described in the following lemma:
+Lemma 5. For every action a applicable in s and state s
+closed with cost g, it is possible to derive (rs,g≥g ∧ra) →
+r′
+A∗from Ctrans ∪A ∪A′ ∪C≥.
+Proof. We first establish by Lemma 2 that (a) (cost≥g ∧
+∆c=cost(a)) →cost′
+≥min{B,g+cost(a)}.
+The desired constraint follows by RUP: Assume (b)
+rs,g≥g ≥1, (c) ra ≥1, and (d) r′
+A∗≥1.
+From (b), we can derive with (11) that (e) v ≥1 for all
+v ∈s, (f) v ≥1 for all v ∈V \ s, and (g) cost≥g ≥1. We
+use (c) with (7) to derive (h) ∆c=cost(a) ≥1. With (h), (g),
+and (a) we get (i) cost′
+≥min{B,g+cost(a)} ≥1. If s is a goal
+state then g = B and we get from (i) and (7) that ra ≥1,
+contradicting (c).
+Otherwise, we define ˜s = sJaK and use (7), (c), (e), (f),
+(g), and (6) to derive that (j) the primed state variables en-
+code ˜s and that (k) K′
+≥g+cost(a) ≥1.
+If the successor was not considered because of a duplicate
+⟨˜s, ˆg⟩with ˆg < g + cost(a), we use the derived constraint
+(12) to derive (k’) K′
+≥ˆg ≥1.
+If ⟨˜s, g + cost(a)⟩∈Closed or ⟨˜s, ˆg⟩∈Closed, respec-
+tively, we use the primed version of (11) with (j) and (k) or
+(k’) to derive r˜s,g≥g+cost(a)′ ≥1 or r˜s,g≥ˆg′ ≥1. With the
+primed version of (13) we derive r′
+A∗≥1, contradicting (d).
+Otherwise, there is an entry for ˜s in Open. Since A∗closes
+all states with f < B, we know that in this case g+cost(a)+
+h(˜s) ≥B, so g+cost(a) ≥max{0, B−h(˜s)}. We can thus
+use (j) and (k) with the primed version of the state lemma for
+˜s from the heuristic and receive rh
+˜s
+′ ≥1. The primed version
+of (13) yields r′
+A∗≥1, contradicting (d).
+
+
+Lemma 6. For every state s closed with cost g, it is possible
+to derive (rs,g≥g ∧rT ) →r′
+A∗from Ctrans ∪A ∪A′ ∪C≥.
+Proof. We establish by Lemma 5 that (a) (rs,g≥g ∧ra) →
+r′
+A∗for every action a ∈A that is applicable in s.
+Then RUP derives the constraint: Assume (b) rs,g≥g ≥1,
+(c) rT ≥1, and (d) r′
+A∗≥1. With (a), (b) and (d) we derive
+ra ≥1 for each action a applicable in s. From (b), we can
+derive with (11) that (e) v ≥1 for all v ∈s, (f) v ≥1 for all
+v ∈V \ s, and if a is not applicable in s, some precondition
+is violated and we use (f) and (7) to derive ra ≥1. With (8),
+this yields rT ≥1, contradicting (c).
+These derivations are already logged during the execution
+of the search. We extend the log with derivations from the
+following lemma to generate Pind:
+Lemma 7. It is possible to derive the inductivity lemma
+(rA∗∧rT ) →r′
+A∗from Ctrans ∪A ∪A′ ∪C≥.
+Proof. We first derive by RUP for every s with some
+⟨s, g, h⟩∈Open that (a) (rh
+s ∧rT ) →r′
+A∗: From the as-
+sumption r′
+A∗≥1, we get r′h
+s ≥1. Using the inductivity
+lemma from the heuristic for s with the other assumptions
+rh
+s ≥1 and rT ≥1, we get the contradiction.
+For every state s expanded with cost g, we get (b)
+(rs,g≥g ∧rT ) →r′
+A∗as described in Lemma 6.
+Afterwards RUP can derive the constraint, assuming (c)
+rA∗≥1, (d) rT ≥1, and (e) r′
+A∗≥1.
+For every open state s, we get from (a,d,e) that (f) rhs ≥1.
+For every state s closed with g-value g, we get from (b, d, e)
+that (g) rs,g≥g ≥1. With (13), we get from (f) and (g) that
+rA∗≥1, contradicting (c).
+To analyze the overhead of proof-logging A∗, we assume
+that each proof from the heuristic is provided with only a
+constant-factor overhead to the heuristic computation time.
+Logging a single reification constraint (11) is an operation
+that requires time linear in |V|. A constraint of this kind has
+to be logged for each closed state. This is still a constant-
+factor overhead because the closed state has to be generated
+first, which is an operation with time linear in |V|, too. The
+reification of (13) is linear in the number of states generated.
+Both the goal lemma and the initial state lemma are logged
+by single RUP statements of constant size.
+In the proof of the inductivity lemma we first use as many
+constant-size statements as there are open states. The second
+RUP subproof in the inductivity lemma requires the con-
+straint from Lemma 6 specified on each state s ∈Closed,
+which in turn requires the constraint from Lemma 5 speci-
+fied on each applicable action in s. This amortizes with the
+generation of the successors of s when s moves from Open
+to Closed. We see that in total there is a constant-factor over-
+head to the proof-logging of A∗.
+Proof-Logging Pattern Database Heuristics
+Abstraction heuristics such as pattern database (PDB)
+heuristics use goal distances in an induced abstract task
+for the heuristic estimates. Let Π = ⟨V, A, I, G⟩be a
+STRIPS planning task. A PDB heuristic is defined in terms
+of a pattern P ⊆V and its abstraction function α maps
+each state s over V to an abstract state α(s) over P as
+α(s) = s ∩P. Each action a ∈A induces the abstract ac-
+tion aα with pre(aα) = pre(a)∩P, add(aα) = add(a)∩P,
+del(aα) = del(a)∩P, and cost(aα) = cost(a). The abstract
+goal Gα is G ∩P. The heuristic estimate of the PDB for
+state s is the cost of an optimal solution of the abstract task
+⟨P, {aα | a ∈A}, α(s), Gα⟩or ∞if it is unsolvable. This is
+a lower bound of the goal distance of s in Π, as any solution
+of the concrete task corresponds to a solution of the abstract
+task with equal cost. In practice, a PDB heuristic does not
+build an abstract task for each heuristic evaluation but pre-
+computes the abstract goal distances d(sα) for all abstract
+states sα and stores them in a so-called pattern database.
+When a concrete state s is evaluated, the PDB heuristic com-
+putes α(s) and returns the stored goal distance d(α(s)) as
+the heuristic estimate h(s).
+The invariant for a PDB heuristic should hold for all pairs
+⟨s, c⟩such that the abstract goal distance d of α(s) is already
+so high that c + d ≥B, and thus it is impossible to reach
+the goal from s with a strictly lower cost than B if reaching
+s already costs c.
+Let Sα be the set of all abstract states. For each sα ∈Sα,
+the heuristic introduces two PB variables. The variable rsα is
+true iff the variables from V encode a state s with α(s) = sα
+by adding a reification
+rsα ⇔
+X
+v∈sα v +
+X
+v∈P \sα ¯v ≥|P|.
+(14)
+The variable rsα
+≥B−d(sα) is true iff the variables from V and
+Vc encode a pair ⟨s, c⟩such that α(s) = sα and c ≥
+max{B −d(sα), 0} by adding reification
+rsα
+≥B−d(sα) ⇔rsα + K≥B−d(sα) ≥2.
+(15)
+As a final reification for the invariant the heuristic adds
+rPDB ⇔
+X
+sα∈Sα rsα
+≥B−d(sα) ≥1.
+(16)
+The PB circuit for any state then is ⟨HPDB, rPDB⟩, where
+HPDB is the sequence of all reifications (14), (15) and (16).
+On the evaluation of a state s, the heuristic always returns
+reification variable rPDB to the search. In the following we
+discuss how the required proofs can be generated. This gen-
+eration relies on the correctness and admissibility of the
+PDB heuristic, but the generated proofs themselves do not.
+We begin with the state lemma, which requires a new
+proof for each evaluated state.
+Lemma 8. RUP can derive the state lemma
+(rs∧cost≥max{0,B−h(s)}) →rPDB from Cs∪HPDB∪C≥∪CK,
+where Cs = {rs ⇔P
+v∈s v + P
+v∈V\s ¯v ≥|V|}.
+Since the PB circuit for the heuristic is the same for all
+evaluated states, we only need to include the proof for the
+goal lemma and for the inductivity lemma once in the overall
+generated proof. For the goal lemma, we use the following:
+Lemma 9. RUP can derive the goal lemma
+(rG ∧rPDB) →cost≥B from Cgoal ∪HPDB ∪C≥∪CK.
+
+
+For the inductivity lemma, we develop the derivation by
+means of four lemmas. The first one derives that applying
+an induced abstract action aα in abstract state sα leads to
+the abstract successor state.
+Lemma 10. For each action a ∈A and abstract state sα
+such that aα is applicable in sα, RUP can derive
+(rsα ∧ra) →rsαJaαK′ from Ctrans ∪HPDB ∪H′
+PDB ∪C≥∪CK.
+The next lemma again considers individual actions and
+abstract states, but takes cost into account and derives that
+the invariant of the certificate is true for the successor state-
+cost pair.
+Lemma 11. For each action a ∈A and abstract state sα
+such that aα is applicable in sα, it is possible to derive
+(rsα
+≥B−d(sα) ∧ra) →r′
+PDB from Ctrans ∪HPDB ∪H′
+PDB ∪
+C≥∪CK.
+Proof. We start by deriving some constraints over costs that
+we will use later in a RUP proof.
+First, we derive (a) (K≥B−d(sα) ∧∆c=cost(a))
+→
+K′
+≥B−d(sα)+cost(a) as described in Lemma 2.
+We know that for the abstract goal distance it holds that
+d(sαJaαK) + cost(aα) ≥d(sα). Together with cost(aα) =
+cost(a), we get B −d(sαJaαK) ≤B −d(sα) + cost(a). We
+use this to derive (b) K′
+≥B−d(sα)+cost(a) →K′
+≥B−d(sαJaαK)
+as described in Lemma 1. In addition, we establish (c) (rsα ∧
+ra) →rsαJaαK′ by RUP (Lemma 10).
+Now we can derive the constraint in the claim by RUP,
+assuming that (d) rsα
+≥B−d(sα) ≥1, (e) ra ≥1, and (f)
+r′
+PDB ≥1. From (d), we get with (15) that (g) rsα ≥1
+and (h) K≥B−d(sα) ≥1. From (e),(g) and (c) we derive (i)
+rsαJaαK′ ≥1.
+From (e) and (7), we derive (j) ∆c=cost(a)
+≥
+1.
+From (a) together with (h) and (j) we derive that (k)
+K′
+≥B−d(sα)+cost(a) ≥1. From (b) together with (k) we de-
+rive that (l) K′
+≥B−d(sαJaαK) ≥1. We get with this, (i) and the
+primed constraint (15) from HPDB that rsαJaαK
+≥B−d(sαJaαK)
+′. With
+the primed version of (16) from H′
+PDB this yields r′
+PDB ≥1,
+contradicting (f).
+The third lemma generalizes the previous lemma from in-
+dividual actions to the entire transition relation.
+Lemma 12. For each abstract state sα it is possible to de-
+rive (rsα
+≥B−d(sα) ∧rT ) →r′
+PDB from Ctrans ∪HPDB ∪H′
+PDB ∪
+C≥∪CK.
+Proof sketch. For each action a ∈A that is applicable in sα,
+establish (rsα
+≥B−d(sα) ∧ra) →r′
+PDB with Lemma 11. Then
+the desired constraint can be derived by RUP.
+The final step for the inductivity lemma generalizes this
+from individual abstract states to the entire PB circuit of the
+heuristic.
+Lemma 13. It is possible to derive the inductivity lemma
+(rPDB ∧rT ) →r′
+PDB from Ctrans ∪HPDB ∪H′
+PDB ∪C≥∪CK.
+Proof sketch. Establish (rsα
+≥B−d(sα) ∧rT ) →r′
+PDB for each
+abstract state sα by Lemma 12. The rest follows by RUP.
+We considered PDB heuristics as one example of abstrac-
+tions because they have a particularly simply structured ab-
+straction function. To adapt the approach to other abstrac-
+tion heuristics, the overall line of argument still works but
+we would have to replace (14) with one or more reifications
+that allow to identify the concrete states that correspond to a
+given abstract state. In addition, the derivations from Lem-
+mas 8, 9 and 10 need to be adapted accordingly.
+The described proof logging only has a constant-factor
+overhead for a somewhat naive implementation of PDBs.
+While the state and goal lemma only require a single
+RUP statement, the inductivity lemma requires effort in
+O(|Sα||A|), iterating once over all actions for each abstract
+state. A better PDB implementation can deal more effi-
+ciently with abstract states that are not reverse-reachable. In
+the appendix we describe a variant of the certificate that does
+not explicitly represent such states and which guarantees a
+constant-factor overhead also for such a more efficient com-
+putation of PDBs.
+Proof-Logging hmax
+The maximum heuristic (Bonet and Geffner 2001) is based
+on a relaxation of the planning task that makes two simpli-
+fying assumptions: first, actions do not delete variables; sec-
+ond, the cost of making a set of variables true corresponds
+to the cost of making its most expensive variable true; since
+action preconditions are sets of variables, the relaxation af-
+fects the cost of enabling action applications, which in turn
+affects the cost to make the individual variables true. For this
+reason, the heuristic is mathematically specified by a system
+of equations. The maximum heuristic hmax(s) is hmax(s, G),
+where hmax(s, V ) is the pointwise greatest function with
+hmax(s, V ) =
+
+
+
+
+
+
+
+
+
+0
+if V ⊆s
+min
+a∈A,
+v∈add(a)
+(cost(a) + hmax(s, pre(a)))
+if |V | = 1
+and V̸ ⊆s
+max
+v∈V hmax(s, {v})
+otherwise
+For v ∈V, the max value is V max(v) = hmax(s, {v}),
+which can be seen as the cost of making v true (starting
+from s) under this relaxation. The heuristic certificate will
+build on the following insight: since hmax is admissible, it
+will be impossible to reach the goal from s with overall cost
+< B if the cost to reach s already exceeds B −hmax(s).
+If in a state ˆs additional variables are true, the state can be
+closer to the goal but under the relaxation of the heuristic
+the advantage gained from an individual variable v will be
+at most V max(v), so for arbitrary non-empty states ˆs, the
+goal cannot be reached if the cost to reach ˆs already exceeds
+B −hmax(s) + maxv∈ˆs V max(v) (note that V max(v) = 0 for
+v ∈s), even under the relaxation of the heuristic. In the
+delete-relaxed task, the empty state cannot be closer to the
+goal than s, so we can use bound B −hmax(s).
+A typical efficient implementation of the maximum
+heuristic only determines the max value for all v with
+
+
+V max(v) < hmax(s). We can still build a valid heuristic cer-
+tificate, requiring that the cost B has already been exceeded
+for states that contain a variable for which V max(v) ≥
+hmax(s). For the formal definition of the certificate, we
+will handle this aspect by an auxiliary value W max(v) =
+min{V max(v), hmax(s)}.
+For each v ∈V, the heuristic adds a reification:
+rv,s ⇔¯v + K≥B−hmax(s)+W max(v) ≥1
+(17)
+In addition, it adds the following reification:
+rmax
+s
+⇔K≥B−hmax(s) +
+X
+v∈V
+rv,s ≥|V| + 1
+(18)
+The PB circuit for state s then is ⟨Hmax,s, rmax
+s
+⟩, where
+Hmax,s is the sequence of all reifications (17) and (18).
+Intuitively, (17) expresses the implication that the cost
+is at least B −hmax(s) + W max(v) if v is true. Equa-
+tion (18) corresponds to a conjunction of K≥B−hmax(s) and
+such implications for each variable, so overall rmax
+s
+will
+be true for all state value pairs ⟨ˆs, ˆc⟩, where ˆs̸ = ∅and
+ˆc ≥maxv∈ˆs{B −hmax(s) + W max(v)} or where ˆs = ∅
+and ˆc ≥B −hmax(s).
+Lemma 14. RUP can derive the state lemma
+(rs ∧cost≥max{0,B−hmax(s)}) →rmax
+s
+from Cs ∪Hmax,s ∪
+C≥∪CK, where Cs = {rs ⇔P
+v∈s v + P
+v∈V\s ¯v ≥|V|}.
+A single RUP statement is sufficient for the goal lemma:
+Lemma 15. RUP can derive the goal lemma
+(rG ∧rmax
+s
+) →cost≥B from Cgoal ∪Hmax,s ∪C≥∪CK.
+For the inductivity lemma, we first show an analogous
+statement for a single action.
+Lemma 16. For every action a, it is possible to derive
+(rmax
+s
+∧ra) →rmax
+s
+′ from Ctrans ∪Hmax,s ∪H′
+max,s ∪C≥∪CK.
+Proof sketch. The overall argument of the proof is as fol-
+lows:
+If the action has a precondition p, we can conclude
+that p ≥1, which allows us to derive with (17) that
+K≥B−hmax(s)+W max(p) ≥1. We can establish K′
+≥B−hmax(s)
+using Lemmas 1 and 2.
+To establish r′
+v,s ≥1 for all variables, we consider the
+precondition with maximal W max value.
+If W max(p) = hmax(s), then K≥B−hmax(s)+W max(p) ≥1
+corresponds to K≥B ≥1. We derive K′
+≥B ≥1, which is
+sufficient to establish r′
+v,s ≥1.
+If W max(p) < hmax(s), we establish r′
+v,s ≥1 depend-
+ing on whether and how v occurs in the effect of a. If it is
+a delete effect, then v′ ≥1. If it is an add effect, we ex-
+ploit that p has maximal W max value among the precondi-
+tions, so from the definition of the maximum heuristic we
+can see that W max(v) ≤W max(p) + cost(a). Establish-
+ing K′
+≥B−hmax(s)+W max(p)+cost(a) and using this insight gives
+K′
+≥B−hmax(s)+W max(v) ≥1. If v /∈evars(a), we can carry
+over the reason for rv,s ≥1 to the primed variables.
+If the precondition of the action is empty, we build
+on K≥B−hmax(s), which gives K′
+≥B−hmax(s)+cost(a) and
+K′
+≥B−hmax(s) using Lemmas 1 and 2. For establishing r′
+v,s ≥
+1 for all variables, we proceed as before for the case
+W max(p) < hmax(s) (replacing W max(p) with 0). For the
+special case hmax(s) = 0, we can instead use the shorter ar-
+gument as in the previous case W max(p) = hmax(s), building
+on K≥B ≥1.
+The technical details are included in the appendix.
+The full inductivity lemma follows quite directly.
+Lemma 17. It is possible to derive the inductivity lemma
+(rmax
+s
+∧rT ) →rmax
+s
+′ from Ctrans ∪Hmax,s ∪H′
+max,s ∪C≥∪CK.
+Proof sketch. Establish with Lemma 16 for every a ∈A that
+(rmax
+s
+∧ra) →rmax
+s
+′. Then derive the constraint by RUP.
+Extending hmax with proof logging only leads to the fol-
+lowing overhead: adding reifications (17) for each v ∈V
+and (18) takes additional time linear in |V| because h(s) and
+the values necessary for W max are already computed during
+the normal evaluation. In addition, the implementation has
+to reinitialize some values for each variable before each new
+evaluation, so the overhead is within a constant factor.
+The state and goal lemmas each only require a single RUP
+statement. For the inductivity lemma, we need to establish
+the constraint from Lemma 16 for every action. For each ac-
+tion where hmax(s, pre(a)) ≥hmax(s), we require constant
+effort. For all other actions, the effort for the action is linear
+in the number of variables.
+Conclusion
+We introduced lower-bound certificates for classical plan-
+ning, which can be used to verify the optimality of optimal
+planners. The certificates are sound, complete and efficiently
+verifiable. We showed them to be efficiently generatable in
+a case study on A∗with hmax or pattern database heuristics.
+We believe these certificates to be much more general than
+the ones considered in previous research because they work
+on a more fundamental level of abstraction, build on an es-
+tablished proof systems that has proved its utility in many
+other areas of AI, and are able to directly incorporate numer-
+ical reasoning. In future work, this generality has to be con-
+firmed by applying these certificates to other optimal plan-
+ning approaches that current approaches cannot handle. In
+particular, we believe that pseudo-Boolean constraints can
+generically handle the concept of cost partitioning (Katz and
+Domshlak 2010), perhaps the most important optimal plan-
+ning technique, because they are able to reason numerically
+at the level of individual state transitions in a way that pre-
+viously proposed certificates cannot.
+Acknowledgments
+This research was supported by the Swiss National Science
+Foundation (SNSF) as part of the project “Unifying the The-
+ory and Algorithms of Factored StateSpace Search” (UTA).
+Jakob Nordstr¨om was supported by the Independent Re-
+search Fund Denmark grant 9040-00389B.
+
+
+References
+Berg, J.; Bogaerts, B.; Nordstr¨om, J.; Oertel, A.; and Van-
+desande, D. 2023. Certified Core-Guided MaxSAT Solving.
+In Pientka, B.; and Tinelli, C., eds., Proceedings of the 29th
+International Conference on Automated Deduction (CADE
+2023), volume 14132 of LNCS, 1–22. Springer.
+Bogaerts, B.; Gocht, S.; McCreesh, C.; and Nordstr¨om, J.
+2022.
+Certified Symmetry and Dominance Breaking for
+Combinatorial Optimisation.
+In Proc. AAAI 2022, 3698–
+3707.
+Bogaerts, B.; Gocht, S.; McCreesh, C.; and Nordstr¨om, J.
+2023.
+Certified Dominance and Symmetry Breaking for
+Combinatorial Optimisation. JAIR, 77: 1539–1589.
+Bonet, B.; and Geffner, H. 2001.
+Planning as Heuristic
+Search. AIJ, 129(1): 5–33.
+Buss, S.; and Nordstr¨om, J. 2021. Proof Complexity and
+SAT Solving. In Biere, A.; Heule, M.; van Maaren, H.; and
+Walsh, T., eds., Handbook of Satisfiability – Second Edition,
+volume 336 of Frontiers in Artificial Intelligence and Appli-
+cations, 233–350. IOS Press.
+Cook, W. J.; Coullard, C. R.; and Tur´an, G. 1987. On the
+complexity of cutting-plane proofs. Discrete Applied Math-
+ematics, 18(1): 25–38.
+Cruz-Filipe, L.; Heule, M. J. H.; Hunt, W. A., Jr.; Kaufmann,
+M.; and Schneider-Kamp, P. 2017. Efficient Certified RAT
+Verification. In de Moura, L., ed., Proceedings of the 26th
+International Conference on Automated Deduction (CADE
+2017), volume 10395 of LNCS, 220–236. Springer.
+Demirovi´c, E.; McCreesh, C.; McIlree, M. J.; Nordstr¨om,
+J.; Oertel, A.; and Sidorov, K. 2024. Pseudo-Boolean Rea-
+soning About States and Transitions to Certify Dynamic
+Programming and Decision Diagram Algorithms. In Pro-
+ceedings of the 30th International Conference on Principles
+and Practice of Constraint Programming (CP-24), 9:1–9:21.
+Schloss Dagstuhl – Leibniz-Zentrum f¨ur Informatik.
+Edelkamp, S. 2001. Planning with Pattern Databases. In
+Proc. ECP 2001, 84–90.
+Edelkamp, S.; and Kissmann, P. 2009. Optimal Symbolic
+Planning with Action Costs and Preferences. In Proc. IJCAI
+2009, 1690–1695.
+Eriksson, S.; and Helmert, M. 2020. Certified Unsolvability
+for SAT Planning with Property Directed Reachability. In
+Proc. ICAPS 2020, 90–100.
+Eriksson, S.; R¨oger, G.; and Helmert, M. 2017. Unsolvabil-
+ity Certificates for Classical Planning. In Proc. ICAPS 2017,
+88–97.
+Eriksson, S.; R¨oger, G.; and Helmert, M. 2018. A Proof Sys-
+tem for Unsolvable Planning Tasks. In Proc. ICAPS 2018,
+65–73.
+Fikes, R. E.; and Nilsson, N. J. 1971. STRIPS: A New Ap-
+proach to the Application of Theorem Proving to Problem
+Solving. AIJ, 2: 189–208.
+Gocht, S.; McCreesh, C.; and Nordstr¨om, J. 2022.
+An
+Auditable Constraint Programming Solver.
+In Proceed-
+ings of the 28th International Conference on Principles and
+Practice of Constraint Programming (CP-22), 25:1–25:18.
+Schloss Dagstuhl – Leibniz-Zentrum f¨ur Informatik.
+Hart, P. E.; Nilsson, N. J.; and Raphael, B. 1968. A For-
+mal Basis for the Heuristic Determination of Minimum Cost
+Paths. IEEE Transactions on Systems Science and Cyber-
+netics, 4(2): 100–107.
+Haslum, P. 2016. INVAL: the Independent PDDL Plan Val-
+idator. https://github.com/patrikhaslum/INVAL. Accessed
+May 2, 2025.
+Heule, M. J. H.; Hunt, W. A.; and Wetzler, N. 2013. Ver-
+ifying Refutations with Extended Resolution. In Proceed-
+ings of the Twenty-Fourth International Conference on Au-
+tomated Deduction (CADE-24), 345–359. Springer, Berlin,
+Heidelberg.
+Hoen, A.; Oertel, A.; Gleixner, A.; and Nordstr¨om, J. 2024.
+Certifying MIP-based Presolve Reductions for 0–1 Integer
+Linear Programs. In Proceedings of the 21st International
+Conference on the Integration of Constraint Programming,
+Artificial Intelligence, and Operations Research (CPAIOR-
+24), 310–328. Springer.
+Howey, R.; and Long, D. 2003. VAL’s Progress: The Au-
+tomatic Validation Tool for PDDL2.1 used in the Interna-
+tional Planning Competition. In ICAPS 2003 Workshop on
+the Competition.
+Katz, M.; and Domshlak, C. 2010. Optimal admissible com-
+position of abstraction heuristics.
+AIJ, 174(12–13): 767–
+798.
+Lammich, P. 2020. Efficient Verified (UN)SAT Certificate
+Checking.
+Journal of Automated Reasoning, 64(3): 513–
+532.
+McConnell, R. M.; Mehlhorn, K.; N¨aher, S.; and Schweitzer,
+P. 2011. Certifying algorithms. Computer Science Review,
+5(2): 119–162.
+McIlree, M. J.; and McCreesh, C. 2023.
+Proof Logging
+for Smart Extensional Constraints. In Proceedings of the
+29th International Conference on Principles and Practice
+of Constraint Programming, (CP-23), 26:1–26:17. Schloss
+Dagstuhl – Leibniz-Zentrum f¨ur Informatik.
+McIlree, M. J.; McCreesh, C.; and Nordstr¨om, J. 2024. Proof
+Logging for the Circuit Constraint. In Proceedings of the
+21st International Conference on the Integration of Con-
+straint Programming, Artificial Intelligence, and Operations
+Research (CPAIOR-24), 38–55. Springer.
+Mugdan, E.; Christen, R.; and Eriksson, S. 2023. Optimality
+Certificates for Classical Planning. In Proc. ICAPS 2023,
+286–294.
+Rintanen, J.; Heljanko, K.; and Niemel¨a, I. 2006.
+Plan-
+ning as satisfiability: parallel plans and algorithms for plan
+search. AIJ, 170(12–13): 1031–1080.
+Tan, Y. K.; Heule, M. J. H.; and Myreen, M. O. 2023. Ver-
+ified Propagation Redundancy and Compositional UNSAT
+Checking in CakeML. Software Tools for Technology Trans-
+fer, 25(2): 167–184.
+
+
+Appendix
+The following sections contain additional details not pro-
+vided in the ICAPS 2025 version of this paper.
+Proofs for Cost Lemmas
+We will use an extended cutting planes proof technique that
+we did not introduce in the background section, namely
+redundance-based strengthening (RED): if for a PB con-
+straint C there is a substitution ρ such that C ∪{¬C} |=
+C ∪{C}↾ρ then we can infer C. We only use the simple form
+with an empty substitution. Since it cannot invalidate the
+core formula C, we only need to derive that C ∪{¬C} |= C
+to establish C. We can think of this as a more flexible form
+of a proof by contradiction than simple RUP.
+We now provide the proofs for the two cost-related lem-
+mas from the paper.
+Lemma 1. Let j ∈Z and k ∈N0. It is possible to derive
+cost≥min{B,max{0,j+k}} →cost≥min{B,max{0,j}} from C≥.
+Proof. By RED with an empty witness. Since the wit-
+ness is empty, all constraints from C≥are trivially implied,
+so we only need to derive C ˙=cost≥min{B,max{0,j+k}} →
+cost≥min{B,max{0,j}}.
+We may assume the negation of this constraint, which
+gives us by weakening that (a) cost≥min{B,max{0,j+k}} ≥1
+and (b) cost≥min{B,max{0,j}} ≥1. Using (4), we get from
+(a) that (c) P⌈log2 B⌉
+i=0
+2ici ≥min{B, max{0, j + k}}.
+Define
+∆
+=
+min{B, max{0, j
++
+k}}
+−
+min{B, max{0, j}} and observe that ∆∈{0, . . . , B}.
+Let set M contain exactly the numbers i such that
+the ith bit in the binary representation of ∆is 1.
+With a full weakening3 of (c) with M, we receive (d)
+P
+i=∈{0,...,⌈log2 B⌉}\M 2ici ≥min{B, max{0, j}}.
+For every i ∈M, we can multiply the axiom lemma ci ≥
+0 with 2i and receive 2ici ≥0. The sum over all these con-
+straints and (d) is P⌈log2 B⌉
+i=0
+2ici ≥min{B, max{0, j}}.
+With (4), this yields cost≥min{B,max{0,j}}.
+Lemma
+2.
+For
+l
+∈
+Z
+and
+m
+∈
+N0
+it
+is
+possible to derive (cost≥min{B,max{0,l}} ∧∆c=m)
+→
+cost′
+≥min{B,max{0,l+m}} from C≥.
+Proof. By RED with an empty witness. Since the witness is
+empty, all constraints from C≥are trivially implied, so we
+only need to derive C ˙=(cost≥min{B,max{0,l}} ∧∆c=m) →
+cost′
+≥min{B,max{0,l+m}}.
+We may assume the negation of this constraint, which
+gives us by weakening that (a) cost≥min{B,max{0,l}} ≥1,
+(b) ∆c=m ≥1, and (c) cost′
+≥min{B,max{0,l+m}} ≥1.
+From (b) and (3) we get that (d) P⌈log2 B⌉
+i=0
+2ic′
+i −
+P⌈log2 B⌉
+i=0
+2ici
+≥
+m. From (a) and (4), we derive (e)
+P⌈log2 B⌉
+i=0
+2ici ≥min{B, max{0, l}}. The sum of (d) and
+3Full weakening is syntactic sugar that corresponds to multiply-
+ing the literal axioms ℓ≥0 with the coefficients of ℓand adding
+this to the constraint.
+(e) is (f) P⌈log2 B⌉
+i=0
+2ic′
+i ≥min{B, max{0, l}} + m. From
+(c), we derive (g) P⌈log2 B⌉
+i=0
+2ic′
+i < min{B, max{0, l +
+m}}, which in normalized form is P⌈log2 B⌉
+i=0
+2ic′
+i
+≥
+P⌈log2 B⌉
+i=0
+2i −min{B, max{0, l + m}} + 1. The sum
+of (f) and (g) is (h) 0 ≥min{B, max{0, l}} + m −
+min{B, max{0, l + m}} + 1. Since min{B, max{0, l}} +
+m ≥min{B, max{0, l + m}}, the right-hand side of (h)
+is positive, so we have a contradiction, from which we can
+derive any constraint, thus also C.
+Proof-Logging PDB Heuristics: Proofs
+Lemma 8. RUP can derive the state lemma
+(rs∧cost≥max{0,B−h(s)}) →rPDB from Cs∪HPDB∪C≥∪CK,
+where Cs = {rs ⇔P
+v∈s v + P
+v∈V\s ¯v ≥|V|}.
+Proof. Assume (a) rs ≥1, (b) K≥B−h(s) ≥1, and (c)
+rPDB ≥1. From (a) and Cs, we receive v ≥1 for each
+v ∈s and ¯v ≥1 for each v ∈V \ s, and in particular (d)
+v ≥1 for each v ∈α(s) and ¯v ≥1 for each v ∈P \ α(s).
+With constraints (14) and (d), we derive (e) rα(s) ≥1. Since
+h(s) = d(α(s)), we can use (b) and (e) with (15) to derive
+(f) rα(s)
+≥B−d(α(s)). With (16), this gives us rPDB ≥1, a contra-
+diction to (c).
+Lemma 9. RUP can derive the goal lemma
+(rG ∧rPDB) →cost≥B from Cgoal ∪HPDB ∪C≥∪CK.
+Proof. Assume (a) rG ≥1, (b) rPDB ≥1 and (c) cost≥B ≥
+1. From (a) and (2) we can derive that (d) v ≥1 for each
+goal variable v ∈G.
+We now iterate over all abstract states sα. If sα is not an
+abstract goal state, we use (d) to derive from (14) that rsα ≥
+1 and consequently with (15) rsα
+≥B−d(sα) ≥1. If sα is an
+abstract goal state, we exploit that d(sα) = 0 and use (c)
+with (15) to derive rsα
+≥B−d(sα) ≥1. So for all abstract states
+sα we derived rsα
+≥B−d(sα) ≥1. This gives with (16) that
+rPDB ≥1, a contradiction to (b).
+Lemma 10. For each action a ∈A and abstract state sα
+such that aα is applicable in sα, RUP can derive
+(rsα ∧ra) →rsαJaαK′ from Ctrans ∪HPDB ∪H′
+PDB ∪C≥∪CK.
+Proof. Assume (a) rsα ≥1, (b) ra ≥1, and (c) rsαJaαK′ ≥
+1. From (a) and (14) we get (d) v ≥1 for all v ∈sα and
+¯v ≥1 for all v ∈P \ sα. From (b) and (7), we get (e)
+v′ ≥1 for all v ∈add(a), (f) v′ ≥1 for all v ∈del(a),
+and (g) eqv,v′ ≥1 for all v ∈V \ evars(a). From (d) and
+(g) and (6), we derive for all v ∈P \ evars(a) that v′ ≥1
+if v ∈sα and v′ ≥1 if v /∈sα. Combining this with (e),
+(f) and (14) from H′
+PDB for sαJaαK, we derive rsαJaαK′ ≥1,
+contradicting (c).
+Lemma 12. For each abstract state sα it is possible to de-
+rive (rsα
+≥B−d(sα) ∧rT ) →r′
+PDB from Ctrans ∪HPDB ∪H′
+PDB ∪
+C≥∪CK.
+
+
+Proof. For each action a ∈A that is applicable in sα, we
+establish (a) (rsα
+≥B−d(sα) ∧ra) →r′
+PDB with Lemma 11.
+Afterwards, the desired constraint can be derived by RUP,
+assuming (b) rsα
+≥B−d(sα) ≥1, (c) rT ≥1 and (d) r′
+PDB ≥1.
+For each action a ∈A, we derive (e) ra ≥1 as follows:
+If aα is applicable in sα, we use (a), (b) and (d). Otherwise,
+there is a v ∈pre(a)∩P with v /∈sα. From (b) and (15), we
+derive rsα ≥1, which with (14) gives us (f) v ≥1. Since
+v ∈pre(a), we can use (f) with (7) to derive (e) also for this
+case. Since we have derived (e) for all actions a ∈A, we
+can use (8) to derive rT ≥1, a contradiction to (c).
+Lemma 13. It is possible to derive the inductivity lemma
+(rPDB ∧rT ) →r′
+PDB from Ctrans ∪HPDB ∪H′
+PDB ∪C≥∪CK.
+Proof. We first use lemma 12 to establish for each abstract
+state sα (a) (rsα
+≥B−d(sα) ∧rT ) →r′
+PDB.
+The rest can be derived by RUP, assuming (b) rPDB ≥1,
+(c) rT ≥1, and (d) r′
+PDB ≥1. Using (c) and (d) with (a),
+we can derive for each abstract state sα that rsα
+≥B−d(sα) ≥1.
+With (16), this gives rPDB ≥1, a contradiction to (b).
+Proof-Logging hmax: Proofs
+Lemma 14. RUP can derive the state lemma
+(rs ∧cost≥max{0,B−hmax(s)}) →rmax
+s
+from Cs ∪Hmax,s ∪
+C≥∪CK, where Cs = {rs ⇔P
+v∈s v + P
+v∈V\s ¯v ≥|V|}.
+Proof. Assume (a) rs ≥1, (b) cost≥max{0,B−hmax(s)} ≥1,
+and (c) rmax
+s
+≥1. From (a), we get for all v ∈V \ s that ¯v ≥
+1, so with (17) we get for all such v that rv,s ≥1 (*). For all
+v ∈s, the heuristic determines W max(v) = V max(v) = 0,
+and thus B −hmax(s) + W max(v) ≤B, so from (b) and (17)
+we get rv,s ≥1 also for these variables (**).
+Assumption (b) corresponds to K≥B−hmax(s).
+Together with (*) and (**), we derive with (18) that
+rmax
+s
+≥1, contradicting (c).
+Lemma 15. RUP can derive the goal lemma
+(rG ∧rmax
+s
+) →cost≥B from Cgoal ∪Hmax,s ∪C≥∪CK.
+Proof. Assume (a) rG ≥1, (b) cost≥B ≥1 and (c) rmax
+s
+≥
+1.
+If G̸ = ∅, consider a goal variable g with maximum max
+value. For this g, it holds that V max(g) = hmax(s). From (a)
+we derive that g ≥1, which gives together with (b) and (17)
+rg ≥1. Thus we get from (18) that rmax
+s
+≥1, contradicting
+(c).
+If G = ∅then hmax(s) = 0 for all states s and W max(v) =
+0 for all variables v. From (c) we get that K≥B ≥1, contra-
+dicting (b).
+Lemma 16. For every action a, it is possible to derive
+(rmax
+s
+∧ra) →rmax
+s
+′ from Ctrans ∪Hmax,s ∪H′
+max,s ∪C≥∪CK.
+Proof. The overall argument of the proof is as follows:
+If the action has a precondition p, we can conclude
+that p ≥1, which allows us to derive with (17) that
+K≥B−hmax(s)+W max(p) ≥1. We can establish K′
+≥B−hmax(s)
+using lemmas 1 and 2.
+To establish r′
+v,s ≥1 for all variables, we consider the
+precondition with maximal W max value.
+If W max(p) = hmax(s), then K≥B−hmax(s)+W max(p) ≥1
+corresponds to K≥B ≥1. We derive K′
+≥B ≥1, which is
+sufficient to establish r′
+v,s ≥1.
+If W max(p) < hmax(s), we establish r′
+v,s ≥1 depend-
+ing on whether and how v occurs in the effect of a. If it is
+a delete effect, then v′ ≥1. If it is an add effect, we ex-
+ploit that p has maximal W max value among the precondi-
+tions, so from the definition of the maximum heuristic we
+can see that W max(v) ≤W max(p) + cost(a). Establish-
+ing K′
+≥B−hmax(s)+W max(p)+cost(a) and using this insight gives
+K′
+≥B−hmax(s)+W max(v) ≥1. If v /∈evars(a), we can carry
+over the reason for rv,s ≥1 to the primed variables.
+If the precondition of the action is empty, we build
+on K≥B−hmax(s), which gives K′
+≥B−hmax(s)+cost(a) and
+K′
+≥B−hmax(s) using lemmas 1 and 2. For establishing r′
+v,s ≥
+1 for all variables, we proceed as before for case W max(p) <
+hmax(s) (replacing W max(p) with 0). For the special case
+hmax(s) = 0, we can instead use the shorter argument
+as in the previous case W max(p) = hmax(s), building on
+K≥B ≥1.
+We not turn to specifying the details of this overall argu-
+ment:
+If pre(a)̸ = ∅, let p ∈pre(a) be a precondition with max-
+imal W max value.
+If W max(p) = hmax(s), we first derive for all variables v
+that (rmax
+s
+∧ra) →r′
+v,s: We use Lemma 2 to establish (*)
+(K≥B∧∆c=cost(a)) →K′
+≥B and proceed by RUP, assuming
+(a) rmax
+s
+≥1 and (b) ra ≥1. From (a) and (18) we get (c)
+rp,s ≥1. From (b) and (7) we get (d) p ≥1, (e) cost′
+≥B ≥
+1 and (f) ∆c=cost(a) ≥1. From (c) and (d), we get with
+(17) that (g) K≥B−hmax(s)+W max(p) ≥1. Then (f), (g) and (*)
+yield K′
+≥B ≥1, a contradiction to (e).
+If
+W max(p)
+<
+hmax(s),
+we
+use
+Lemma
+2
+to
+establish (**) (K≥B−hmax(s)+W max(v) ∧∆c=cost(a))
+→
+K′
+≥B−hmax(s)+W max(v)+cost(a) for all v
+∈
+V. We use
+Lemma 1 to establish (***) K′
+≥B−hmax(s)+W max(v)+cost(a) →
+K′
+≥B−hmax(s)+W max(v) for every v ∈V \ evars(a). For every
+v ∈add(a), it holds by the definition of hmax that V max(v) ≤
+V max(p)+cost(a) and consequently W max(v) ≤W max(p)+
+cost(a). We thus can establish with Lemma 1 that (****)
+K′
+≥B−hmax(s)+W max(p)+cost(a) →K′
+≥B−hmax(s)+W max(v).
+Then we derive (rmax
+s
+∧ra) →r′
+v,s for all variables v by
+RUP: Assume (h) rmax
+s
+≥1, (i) ra ≥1, and (j) r′v,s ≥1.
+From (i) and (7) we get (k) ∆c=cost(a) ≥1. From (h) with
+(17) and (18) we derive (l) K≥B−hmax(s)+W max(p) ≥1 as in
+case W max(p) = hmax(s).
+If v ∈del(a), we have from (i) and (7) that v′ ≥1. With
+(17) this yields r′
+v,s ≥1, contradicting (j).
+If v ∈add(a), we use (**) with (l) and (k) to derive
+K′
+≥B−hmax(s)+W max(p)+cost(a), which together with (****)
+
+
+gives K′
+≥B−hmax(s)+W max(v). With (17) from H′
+max,s, we get
+r′
+v,s ≥1, contradicting (j).
+If v ∈V \ evars(a), (j) and (17) yield (m) v′ ≥1 and (n)
+K′
+≥B−hmax(s)+W max(v) ≥1. From (i) and (7) we get eqv,v′ ≥
+1, which with (m) yields (o) v ≥1. We use (n) with (***)
+to get K′
+≥B−hmax(s)+W max(v)+cost(a) ≥1, which gives with
+(**) and (k) that K≥B−hmax(s)+W max(v) ≥1. With (17) and
+(o) this yields rv,s ≥1, which with (18) gives rmax
+s
+≥1,
+contradicting (h).
+Continuing with the case W max(p) = hmax(s), we now
+derive (rmax
+s
+∧ra) →K′
+≥B−hmax(s): We use Lemma 2
+to establish (†) (K≥B−hmax(s)+W max(p) ∧∆c=cost(a))
+→
+K′
+≥B−hmax(s)+W max(p)+cost(a). With Lemma 1 on the primed
+variables, we get (††) K′
+≥B−hmax(s)+W max(v)+cost(a)
+→
+K′
+≥B−hmax(s). We then proceed by RUP, assuming (p) rmax
+s
+≥
+1, (q) ra ≥1 and (r) K′
+≥B−hmax(s) ≥1. From (p) and (18)
+we get (s) rp,s ≥1. From (q) and (7) we get (t) p ≥1
+and (u) ∆c=cost(a) ≥1. We use (s) and (t) and (17) to ob-
+tain K≥B−hmax(s)+W max(p) ≥1, which with (u), (†) and (††)
+propagates to K′
+≥B−hmax(s) ≥1, a contradiction to (r).
+RUP can now derive that (rmax
+s
+∧ra) →rmax
+s
+′: Assume (v)
+rmax
+s
+≥1, (w) ra ≥1 and (x) rmax
+s
+′ ≥1. For all v ∈V, we
+get with (v), (x) and the previously derived (rmax
+s
+∧ra) →
+r′
+v,s, that r′
+v,s ≥1. We use (v), (x) and the previously derived
+(rmax
+s
+∧ra) →K′
+≥B−hmax(s) to get K′
+≥B−hmax(s) ≥1. With
+(18) from H′
+max,s, these yield rmax
+s
+′ ≥1, contradicting (x).
+If pre(a) = ∅the proof is analogous but simpler: instead
+of using p to derive cost≥B−hmax(s)+W max(p) ≥1, we use
+cost≥B−hmax(s) ≥1. Then case hmax(s) = 0 works like the
+previous case for W max(p) = hmax(s). Otherwise, we pro-
+ceed as in the case W max(p) < hmax(s). If v ∈add(a), we
+used W max(p) to refer to hmax(s, pre(a)), which is 0 with an
+empty precondition. We can adapt the proof by replacing all
+occurrences of W max(p) with 0.
+Lemma 17. It is possible to derive the inductivity lemma
+(rmax
+s
+∧rT ) →rmax
+s
+′ from Ctrans ∪Hmax,s ∪H′
+max,s ∪C≥∪CK.
+Proof. Establish with Lemma 16 for every a ∈A that (a)
+(rmax
+s
+∧ra) →rmax
+s
+′. Afterwards, continue by RUP: Assume
+(b) rmax
+s
+≥1, (c) rT ≥1, and (d) rmax
+s
+′ ≥1. With (a), (b)
+and (d), derive (e) ra ≥1 for every a ∈A. With (8), this
+gives rT ≥1, contradicting (c).
+State Set Extension Lemma
+The proofs in the next section require to switch from a de-
+scription of a set of states in form of a constraint that fixes
+the value of some state variables, to a description of the
+same set of states in form of an enumeration of tighter con-
+straints describing subsets of the original set of states. The
+next lemma shows how to construct a proof for this state-
+ment.
+In the following, we write xb to denote the literal over x
+that evaluates to 1 exactly when x 7→b, i.e., xb = x if b = 1
+and xb = x if b = 0.
+Lemma 18. Let Y, Z be two sets of variables with Y ⊆Z.
+Let α be a fixed assignment of the variables in Y and let B
+be the set of all assignments β of Z with β ⊇α extending α.
+Suppose that there are reified constraints
+rα ⇒
+X
+y∈Y
+yα(y) ≥|Y |
+(19)
+and for each β ∈B constraints
+rβ ⇐
+X
+z∈Z
+zβ(z) ≥|Z|
+(20)
+defining variables for all these assignments. Then there is a
+CPR derivation from (19) and (20) of
+rα +
+X
+β∈B
+rβ ≥1
+(21)
+in O(|B|) steps.
+Proof. Let Z\Y = {z1, . . . , zn} and Zi = {z1, . . . , zi}∪Y .
+Additionally, let Bi be the set of all assignments of Zi with
+βi ⊇α extending α (i.e. Bn = B and B0 = {α}).
+Step 1: For each of the 2n−1 many assignments βn−1 :
+Zn−1 →{0, 1} in Bn−1 we derive the constraint
+X
+β⊇βn−1
+rβ +
+X
+z∈Zn−1
+z1−βn−1(z) ≥1
+(a)
+by RUP: Assuming the negation of (a), we get (b) rβ ≥1 for
+all β ⊇βn−1, and (c) zβn−1(z) ≥1 for all z ∈Zn−1. Note
+that {βn−1 ∪{zn 7→0}, βn−1 ∪{zn 7→1}} ⊆Bn. Thus, by
+using (b) and (c) with (20) for βn−1 ∪{zn 7→0}, we derive
+(d) zn ≥1, and similarly by using (b) and (c) with (20) for
+βn−1 ∪{zn 7→1} we derive zn ≥1, a contradiction to (d).
+Step k: As induction hypothesis we have
+X
+β⊇βn−k+1
+rβ +
+X
+z∈Zn−k+1
+z1−βn−k+1(z) ≥1
+(e)
+for each βn−k+1 ∈Bn−k+1. We derive the constraint
+X
+β⊇βn−k
+rβ +
+X
+z∈Zn−k
+z1−βn−k(z) ≥1
+(f)
+by RUP: Assuming the negation of (f), we get (g) rβ ≥1 for
+all β ⊇βn−k, and (h) zβn−k(z) ≥1 for all z ∈Zn−k. We
+use (g) and (h) with (e) for βn−k ∪{zn−k+1 7→0} obtained
+in step k −1, to derive (i) zn−k+1 ≥1, and similarly we
+use (g) and (h) with (e) for βn−k ∪{zn−k+1 7→1} to derive
+zn−k+1 ≥1, a contradiction to (i).
+The constraint derived in step n is
+X
+β∈B
+rβ +
+X
+y∈Y
+y1−α(y) ≥1
+(j)
+as β0 = α and Z0 = Y .
+We can now derive the desired constraint (21) by RUP:
+Assuming that rα+P
+β∈B rβ ≥1+|B| we obtain (k) rα ≥1
+and (l) rβ ≥1 for all β ∈B. From (k) and (19) we obtain
+that (m) yα(y) ≥1 for all y ∈Y , and thus (j) with (l) and
+(m) leads to a contradiction.
+
+
+Efficiently Proof-Logging Pattern Database
+Heuristics
+In the paper, we described PDB certificates where the over-
+head is not within a constant factor of an efficient imple-
+mentation of a PDB heuristic, which only traverses the part
+of the abstract state space that is backwards-reachable from
+the goal. Here we describe an alternative approach that is
+constant-factor efficient for such an implementation.
+Definition 5. Let Π = ⟨V, A, I, G⟩be a STRIPS planning
+task and P ⊆V. The PB circuit for the PDB heuristic with
+pattern P is the PB circuit ⟨HPDB, rPDB⟩with input variables
+V ∪Vc, where the set represented by HPDB contains for each
+abstract state sα ⊆P with d(sα) < ∞two constraints
+rsα ⇔
+X
+v∈sα v +
+X
+v∈P \sα ¯v ≥|P|, and (22)
+rsα
+≥B−d(sα) ⇔rsα + K≥B−d(sα) ≥2,
+(23)
+and with S = {sα ⊆P | d(sα) < ∞} the constraint
+r∞⇔
+X
+sα∈S rsα ≥|S|
+(24)
+as well as the final reification
+rPDB ⇔r∞+
+X
+sα∈S rsα
+≥B−d(sα) ≥1.
+(25)
+On the evaluation of a state s, the heuristic always returns
+reification variable rPDB to the search. In the following we
+discuss how the required proofs can be generated.
+We begin with the state lemma, which requires a new
+proof for each evaluated state.
+Lemma 19. RUP can derive the state lemma
+(rs ∧cost≥max{0,B−h(s)}) →rPDB from Cinit ∪HPDB ∪Cs,
+where Cs = {rs ⇔P
+v∈s v + P
+v∈V\s ¯v ≥|V|}.
+Proof. Assume (a) rs ≥1, (b) cost≥max{0,B−h(s)} ≥1, and
+(c) rPDB ≥1. From (a) and Cs, we receive v ≥1 for each
+v ∈s and ¯v ≥1 for each v ∈V \ s, and in particular (d)
+v ≥1 for each v ∈α(s) and ¯v ≥1 for each v ∈P \ α(s).
+If d(α(s)) < ∞, we derive with constraints (22) and (d),
+that (e) rα(s) ≥1. Since h(s) = d(α(s)), we can use (b)
+and (e) with (23) to derive (f) rα(s)
+≥B−d(α(s)). With (25), this
+gives us rPDB, a contradiction to (c).
+If d(α(s)) = ∞, we get from constraints (22) and (d) for
+every sα with d(sα) < ∞, that (g) rsα ≥1, which gives
+with (24) that r∞≥1. With (25), this gives us rPDB ≥1, a
+contradiction to (c).
+Since the PB circuit for the heuristic is the same for all
+evaluated states, we only need to include the proof for the
+goal lemma and for the inductivity lemma once in the overall
+generated proof. For the goal lemma, we use the following:
+Lemma 20. It is possible to derive the goal lemma
+(rG ∧rPDB) →cost≥B from Cgoal ∪HPDB.
+Proof. Define a reification of the abstract goal as
+rGα ⇔
+X
+v∈G∩P
+v ≥|G ∩P|.
+We first establish (a) rGα + P
+sα⊆P,G∩P ⊆sα rsα ≥1 using
+lemma 18: Use α = {v 7→1 | v ∈G ∩P} and for each
+abstract state sα with G∩P ⊆sα, B contains the assignment
+β : P →{0, 1} with β(v) = 1 iff v ∈sα.
+Next, we use RUP to obtain (b) rG →r∞, assuming (c)
+rG ≥1 and (d) r∞≥1. From (24) and (d) we obtain (e)
+rsα ≥1 for each rsα ∈S and in particular for each rsα
+where sα is an abstract goal state which have d(sα) = 0 <
+∞From (c), we get v ≥1 for all v ∈G, an in particular for
+v ∈G ∩P. From these we obtain (f) rGα ≥1 From (a) and
+(e) we obtain rGα contradicting (f).
+We now can establish the desired constraint via RUP: As-
+sume (g) rG ≥1, (h) rPDB ≥1 and (i) cost≥B ≥1. From (g)
+and (2) we can derive that (j) v ≥1 for each goal variable
+v ∈G.
+We now iterate over all abstract states sα with d(sα) <
+∞. If sα is not an abstract goal state, we use (j) to de-
+rive from (22) that rsα ≥1 and consequently with (23)
+rsα
+≥B−d(sα) ≥1. If sα is an abstract goal state, we exploit
+that d(sα) = 0 and use (i) with (23) to derive rsα
+≥B−d(sα) ≥
+1. So for all abstract states sα with d(sα) < ∞we de-
+rived (k) rsα
+≥B−d(sα) ≥1. With (h), (k) and (25), we derive
+r∞≥1, and from (g) and (b) that r∞≥1, a contradic-
+tion.
+For the inductivity lemma, we develop the derivation by
+means of several lemmas. The first one considers the case
+where applying an induced abstract action aα in abstract
+state sα leads to an abstract successor state that is backwards
+reachable from the goal.
+Lemma 21. For each action a ∈A and abstract state sα
+such that aα is applicable in sα and d(sαJaαK) < ∞, RUP
+can derive
+(rsα ∧ra) →rsαJaαK′ from Ctrans ∪HPDB ∪H′
+PDB.
+Proof. By RUP assume (a) rsα ≥1, (b) ra ≥1, and (c)
+rsαJaαK′ ≥1. From (a) and (22) we get (d) v ≥1 for all
+v ∈sα and ¯v ≥1 for all v ∈P \ sα. From (b) and (7),
+we get (e) v′ ≥1 for all v ∈add(a), (f) v′ ≥1 for all
+v ∈del(a), and (g) eqv,v′ ≥1 for all v ∈V \ evars(a).
+From (d) and (g) and (6), we derive for all v ∈P \ evars(a)
+that v′ ≥1 if v ∈sα and v′ ≥1 if v /∈sα. Combining this
+with (e), (f) and the primed (22) from H′
+PDB for sαJaαK, we
+derive rsαJaαK′ ≥1, contradicting (c).
+The next lemma again considers individual actions and
+abstract states, but takes cost into account and allows to de-
+rive that the successor state-cost pair is contained in the in-
+variant of the certificate.
+Lemma 22. For each action a ∈A and abstract state sα
+such that aα is applicable in sα and d(sαJaαK) < ∞, it is
+possible to derive
+(rsα
+≥B−d(sα) ∧ra) →r′
+PDB from Ctrans ∪HPDB ∪H′
+PDB.
+Proof. We start by deriving some constraints over costs that
+we will use later in a RUP proof.
+
+
+First, we derive (a) (cost≥max{0,B−d(sα)}∧∆c=cost(a)) →
+cost′
+≥min{B,max{0,B−d(sα)+cost(a)}} as described in lemma
+2.
+We know that for the abstract goal distance it holds that
+d(sαJaαK) + cost(aα) ≥d(sα). Together with cost(aα) =
+cost(a), it follows that B −d(sαJaαK) ≤B −d(sα) +
+cost(a). We use this to derive (b) K′
+≥B−d(sα)+cost(a) →
+K′
+≥B−d(sαJaαK) as described in lemma 1.
+In addition, we establish (c) (rsα ∧ra) →rsαJaαK′ by
+RUP (lemma 21).
+Now we can derive the constraint in the claim by RUP,
+assuming that (d) rsα
+≥B−d(sα) ≥1, (e) ra ≥1, and (f)
+r′
+PDB ≥1. From (d), we get with (23) that (g) rsα ≥1
+and (h) K≥B−d(sα) ≥1. From (e), (g) and (c) we derive (i)
+rsαJaαK′ ≥1.
+From (e) and (7), we derive (j) ∆c=cost(a)
+≥
+1.
+From (a) together with (h) and (j) we derive that (k)
+K′
+≥B−d(sα)+cost(a) ≥1. From (b) together with (k) we de-
+rive that (l) K′
+≥B−d(sαJaαK) ≥1. From (l), (i) and the primed
+constraint (23) from H′
+PDB we get rsαJaαK
+≥B−d(sαJaαK)
+′. With the
+primed version of (25) from H′
+PDB this yields r′
+PDB ≥1, con-
+tradicting (e).
+The next lemma considers the case that the successor state
+of some backwards-reachable state is not backwards reach-
+able, and allows to derive that this state-cost pair is contained
+in the invariant of the certificate.
+Lemma 23. For each action a ∈A and abstract state
+sα such that aα is applicable in sα and d(sα) < ∞and
+d(sαJaαK) = ∞, it is possible to derive
+(rsα
+≥B−d(sα) ∧ra) →r′
+PDB from Ctrans ∪HPDB ∪H′
+PDB.
+Proof. By RUP assume (a) rsα
+≥B−d(sα) ≥1 and (b) ra ≥1
+and (c) r′
+PDB ≥1. From (a) and (23) we derive (d) rsα ≥1.
+From (b) and (7), we get (e) v′ ≥1 for all v ∈add(a),
+(f) v′ ≥1 for all v ∈del(a), and (g) eqv,v′ ≥1 for all
+v ∈V \evars(a). From (d) and (22) we obtain that (h) v ≥1
+for all v ∈sα and (i) v ≥1 for all v ∈P \ sα. Using (6)
+with (g), (h) and (i), we derive for all v ∈P \ evars(a)
+that (j) v′ ≥1 if v ∈sα and (k) v′ ≥1 if v /∈sα. As
+d(sαJaαK) = ∞, we can derive from the primed versions
+of (22) from H′
+PDB and (e), (f), (j) and (k) that (l) d
+rsα′ ≥1
+for all c
+rsα ∈S. Therefore, using the primed version of (24)
+from H′
+PDB we obtain (m) r∞′ ≥1, which with (25) yields
+r′
+PDB ≥1 contradicting (b).
+The next lemma generalizes the previous lemmas from
+individual actions to the entire transition relation:
+Lemma 24. For each abstract state sα with d(sα) < ∞, it
+is possible to derive
+(rsα
+≥B−d(sα) ∧rT ) →r′
+PDB from Ctrans ∪HPDB ∪H′
+PDB.
+Proof. For each action a ∈A that is applicable in sα, we
+establish (a) (rsα
+≥B−d(sα) ∧ra) →r′
+PDB by means of lemmas
+22 and 23.
+Afterwards, the desired constraint can be derived by RUP,
+assuming (b) rsα
+≥B−d(sα) ≥1, (c) rT ≥1 and (d) r′
+PDB ≥1.
+For each action a ∈A, we derive (e) ra ≥1 as follows:
+If aα is applicable in sα, we use (a), (b) and (d). Otherwise,
+there is a v ∈pre(a)∩P with v /∈sα. From (b) and (23), we
+derive rsα ≥1, which with (22) gives us (f) v ≥1. Since
+v ∈pre(a), we can use (f) with (7) to derive (e) also for this
+case. Since we have derived (e) for all actions a ∈A, we
+can use (8) to derive rT ≥1, a contradiction to (c).
+The previous lemmas have covered the cases where the
+considered state before a transition is backwards-reachable.
+The next series of lemmas covers the cases where a transi-
+tion starts in a region that is not backwards-reachable.
+We say that action a is consistent with abstract state sα,
+if there is an abstract state c
+sα such that the application of aα
+in c
+sα leads to sα. An action a is consistent with sα iff
+• all add effects of a from P are true in sα
+add(a) ∩P ⊆sα,
+• all delete effects of a from P are false in sα
+del(a) ∩P ∩sα = ∅, and
+• all preconditions of a from P that are not affected by a
+are still true in sα: (pre(a) ∩P) \ evars(a) ⊆sα
+If the action is not consistent with sα, we say it is inconsis-
+tent.
+The following lemma shows that we can derive that a
+backwards-reachable state cannot be reached with an incon-
+sistent action from a region that is not backwards-reachable.
+Lemma 25. For each action a ∈A and abstract state sα
+with d(sα) < ∞such that a is inconsistent with sα, RUP
+can derive
+(r∞∧ra) →rsα′ from Ctrans ∪HPDB ∪H′
+PDB.
+Proof. Assume (a) rsα′ ≥1, (b) ra ≥1, and (c) r∞≥1.
+From (a) and (22) from H′
+PDB, we get (d) v′ ≥1 for all
+v ∈sα and (e) v′ ≥1 for all v ∈P \ sα.
+From (b) and (7), we get (f) v′ ≥1 for all v ∈add(a),
+(g) v′ ≥1 for all v ∈del(a), (h) eqv,v′ ≥1 for all v ∈
+V \ evars(a) and (i) v ≥1 for all v ∈pre(a).
+Since a is inconsistent with sα, (*) there is a v ∈P ∩
+add(a) with v′ ≥1, or (**) there is a v ∈P ∩del(a) with
+v′ ≥1, or (***) there is a v ∈(pre(a) ∩P) \ evars(a)
+with v′ ≥1. In cases (*) and (**), we can derive a contra-
+diction with (f) and (e), or (g) and (e), respectively. In case
+(***), we can for this v derive from (h) and (6) that v ≥1,
+contradicting (i).
+The next lemma allows us to derive the same constraint as
+the previous lemma but for a consistent action.
+Lemma 26. For each action a ∈A and abstract state sα
+with d(sα) < ∞such that a is consistent with sα, it is pos-
+sible to derive (r∞∧ra) →rsα′ from Ctrans ∪HPDB ∪H′
+PDB.
+Proof. Define L = (pre(a) ∩P) ∪(sα \ evars(a)) ∪{v |
+v ∈(P \ sα) \ evars(a)} and the corresponding reifica-
+tion (a) rL ⇔P
+ℓ∈L ℓ≥1. Define L+ = {ℓ∈L | ℓ=
+v for some v ∈P} and L−= L \ L+.
+
+
+Define set Q = {c
+sα ⊆P | L+ ⊆c
+sα and L−⊆P \
+c
+sα}. This set contains exactly the abstract states c
+sα such that
+c
+sαJaαK = sα. Since sα has a finite abstract goal distance,
+this must also be true for all these c
+sα. We can use lemma 18
+to derive (b) rL + P
+rd
+sα∈Q rc
+sα ≥1.
+We are now ready to establish the desired constraint with
+RUP: Assume (c) rsα′ ≥1, (d) ra ≥1, and (e) r∞≥1.
+From (c) and (22) from H′
+PDB, we get (f) v′ ≥1 for all
+v ∈sα and (g) v′ ≥1 for all v ∈P \ sα.
+From (d) and (7), we get (h) v′ ≥1 for all v ∈add(a),
+(i) v′ ≥1 for all v ∈del(a), (j) eqv,v′ ≥1 for all v ∈
+V \ evars(a) and (k) v ≥1 for all v ∈pre(a).
+We derive from (6), (f) and (j) that (l) v ≥1 for all v ∈
+sα\evars(a) and analogously from (g) and (j) that (m) v ≥1
+for all v ∈(P \ sα) \ evars(a).
+From (a) with (k), (l) and (m) we derive (n) rL ≥1.
+From (e) and (24) we get that (o) rc
+sα ≥1 for all c
+sα ∈S
+and in particular for all c
+sα ∈Q.
+From (b) and (o) we get rL ≥1, contradicting (n).
+The next lemma generalizes the previous lemmas from
+individual actions to the entire transition relation:
+Lemma 27. For abstract state sα with d(sα) < ∞, RUP
+can derive CΠ ∪HPDB ∪H′
+PDB ⊢(r∞∧rT ) →rsα′.
+Proof. For each action a ∈A, we establish (a) (r∞∧ra) →
+rsα′ by means of lemmas 25 and 26, respectively.
+Afterwards, the desired constraint can be derived by RUP,
+assuming (b) rsα′ ≥1, (c) rT ≥1 and (d) r∞≥1. For
+every a ∈A, we get from (b), (d) and (a) that ra ≥1. With
+(8), this yields rT ≥1, contradicting (c).
+The following lemma allows us to derive that any succes-
+sor of any state in a region that is not backwards-reachable,
+is contained in the invariant:
+Lemma 28. It is possible to derive (r∞∧rT ) →r′
+PDB from
+Ctrans ∪HPDB ∪H′
+PDB.
+Proof. We first establish (a) (r∞∧rT ) →rsα′ for all ab-
+stract states sα ∈S using lemma 27.
+Then we can derive the desired constraint by RUP, assum-
+ing (b) r∞≥1, (c) rT ≥1, and (d) r′
+PDB ≥1. From (b) and
+(c) and (a) we obtain (e) rsα′ ≥1 for all abstract states
+sα ∈S. Using the primed version of (24) from H′
+PDB and
+(e), we obtain (f) r∞′ ≥1, which together with the primed
+version of (25) from H′
+PDB yields r′
+PDB ≥1 in contradiction
+to (d).
+The final step for the inductivity lemma generalizes the
+previous results to the entire PB circuit of the heuristic.
+Lemma 29. It is possible to derive the inductivity lemma
+(rPDB ∧rT ) →r′
+PDB from Ctrans ∪HPDB ∪H′
+PDB.
+Proof. We
+first
+establish
+with
+lemma
+24
+that
+(a)
+(rsα
+≥B−d(sα) ∧rT ) →r′
+PDB for each abstract state sα with
+d(sα) < ∞and with lemma 28 that (b) (r∞∧rT ) →r′
+PDB
+holds.
+The desired constraint can now be derived by RUP, as-
+suming (c) rPDB ≥1, (d) rT ≥1, and (e) r′
+PDB ≥1. Using
+(d) and (e) with (a), we can derive for each abstract state aα
+with d(aα) < ∞that (f) rsα
+≥B−d(sα) ≥1. Using (d) and (e)
+with (b) we get (g) r∞≥1. From (25) with (f) and (g) we
+get rPDB ≥1, contradicting (c).

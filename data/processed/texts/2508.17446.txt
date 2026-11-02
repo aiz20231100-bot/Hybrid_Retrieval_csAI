@@ -1,0 +1,2478 @@
+Solving Constrained Stochastic Shortest Path Problems
+with Scalarisation
+Johannes Schmalza,b,* and Felipe Trevizanb
+aSaarland University, Germany
+bAustralian National University, Australia
+ORCID (Johannes Schmalz): https://orcid.org/0000-0003-3389-2490, ORCID (Felipe Trevizan):
+https://orcid.org/0000-0001-5095-7132
+Abstract.
+Constrained Stochastic Shortest Path Problems (CSSPs) model
+problems with probabilistic effects, where a primary cost is min-
+imised subject to constraints over secondary costs, e.g., minimise
+time subject to monetary budget. Current heuristic search algorithms
+for CSSPs solve a sequence of increasingly larger CSSPs as linear
+programs until an optimal solution for the original CSSP is found.
+In this paper, we introduce a novel algorithm CARL, which solves
+a series of unconstrained Stochastic Shortest Path Problems (SSPs)
+with efficient heuristic search algorithms. These SSP subproblems
+are constructed with scalarisations that project the CSSP’s vector of
+primary and secondary costs onto a scalar cost. CARL finds a max-
+imising scalarisation using an optimisation algorithm similar to the
+subgradient method which, together with the solution to its associ-
+ated SSP, yields a set of policies that are combined into an optimal
+policy for the CSSP. Our experiments show that CARL solves 50%
+more problems than the state-of-the-art on existing benchmarks.
+1
+Introduction
+Stochastic Shortest Path Problems (SSPs) model problems where the
+effects of actions can be probabilistic and Constrained SSPs (CSSPs)
+extend the model by allowing constraints over secondary costs, en-
+forcing that the incurred secondary costs do not exceed a specified
+threshold over expectation. This can represent interesting real-world
+problems, e.g., planning an aeroplane’s route that minimises fuel
+usage while avoiding bad weather and satisfying certain timing re-
+quirements [14]. SSPs can be solved with the primal formulation,
+where we optimise over variables that represent the agent’s cost-to-
+go (a.k.a. value functions); or with the dual formulation over oc-
+cupation measures, which represent the expected number of times
+an action is applied in each state. Algorithms over the primal rep-
+resentation tend to be faster and indeed, the state-of-the-art algo-
+rithms for solving SSPs optimally use the primal representation,
+e.g., iLAO∗[18], LRTDP [8], CG-iLAO∗[26]. In contrast, the only
+heuristic search algorithms for CSSPs use the dual representation:
+i-dual [31] and i2-dual [32]. In this paper, we present the first heuris-
+tic search algorithm that solves CSSPs optimally using the primal
+space, and show that it outperforms the existing algorithms.
+Our algorithm CARL builds on existing work for finding determin-
+istic policies for CSSPs (which are generally suboptimal) [22], with
+∗Corresponding Author. Email: schmalz@cs.uni-saarland.de.
+the key difference that CARL finds optimal (potentially stochastic)
+policies. CARL works by running heuristic search in the primal space
+using scalarisation, where a scalarisation λ projects the CSSP’s cost
+vector onto a scalar cost function, thereby inducing an unconstrained
+SSP. CARL searches for an optimal scalarisation λ∗with optimsa-
+tion techniques similar to the subgradient method [30] and solves
+SSPs induced by the encountered λ scalarisations as subproblems.
+Once CARL has found λ∗, it computes the optimal costs-to-go V ∗
+associated with that scalarisation, and builds an optimal policy for the
+CSSP by combining all of V ∗’s greedy policies. CARL’s subprob-
+lems are solved efficiently with heuristic search algorithms for SSPs
+and its outer problem over scalarisations is blind; this is reversed in
+the dual methods (i-dual and i2-dual) where the construction of sub-
+problems is guided with a heuristic, but the subproblems themselves
+are solved blindly by the LP solver. In our experiments, this tradeoff
+pays off and CARL can solve 1264 out of 1290 of our benchmark
+problems, whereas the state-of-the-art dual methods only solve 808.
+For some problems CARL is able to solve all instances while the
+state-of-the-art is not able to solve any, and over the problems where
+all algorithms solve all instances CARL offers an average speedup of
+10× w.r.t. the strongest baseline.
+2
+Background
+Stochastic Shortest Path Problems (SSPs) [4] are defined by the
+tuple ⟨S, sI, G, A, P, C⟩where S is a finite set of states; sI ∈S is
+the initial state; G ⊂S is a set of goal states that must be reached; A
+is a finite set of applicable actions, and we write A(s) to denote the
+applicable actions in state s; P is the probability transition function
+where P(s′|s, a) is the probability of reaching s′ after applying a to
+s; and C : A →R>0 is a cost function where C(a) gives the cost of
+applying the action a.
+Policies map states to actions and describe solutions to SSPs. Poli-
+cies come in two flavours: deterministic policies π : S →A and
+stochastic policies π : S →distr(A), which respectively map each
+state onto a single action, or onto a probability distribution over ac-
+tions from which an action should be selected randomly; π(s, a) is
+the probability that π applies a in s, and we may write π(s) = a
+if π(s, a) = 1. The envelope of policy π from s, written Sπ,s, de-
+notes the set of states reachable by following π from s. The policy
+π is closed w.r.t. s if π is defined for all s′ ∈Sπ,s, and π is proper
+w.r.t. s if following π from s guarantees that G is reached with proba-
+arXiv:2508.17446v1  [cs.AI]  24 Aug 2025
+
+
+bility 1. If π is not closed or not proper it is called open or improper,
+respectively. If s is omitted in these expressions, then we assume
+s = sI. We extend the notion of an envelope, and write supp(π)
+to denote the state-action pairs that might be encountered by π, i.e.,
+supp(π) = {(s, a) : s ∈Sπ, π(s, a) > 0}. We overload the C sym-
+bol and write C(π) to denote the expected cost incurred by following
+the proper policy π from sI. We make two standard assumptions for
+SSPs: a proper policy exists from each state (reachability), and any
+improper policy incurs infinite cost. Then, a policy π is optimal if it is
+closed and minimises C(π). Under these assumptions, SSPs always
+have an optimal deterministic policy [4].
+Primal algorithms for SSPs work over value functions V : S →
+R≥0, which represent the cost-to-go for each state, i.e., V (s) in-
+dicates the expected cost that the agent must incur to reach the
+goal from s. For each V , its Q-values are Q(s, a) = C(a) +
+P
+s′∈S P(s′|s, a)V (s′). V ∗is the optimal value function and de-
+notes the cheapest possible cost-to-go for each state. V ∗is the unique
+solution of the Bellman equations:
+V (s) = min
+a∈A(s) Q(s, a) ∀s ∈S \ G and V (s) = 0 ∀s ∈G.
+For
+V ,
+its
+greedy
+policy
+πV
+is
+defined
+by
+πV (s)
+=
+argmina∈A(s)Q(s, a), where the argmin operator breaks ties arbi-
+trarily to yield a single policy. V ∗’s greedy policy gives an op-
+timal deterministic policy for the SSP. To compute V ∗, we can
+start with some V and iteratively apply Bellman backups V (s) ←
+mina∈A(s) Q(s, a) over states s. Value Iteration (VI) [3] applies Bell-
+man backups over the whole state space in each step, and converges
+to V ∗in the limit as the number of steps increases.
+Heuristic search algorithms use heuristic functions to focus on
+a promising subset of states and actions, and only apply backups
+there. For deterministic problems the canonical heuristic-search al-
+gorithm is A∗[20], and the state-of-the-art algorithms iLAO∗[18],
+LRTDP [8], and CG-iLAO∗[26] generalise A∗to the SSP setting.
+A heuristic function is a value function H : S →R≥0 that esti-
+mates V ∗, so that the algorithm can avoid states with large H(s)
+and prefer states with low H(s). We require heuristics to be ad-
+missible, i.e., to be lower bounds on the optimal value function
+H(s) ≤V ∗(s) ∀s ∈S. With admissible heuristics the heuristic-
+search algorithms we consider can guarantee optimality. For VI,
+we measure the change in successive value functions with Bellman
+residual RES(s) = |V (s)−mina∈A(s) Q(s, a)|, and stop search once
+the changes in V are sufficiently small. In heuristic search, we stop
+when V is ϵ-consistent [7], i.e., when for some greedy policy πV we
+have RES(s) ≤ϵ ∀s ∈SπV . This condition guarantees that V = V ∗
+as ϵ →0, and in practice, for sufficiently small ϵ, ϵ-consistent value
+functions induce an optimal policy.
+CG-iLAO∗[26] is a heuristic search algorithm over the primal
+space, which we explain because it provides crucial features to solve
+our subproblems efficiently. CG-iLAO∗is presented in alg. 1. It
+works over value function V and a partial SSP bS, which contains
+a subset of the original SSP’s states and actions. Non-goal states in bS
+are called “expanded” if they have at least one applicable action in bS,
+and are called “fringes” if they have none. In each step, CG-iLAO∗
+applies Bellman backups over the greedy policy bπV ’s envelope E,
+and expands E’s fringes. Thus, CG-iLAO∗simultaneously works to-
+wards making bπV closed by expanding fringes, and towards making
+V ϵ-consistent with the Bellman backups. Since bS need not contain
+all actions, CG-iLAO∗looks for expanded states s with actions a
+such that Q(s, a) < V (s), because this suggests a can improve V (s)
+and should be added if it is missing. Γ is a set of all state-action pairs
+Algorithm 1: CG-iLAO∗
+1 Function CG-iLAO∗(SSP S, heuristic H, ϵ ∈R>0)
+2
+bS ←partial SSP containing only sI
+3
+V ←value function initialised by H
+4
+repeat
+5
+bπV , bπold ←greedy policy for V , restricted to bS
+6
+E ←post-order DFS traversal of bπV from sI
+7
+bS, E, bπV ←expand fringes of E
+8
+V, RES, bπV , Γ ←apply Bellman backups over E,
+recording increases and decreases to V in Γ
+9
+V, RES, Γ, bS ←fix cases of V (s) > Q(s, a) in Γ
+10
+until fringes(E) = ∅and bπold = bπV and RES ≤ϵ
+11
+return V
+that potentially satisfy Q(s, a) < V (s), i.e., it is a superset of im-
+proving actions. Γ is efficiently maintained by tracking changes to V
+and line 9 fixes any issues by setting V (s) ←min{V (s), Q(s, a)}
+for all (s, a) ∈Γ and adding a as required. Note that this may in-
+troduce more instances of V (s) > Q(s, a), which are themselves
+recorded in Γ to be checked later.
+Constrained SSPs (CSSPs) [1, 31] are extensions to SSPs defined
+by C = ⟨S, sI, G, A, P, C, u⟩with two changes from SSPs: (1) the
+vector cost function C : A →R>0 × Rn
+≥0, where C0 : A →
+R>0 is the primary cost, and Ci : A →R≥0 for i ∈{1, . . . , n}
+are the secondary costs; (2) we have a vector of upper bounds u ∈
+Rn
+≥0. Note that we use boldface to denote vectors. Ci(π) denotes the
+expected cost of π on the ith cost; we assume reachability and that
+improper policies incur infinite primary cost. A policy π is feasible
+if it satisfies all its secondary-cost constraints, i.e., Ci(π) ≤ui ∀i ∈
+{1, . . . , n}, and π is optimal if it is closed, feasible, and minimises
+the primary cost C0(π) w.r.t. the other feasible policies. In contrast
+to SSPs, CSSPs may have no optimal deterministic policies and only
+strictly stochastic ones [1, 31]. This difference occurs because there
+may be deterministic policies that are infeasible on their own, but can
+be mixed to satisfy the secondary-cost constraints over expectation.
+There are no primal method for optimally solving CSSPs and all
+optimal CSSP algorithms rely on the dual formulation. The dual for-
+mulation optimises over the space of occupation measures x where
+xs,a represents the expected number of times that s is reached and
+then a applied. LP 1 is the occupation measure LP for CSSPs [31],
+where J·K is the Iverson bracket and we use the macros out(s) =
+P
+a∈A(s) xs,a and in(s) = P
+s′∈S,a′∈A(s′) xs′,a′P(s|s′, a′) for
+each s ∈S. LP 1 can be interpreted as a network flow, where a unit of
+flow is injected into sI, and must be routed through the actions so that
+all of it reaches the goals. An optimal solution x for LP 1 induces the
+optimal policy πx with πx(s, a) = xs,a/out(s) ∀s ∈S, a ∈A(s).
+min
+x
+X
+s∈S,a∈A(s)
+xs,aC0(a) s.t. C1–C4
+(LP 1)
+out(s) −in(s) = Js = sIK
+∀s ∈S \ G (C1)
+X
+g∈G
+in(g) = 1
+(C2)
+xs,a ≥0
+∀s ∈S, a ∈A(s) (C3)
+X
+s∈S,a∈A(s)
+xs,aCi(a) ≤ui
+∀i ∈{1, . . . , n} (C4)
+There is an important connection between deterministic and
+stochastic policies: any stochastic policy can be represented as a con-
+vex combination (a.k.a. mixture) of deterministic ones [14]. We write
+this decomposition of the stochastic policy π as π = µ0π0 + · · · +
+
+
+µkπk where µ0, . . . , µk ∈R>0, µ0 + · · · + µk = 1, and π0, . . . , πk
+are π’s constituent deterministic policies. We give an example of a
+CSSP and its policies in appendix A.
+3
+Solving CSSPs with Scalarisation
+In this section we explain how to solve CSSPs with scalarisation, and
+implement this framework in our novel algorithm CARL. First, we
+give a high-level overview of the algorithm, and then give details for
+its three main steps.
+Underlying the scalarisation approach is LP 2, the primal LP for
+LP 1. Intuitively, the Vs variables represent the cost-to-go V (s), so
+we will use V (s) and Vs interchangeably. In fact, if we construct
+LP 2 for an unconstrained SSP, then the λi and ui terms disappear
+and the LP becomes the standard primal LP for solving SSPs which
+encodes the Bellman equations for V . If we fix λ, then LP 2 again
+encodes the Bellman equations for an SSP, but with the modified cost
+function Cλ(a) = [1 λ] · C(a) (from C5) and the constant one-time
+terminal cost −Pn
+i=1 λiui (from the objective). S(λ) denotes such
+an SSP parameterised by λ.
+Definition 1 (Scalarised SSP). Given C and a scalarisation λ ∈
+Rn
+≥0, S(λ) is an SSP relaxation of C with the cost function Cλ : A →
+R≥0 s.t. Cλ(a) = [1 λ] · C(a) and the terminal cost −Pn
+i=1 λiui,
+which is incurred once when a goal is encountered, and is constant
+for λ. We write a proper policy’s cost as Cλ(π) = [1 λ] · C(π) −
+Pn
+i=1 λiui.
+We can interpret each λ as a scalarisation that projects the CSSP’s
+vector cost function onto a scalar cost function. An optimal solu-
+tion V ∗, λ∗for LP 2 gives the solution to the scalarised SSP’s Bell-
+man equations that are maximal over all scalarisations. Thanks to the
+strong duality of LPs, the solution V ∗, λ∗can be transformed into an
+optimal solution for LP 1 using complementary slackness, yielding
+an optimal stochastic policy for the CSSP. This transformation can
+be interpreted as extracting all the greedy deterministic policies for
+V ∗, and combining them into an optimal policy.
+max
+V,λ VsI −
+n
+X
+i=1
+λiui s.t. C5–C6
+(LP 2)
+Vs ≤C0(a) +
+n
+X
+i=1
+λiCi(a) +
+X
+s′∈S
+P(s′|s, a)Vs′
+∀s ∈S\G, a∈A(s) (C5)
+Vg = 0
+∀g ∈G (C6)
+λi ≥0
+∀i ∈{1, . . . , n} (C7)
+To avoid solving LP 2 directly, we separate the optimisation over
+V and λ into maxλ L(λ), where L(λ) = maxV VsI −Pn
+i=1 λiui,
+i.e., L(λ) is the optimal policy cost for S(λ). If we draw L(λ) for all
+values of λ, we get a surface that is piecewise linear concave [22]; we
+give some examples of this in appendix B. Thus, with an oracle that
+gives L(λ) and a subgradient for each λ, we can use any subgradient
+method to find λ∗= maxλ L(λ). Finally, we must find V ∗that
+describes all optimal deterministic policies for S(λ∗), from which
+we extract an optimal stochastic policy for the CSSP.
+Alg. 2 presents the high-level pseudocode of this scalarisation al-
+gorithm, named CARL. In the remainder of this section, we explain
+CARL’s three steps: (1) finding λ∗(line 3), (2) finding V ∗given λ∗
+(line 4), and (3) extracting the optimal stochastic policy (line 5). To
+conclude, we prove CARL’s correctness, and give more detail about
+CARL’s error terms.
+Algorithm 2: Solve CSSP with Scalarisation
+1 Function solve(CSSP C, heuristic H : S →Rn+1
+≥0 )
+2
+// λ∗∈Rn
+≥0, V : S →Rn+1
+≥0 , V ∗
+∀: S →R≥0
+3
+λ∗, V ←find-λ∗(C, H)
+4
+V ∗
+∀←find-all-opts-for-S(λ∗, V , C, H)
+5
+π∗←extract-opt-policy(λ∗, V ∗
+∀, C)
+6
+return π∗
+7 Function find-λ∗(CSSP C, H : S →Rn+1
+≥0 )
+8
+// λ ∈Rn
+≥0, V : S →Rn+1
+≥0 , g ∈Rn
+9
+λ ←0, V ←H
+10
+repeat
+11
+V ←solve-S(λ, V , C)
+12
+subgradient g ←[V1(sI) −u1 · · · Vn(sI) −un]
+13
+λ ←move from λ with g (see section 3.1)
+14
+until λ has converged (see section 3.5)
+15
+return λ, V
+16 Function solve-S(λ, V , C)
+17
+V ←solve S(λ) (see defn. 1) with SSP algorithm
+modified to work on vector V (see section 3.1)
+18
+return V
+19 Function find-all-opts-for-S(λ, C, H)
+20
+V ∗
+∀←solve-S(λ, V , C) with modification that satisfies
+strong ϵ-consistency (see eq. (1) in section 3.2)
+21
+return V ∗
+∀s.t. V ∗
+∀(s) = [1 λ∗] · V ∗
+∀(s) ∀s ∈S
+22 Function extract-opt-policy(λ, V ∗
+∀, C)
+23
+x∗←solution to SOL 1 with λ, V ∗
+∀, C
+24
+return πx∗
+We point out that CARL follows the concepts of Lagrangian de-
+composition and uses the same framework for finding λ∗as the al-
+gorithm by Hong and Williams [22]. The novelty of CARL is that
+it produces optimal (potentially stochastic) policies and improves on
+previous techniques, which we discuss further in section 4.
+3.1
+Finding a Maximal Scalarisation
+In this section, we describe find-λ∗(line 7), which searches over
+λs with a subgradient method (outer problem). This technique must
+compute subgradients, which we do by solving S(λ) as subproblems
+Outer optimisation over λ.
+Suppose that we have an oracle that
+returns L(λ) and a subgradient g for each λ. Recall that our op-
+timisation space, i.e., the surface obtained by plotting L(λ) for all
+λs, is piecewise linear concave. This function has “sharp kinks”
+and can not be differentiated there, which is why we need subgradi-
+ents [30].1 To find maxλ L(λ), we can use any optimisation method
+that accommodates concave and non-smooth search spaces. We fol-
+low Hong and Williams [22] and use an exact line search within co-
+ordinate search, which has been shown to be efficient for piecewise
+linear concave models with few constraints.
+Coordinate search maximises L(λ) by focusing on one coordinate
+at a time. That is, it sequentially solves for each i ∈{1, . . . , n}
+the subproblem maxλi L(λ), where all λj for j̸ = i are fixed
+from the previous step. Thus, for each coordinate i it maximises
+L([λ1 . . . λn]) where λi is the only variable and all other terms
+are fixed. This subproblem is solved with an exact line search which
+exploits that the subproblem is a piecewise linear concave problem
+with a single variable. The approach is reminiscent of binary search:
+1 Concave functions technically have supergradients, but these are still called
+subgradients in the literature.
+
+
+it starts with l = 0 and u ∈R>0 which give lower and upper bounds
+on the optimal assignment to λi. Then, the subgradients are com-
+puted at λ with λi = l and λi = u, the intersection of these subgra-
+dients is computed as m, and either l or u is updated to m, depend-
+ing on m’s subgradient. This process repeats until l and u converge
+or their subgradients have the same sign (see [22] for more details).
+We visualise how λ is updated with coordinate search in appendix B.
+Unfortunately, coordinate search is incomplete for non-smooth prob-
+lems [29], as we exemplify in appendix C. Fortunately, these edge
+cases occur rarely, as we see in our experiments (section 5), and are
+detectable: if we extract a stochastic policy from V †, λ† whose pri-
+mary cost is greater than L(λ†), then we know that λ†̸ = λ∗, be-
+cause L(λ∗) = C0(π∗) where π∗is extracted from V ∗, λ∗. If we
+detect that coordinate search failed we can fall back on a complete
+method to find λ∗; we use the subgradient method with projection to
+ensure λ ≥0 [30]. Line 13 represents a single update of λ using co-
+ordinate search or the subgradient method as a fall-back, as we have
+described.
+Oracle via S(λ) Subproblem.
+Recall that S(λ) (defn. 1) is an SSP
+relaxation of the CSSP, and therefore solved optimally by determin-
+istic policies. S(λ)’s optimal deterministic policy π∗
+λ gives L(λ) and
+a subgradient g ∈Rn in the following way: L(λ) = Cλ(π∗
+λ) and
+g = [C1(π∗
+λ) −u1 · · · Cn(π∗
+λ) −un] [22]. These two steps cor-
+respond to lines 11 and 12, respectively. Thus, we can implement
+an oracle for λ by finding π∗
+λ and then evaluating it w.r.t. Cλ and
+each secondary-cost function. To find π∗
+λ, we can use any optimal
+SSP algorithm with any heuristic that is admissible for SSPs, e.g.,
+h-max [6], LMcut [21], or ROC [32]. In the remainder of this sec-
+tion, we show how to implement solve-S (line 16) efficiently.
+Efficient Heuristic Search over S(λ)s.
+The S(λ) subproblems
+are unconstrained SSPs and can be solved efficiently with existing
+heuristic-search algorithms such as CG-iLAO∗[26], but we can im-
+prove efficiency further by exploiting some additional properties.
+First, instead of using a scalar value function V
+: S →R≥0,
+we use a vector value function V
+: S →Rn+1
+≥0
+with entries for
+each cost function. Then, we replace the scalar Bellman backups
+with a vectorised variant, where a Q-value is defined as Q(s, a) =
+C(a) + P
+s′∈S P(s′|s, a)V (s′) and the Bellman backup becomes
+V (s) ←Q(s, amin) for some amin that minimises [1 λ] · Q(s, a).
+With some minor technicalities (see appendix D for more details),
+SSP algorithms can be modified to use this vector Bellman backup,
+and they still solve S(λ) as an unconstrained SSP because the vector
+value function is projected onto Vλ(s) = [1 λ] · V (s). However, we
+now work on V directly with the advantage that we simultaneously
+find an optimal policy π∗for S(λ) and evaluate the different costs of
+π∗, giving us Ci(π∗
+λ) for each cost function i.
+To ensure optimality, we require an admissible heuristic to solve
+S(λ), i.e., H(s) ≤V ∗
+λ (s) ∀s ∈S; in addition, we also require
+that the heuristic is a vector in Rn+1
+≥0
+so that it can be used with
+V . To address this, we introduce λ heuristics. These compute some
+admissible scalar heuristic H(s), then identify which actions are se-
+lected by H(s) and sum their vector costs to obtain a heuristic cost
+vector H with [1 λ] · H(s) = H(s) ≤V ∗
+λ (s). For example, if
+a scalar heuristic uses actions a0 and a1 to construct its estimate
+H(s) = [1 λ] · C(a0) + [1 λ] · C(a1), then we assign H(s) ←
+C(a0) + C(a1) which indeed satisfies [1 λ] · H(s) = H(s). For
+most heuristics, we can use their internal data-structures to extract the
+selected actions, e.g., for LMcut [21] we consider the representative
+action from each cut and its weight, and for ROC [32] we consider
+actions’ operator counts. Another way to obtain admissible vector
+heuristics is with ideal-point (IP) heuristics [15]. Such heuristics are
+H = ⟨H0, . . . , Hn⟩where Hi are all admissible w.r.t. their cost
+function i. The advantage of λ heuristics is that they are computed
+for the specific S(λ) and are therefore more informative, but with the
+trade-off that they have to be recomputed for each S(λ), whereas an
+IP heuristic is admissible for all S(λ)s.
+Warm starting S(λ)s.
+Notice that all S(λ)s are the same problem
+only differing in their cost functions. This makes V from a previ-
+ous S(λold) a good candidate to start solving a new S(λnew), a tech-
+nique known as warm start in Operations Research. However, we
+have to be careful in reusing V . Suppose V is a solution to S(λold)
+and we have Vλold with Vλold(s) = [1 λold] · V (s) ∀s ∈S and
+Vλnew with Vλnew(s) = [1 λnew] · V (s) ∀s ∈S. Even if Vλold is
+admissible for S(λold), there is no guarantee that Vλnew is admissi-
+ble for S(λnew), which may break the optimality of heuristic search
+algorithms. Conveniently, CG-iLAO∗has a built-in mechanism for
+efficiently handling potentially inadmissible states by tracking states
+whose values have increased or decreased, i.e., we mark the states
+where [1 λnew] · V (s) decreases or increases w.r.t. [1 λold] · V (s) in
+Γ. As explained in section 2, this ensures that CG-iLAO∗fixes any
+issues in the value function and finds the optimal policy for S(λnew).
+Reusing V in this way speeds up CARL significantly because the
+optimal policy for one S(λ) is often good for the next one, and in the
+best case, if the change in Cλ does not affect the optimal policy, then
+V immediately solves the new S(λ′).
+3.2
+Finding an Optimal Value Function
+Once we have λ∗, we need to compute V ∗: S →R≥0 that de-
+scribes all optimal deterministic policies for S(λ∗), which is done in
+the pseudocode by find-all-opts-for-S (line 19). Let Π(V ) denote the
+set of tied-greedy policies for V , that is, the greedy policies of V ob-
+tained by breaking ties in all possible ways. Then, if V ∗is the unique
+solution to the Bellman equations, Π(V ∗) gives precisely all opti-
+mal deterministic policies for the SSP. For us, V ∗is produced by an
+SSP algorithm that only guarantees ϵ-consistency [7]. This means V ∗
+need only have a small error within one policy’s envelope, and any
+other policies’ envelopes can have arbitrarily larger value functions,
+i.e., V ∗need only encode a single greedy policy. We give an exam-
+ple to illustrate this in appendix E. In order to obtain a value function
+that encodes all (approximately) optimal policies, without solving the
+Bellman equations exactly, we introduce strong ϵ-consistency. This
+condition requires a value function to be ϵ-consistent for all of its
+greedy policies. Formally, V is strongly ϵ-consistent when
+∀s ∈
+[
+π∈Π(V )
+Sπ
+RES(s) ≤ϵ.
+(1)
+When a value function is strongly ϵ-consistent, we write it as V ∗
+∀.
+Note that this has not been defined for SSPs before, because there
+was no need for more than one policy.
+Finding V ∗
+∀.
+Existing SSP algorithms are designed to find
+ϵ-consistent solutions, so we must modify them to find strongly
+ϵ-consistent solutions. This is done by updating the termination con-
+dition, and ensuring that Bellman backups are applied for all greedy
+policies for V . We make this modification concrete for the ver-
+sion of CG-iLAO∗from section 3.1, but it can be done for other
+algorithms too. Recall that this version of CG-iLAO∗works over
+the vector value function V
+: S →Rn+1, so we are look-
+ing for V ∗
+∀that induces V ∗
+∀with V ∗
+∀(s) = [1 λ∗] · V ∗
+∀(s). In-
+stead of tracking the candidate policy bπV , we track the union of
+
+
+all tied-greedy policies (up to ϵ) with tied(s) = {a ∈A(s) :
+Qλ(s, a) ≤mina′∈A(s) Qλ(s, a′) + ϵ}. Then, CG-iLAO∗’s pol-
+icy envelope E over all tied-greedy policies is found by running the
+depth-first search from sI over tied. Additionally, any actions with
+Qλ(s, a) ≤Vλ(s) + ϵ must be added to bS in line 9 so that new
+tied-greedy actions are caught. Also, we replace the termination con-
+dition bπold = bπV , now requiring that no new actions have been added
+to any tied(s). We only care about new actions and do not track re-
+movals, because they only shrink the envelope and do not affect V .
+These changes ensure that CG-iLAO∗outputs a strongly ϵ-consistent
+solution which captures all ϵ-consistent policies. To prove this, we
+use similar arguments to Schmalz and Trevizan [26] to obtain that
+∀s ∈E RES(s) ≤ϵ. But E, obtained by DFS over the tied-greedy
+actions (up to ϵ), captures all tied-greedy policies on V by construc-
+tion, so V must be strongly ϵ-consistent.
+3.3
+Extracting Stochastic Policies
+Suppose we have λ∗and V ∗
+∀which encodes all optimal deterministic
+policies for S(λ∗). The final step of CARL is to extract an optimal
+(potentially stochastic) policy, which is done by extract-opt-policy
+(line 22). To implement this, recall that V ∗
+∀and λ∗give the pri-
+mary cost of all (potentially stochastic) optimal policies for the CSSP
+with C0(π∗) = V ∗
+∀(sI) −Pn
+i=1 λ∗
+i ui. Furthermore, we can extract
+π∗’s envelope and support from the envelopes and supports of V ∗
+∀’s
+greedy policies. We now show how to use these insights to extract
+π∗, and thereby solve the CSSP optimally.
+Given a policy π, we can evaluate its primary cost C0(π)
+with LP 1 by restricting the LP’s variables to the support of π,
+adding the constraints xs,a/out(s)
+=
+π(s, a) for all s, a
+∈
+supp(π), and removing the objective function. The resulting Sys-
+tem of Linear Equations and Inequalities (SOL) finds C0(π) as
+P
+s,∈S,a∈A xs,aC0(a). Our case is the converse since we have π’s
+cost C0(π) but do not have the distributions π(s, ·). So, instead
+of adding the constraints xs,a/out(s) = π(s, a), we add the con-
+straint P
+s∈S,a∈A(s) xs,aC0(a) = C0(π∗) = V ∗
+∀(sI)−Pn
+i=1 λ∗
+i ui;
+and we approximate supp(π∗) with supp(V ∗
+∀), which is defined as
+S
+π∈Π(V ∗
+∀) supp(π), noting that supp(V ∗
+∀) ⊇supp(π∗) as we ex-
+plain later. This yields SOL 1 without C9 and C10 which we also
+explain later. Thus, a solution x for SOL 1 (with or without C9 and
+C10) induces a feasible policy πx with the same cost as an optimal
+policy by construction. SOL 1’s only decision is how to distribute
+the actions in supp(V ∗
+∀) so that the resulting policy has the required
+costs; in other words, it computes how to combine S(λ)’s determin-
+istic policies into an optimal feasible policy for C.
+find x s.t. C1–C3 over supp(V ∗
+∀) and C8–C10
+(SOL 1)
+X
+s,a∈supp(V ∗
+∀)
+xs,aC0(a) = V ∗
+∀(sI) −
+n
+X
+i=1
+λ∗
+i ui
+(C8)
+X
+s,a∈supp(V ∗
+∀)
+xs,aCi(a) ≤ui
+∀i ∈{1, . . . , n} s.t. λ∗
+i = 0
+(C9)
+X
+s,a∈supp(V ∗
+∀)
+xs,aCi(a) = ui
+∀i ∈{1, . . . , n} s.t. λ∗
+i > 0 (C10)
+Formally, SOL 1 comes from complementary slackness, a tech-
+nique that lets us transform an optimal solution of an LP into an
+optimal solution for its dual [5]. Suppose V ∗
+∀, λ∗is an optimal basic
+feasible solution for LP 2 that is non-degenerate; intuitively, a basic
+feasible solution corresponds to a deterministic policy (rather than a
+stochastic one) and non-degeneracy is a technical requirement that
+the solution does not have too many variables set to zero. With such
+V ∗
+∀, λ∗, we can recover a solution for LP 2’s dual (LP 1) with com-
+plementary slackness by constructing a system of linear equations
+according to the following rules, and then solving it:
+V ∗
+∀(s) > 0 =⇒C1 for s is tight, i.e., out(s) −in(s) = Js = sIK
+λi > 0 =⇒C4 for i is tight, i.e.,
+X
+s∈S,a∈A(s)
+xs,aCi(a) = ui
+C5 for s, a is loose, i.e., V ∗
+∀(s) < Q∗
+∀(s, a) =⇒xs,a = 0.
+These rules describe the constraints of SOL 1. In particular, note
+that these rules tighten the secondary-cost constraints to an equal-
+ity P
+s∈S,a∈A(s) xs,aCi(a) = ui whenever λ∗
+i > 0, yielding the
+constraints C9 and C10. Unfortunately, our V ∗
+∀, λ∗is often degener-
+ate, so this system of linear equations is underspecified, and we must
+include additional constraints from the original problem. In particu-
+lar, we have to reintroduce the secondary cost constraints C4 where
+λi = 0, which is what we do in C9. We also include C8 to ensure the
+resulting policy is indeed optimal.
+We have been claiming that supp(π∗) ⊆supp(V ∗
+∀) and that SOL 1
+is constructing π∗from the optimal deterministic policies of S(λ∗).
+This follows from the last complementary slackness rule: occupation
+measures xs,a are only allowed to be non-zero if V ∗
+∀(s) = Q∗
+∀(s, a),
+i.e., if a is a tied-greedy action and thereby π(s) = a for some π ∈
+Π(V ∗
+∀).
+3.4
+Correctness of CARL
+In this section we show that CARL always finds an optimal solution.
+First, find-λ∗(C, H) (alg. 2) is guaranteed to find λ∗. This is because
+maxλ L(λ) is a piecewise linear concave problem, solving S(λ)s
+yields subgradients [22], and we use a complete subgradient method
+that is guaranteed to converge to λ∗(if coordinate search fails, it
+falls back on the subgradient method, see section 3.1). It remains to
+show that CARL finds V ∗for S(λ∗) such that the solution encodes
+an optimal policy.
+Lemma 1. If π∗is an optimal policy for the CSSP, then its con-
+stituent deterministic policies must be optimal for S(λ∗).
+Proof. We first show that π∗is optimal for S(λ∗), and then con-
+clude that its constituent deterministic policies must also be op-
+timal for S(λ∗). Policy π∗’s cost in S(λ∗) can be rewritten as
+Cλ∗(π∗) = C0(π∗)+Pn
+i=1 λ∗
+i (Ci(π∗)−ui). But π∗is feasible, so
+Ci(π∗) −ui ≤0 for all i ∈{1, . . . , n}, and therefore Cλ∗(π∗) ≤
+C0(π∗). On the other hand, we know that Cλ∗(π) ≥C0(π∗) for
+any policy π, due to the semantic of λ∗within strong duality. Thus,
+Cλ∗(π∗) = C0(π∗), which is the minimal cost for S(λ∗), and π∗
+is optimal for S(λ∗). We know that π∗can be decomposed into the
+convex combination of deterministic policies µ0π0+· · ·+µkπk, and
+Cλ∗(πi) = Cλ∗(π∗) for each i ∈{0, . . . , k}, because otherwise π∗
+can not be optimal for S(λ∗).
+Theorem 1. CARL’s find-all-opts-for-S(λ∗, C, H) finds V ∗
+∀so that
+SOL 1 with λ∗and V ∗
+∀constructed by V ∗
+∀(s) = λ∗·V ∗
+∀(s) produces
+an optimal stochastic policy.
+Proof. Suppose V ∗
+∀encodes all the optimal deterministic policies
+for S(λ∗). If an optimal policy π∗exists for the CSSP, then its con-
+stituent deterministic policies must be optimal for S(λ∗) by lem. 1;
+therefore its constituent policies are a subset of Π(V ∗
+∀). It follows
+that SOL 1 contains the whole support of such policy π∗. Since
+C0(π∗) = V ∗
+∀(sI)−Pn
+i=1 λ∗
+i ui due to strong duality, it must be the
+case that SOL 1 induces an optimal policy, thanks to its connection
+
+
+to LP 1. We have argued that the version of CG-iLAO∗presented in
+section 3.2 finds all policies for which V can be ϵ-consistent, which
+gives approximately optimal policies for small ϵ, and precisely the
+optimal policies as ϵ →0. We give more detail about CARL’s error
+terms in section 3.5.
+3.5
+Error Terms
+In this section, we describe the error terms that are present in CARL
+and explain how to bound their effects on CARL’s policies. We have
+already discussed that CG-iLAO∗, which solves CARL’s S(λ) sub-
+problems, uses strong ϵ-consistency with ϵ ∈R>0 as its stopping
+condition, extending regular ϵ-consistency for SSPs (see section 3.2).
+The error associated with ϵ-consistency is well-understood and ac-
+cepted in the SSP literature: for a fixed ϵ it is possible to construct
+a pathological problem where an ϵ-consistent policy is arbitrarily
+worse than the optimal policy, but for any SSP, as ϵ →0, ϵ-consistent
+policies become optimal [7, 25, 17]. We inherit the same proper-
+ties in strong ϵ-consistency, so our version of CG-iLAO∗produces
+V ′
+∀≈V ∗
+∀where the error disappears as ϵ →0. Another error term
+appears in find-λ∗, which we have omitted until now for simplicity.
+Recall that to find λ∗we use coordinate search, and if it fails we
+fall back on the subgradient method (see section 3.1). Both require a
+tolerance term η ∈R>0. In practice, coordinate search stops when
+it iterates over all coordinates and no single coordinate was able to
+improve L(λ) by more than η. The subgradient method stops when
+its step size (which is monotonically decreasing over the algorithm’s
+iterations) is smaller than η. In both cases, this yields an approximate
+solution λ′ ≈λ∗, where the error disappears as η →0.
+Both ϵ and η can affect CARL’s solution, and we explain how
+this can be mitigated. Assume for now that ϵ is sufficiently small. If
+CARL finds λ′ ≈λ∗and an associated policy π, we have
+L(λ′) ≤C0(π∗) ≤C0(π)
+where π∗is an optimal policy for the CSSP. This gives us the opti-
+mality gap C0(π)−L(λ′), which upper bounds how far π’s primary
+cost deviates from π∗’s. If the gap is too large, we can reduce η. Now,
+we return our attention to ϵ. The value of ϵ affects the subgradient
+search oracle’s value of L(λ) and subgradient g at each λ, which in
+turn can significantly affect the found policy’s quality and breaks the
+optimality gap for η. Recall that this is standard for algorithms using
+ϵ-consistency, and they only guarantee an optimal policy as ϵ →0.
+For additional guarantees, there are “outer loop” methods that run
+the algorithm and select ϵ automatically in order to give the stronger
+guarantee of ϵ-optimality [17, 19]. CARL is in a similar position,
+and guarantees an optimal policy as ϵ →0, but requires an outer
+loop method to select ϵ automatically for stronger guarantees. The
+outer loop methods for ensuring ϵ-optimality apply to the strongly
+ϵ-consistent subproblems with minimal changes, which lets us re-
+cover a correct optimality gap. Thus, it is possible to modify CARL
+to produce solutions with stronger guarantees. In practice, values of
+ϵ = η = 0.0001 are usually “good enough.”
+4
+Related Work
+In the Operations Research (OR) community, it is common to con-
+sider the Lagrangian dual of a constrained problem, and then use
+some version of the subgradient method to find a solution. This
+framework has been used to find plans for constrained deterministic
+shortest path problems [16], stochastic policies for Constrained Par-
+tially Observable Markov Decision Processes (POMDPs) [23], and
+deterministic policies for CSSPs [22]. Our presentation differs from
+theirs, but LP 2 is functionally identical to the Lagrangian dual of
+LP 1, and CARL fits within this OR framework. They have the same
+λ as our scalarisation term, but they call it a Lagrangian multiplier.
+Hong and Williams [22]’s algorithm is the most similar to CARL.
+Both solve CSSPs and start by finding the CSSPs’ λ∗. The differ-
+ence is that CARL looks for optimal, potentially stochastic, policies
+whereas they focus on deterministic ones. Our method for finding λ∗
+is based on theirs but we make substantial algorithmic improvements.
+They solve S(λ)s with iLAO∗and reuse V as a warm start (see sec-
+tion 3.1); however, they need to run VI on iLAO∗’s expanded states
+to make V admissible for the next step. CARL uses CG-iLAO∗,
+allowing it to focus only on the changes to λ as opposed to VI’s
+blind search. As a result, CARL finds λ∗up to 4.7× faster than their
+method with a mean speedup of 2×.
+Once λ∗has been found, the similarities between our algorithms
+end. Strong duality does not hold for deterministic policies, thus λ∗
+does not directly produce an optimal deterministic policy for the orig-
+inal CSSP. To overcome this, they use an expensive second stage
+that enumerates deterministic policies until the optimal one is found.
+CARL does not require this stage because strong duality holds for
+stochastic policies. Instead, we must ensure that V ∗encodes all op-
+timal policies for S(λ∗), which can be done cheaply with dynamic
+programming, and then we use SOL 1 to extract the optimal policy
+for the CSSP. Both these steps have no analogue in their algorithm.
+Thus, CARL is guaranteed to find an optimal policy, stochastic or
+not, for CSSPs with relatively little computational effort after find-
+ing λ∗, whereas Hong and Williams [22]’s method can only find an
+optimal deterministic policy, which can cost more than the optimal
+stochastic policy, and requires an expensive second stage to do so.
+The algorithm by Lee et al. [23] shares with CARL that they get
+deterministic policies from their subproblems, which must be com-
+bined into a stochastic one. However, their setting and approach is
+quite different: they use Monte-Carlo sampling to approximate their
+Q-values, and their policies map histories onto action distributions,
+obtained by solving an LP for each history. We compute V ∗and its
+Q-values with a modified SSP search, and then solve SOL 1 once.
+Multi-Objective (MO) planning is also relevant. There are various
+models of probabilistic MO problems, e.g., MOMDPs with queries
+from model checking [13] and MOSSPs from planning [11]. These
+models are similar to CSSPs in that they have multiple cost func-
+tions, but the difference is that MO problems are solved by find-
+ing all undominated trade-offs between cost functions, e.g., consider
+π1, π2, π3 with C(π1) = [1 3], C(π2) = [3 1], C(π3) = [3 2]; π1
+and π2 are undominated and give different trade-offs of C0 and C1,
+and π3 is dominated by π2. The set of undominated policies is called
+the Pareto front. In contrast, CSSPs are solved by a single policy
+that minimises C0 while satisfying the secondary-cost constraints.
+Consequently, MOSSPs are more general than CSSPs, and their al-
+gorithms can be applied to solve CSSPs, e.g., [13, 11], but these are
+much less efficient because they need to track an entire set of policies
+in the Pareto front, rather than searching for a single policy.
+Scalarisation is a standard technique in MO planning [12], and
+has been applied to MOMDPs with queries [13]. Their algorithm’s
+similarity to CARL is that both project the cost vector onto scalars
+to induce single-objective SSPs (or MDPs) as their subproblems.
+However, the way that the scalarisations are explored and the pur-
+pose is completely different: they use different scalarisations to find
+different trade-offs, and CARL uses scalarisation in the context of
+Lagrangian optimisation where scalarisations λ are also called La-
+grangian multipliers. Importantly, CARL’s scalarisation is a single-
+
+
+objective technique, and it progressively finds a better scalarisation
+vector, whereas Forejt et al. [13] accumulate a set of non-dominated
+scalarisation vectors. Another difference is that Forejt et al. [13] use
+Value Iteration to solve the subproblems, and we use heuristic search,
+which increases CARL’s efficiency but presents technical challenges
+as addressed in section 3.1 and section 3.2. Heuristic search has been
+shown to dominate non-guided search approaches from model check-
+ing, e.g., [2]. We point out that our method for efficiently solving
+subproblems can be applied to the algorithm from Forejt et al. [13],
+establishing another contribution of this work.
+5
+Experiments
+We compare our novel algorithm CARL with i-dual [31] and
+i2-dual [32], the state-of-the-art algorithms for finding optimal
+stochastic policies for CSSPs. For CARL, we consider the heuris-
+tics LMcut [21] and ROC [32] as λ heuristics (section 3.1), called
+λ-LMcut and λ-ROC. In appendix F we also test LMcut and ROC
+as ideal-point (IP) heuristics (section 3.1). For i-dual, we use ideal-
+point LMcut (IP-LMcut) and C-ROC [32]. I2-dual uses C-POM [32],
+which is built into the algorithm. In our test problems, we allow
+CSSPs to have dead ends, but transform them into CSSPs without
+dead ends with the finite-penalty transformation, which adds give-up
+actions to each state that lead to a goal with a large cost penalty. We
+require a user-specified dead-end penalty for each cost function [31].
+For problems with dead ends before the finite-penalty transforma-
+tion, we augment ROC and i2-dual’s built-in C-POM with h-max
+as a dead-end detector [32]. We run experiments over the following
+benchmark domains:
+Search and Rescue (SAR) [31].
+A drone must rescue one of mul-
+tiple survivors on an n × n grid as quickly as possible (n ∈N).
+One survivor’s position is known and has distance d ∈N from the
+drone’s initial position. Some other locations, selected according to
+a density r ∈[0, 1], have a predetermined probability of having an-
+other survivor. There is a single secondary-cost constraint over fuel
+usage.
+Elevators (Elev) [31].
+In a 10-floor building, w ∈N people have
+called the elevator and are waiting, and h ∈N hidden people have not
+pressed the button yet, and do so probabilistically in each timestep.
+The e ∈N elevators must be routed to deliver all people to their des-
+tinations in the fewest timesteps. Each person has a constraint over
+the time spent waiting, and the time spent travelling in an elevator,
+resulting in 2(w + h) secondary-cost constraints.
+Exploding Blocks World (ExBW) [31].
+Based on Exploding
+Blocks World for SSPs [9], we must rearrange N ∈N blocks into a
+given arrangement with the minimal number of moves. This is com-
+plicated by the blocks being rigged with an explosive that can ex-
+plode, destroying the block or table immediately underneath it. In
+the CSSP variant, the table can be repaired with a large primary cost,
+but destroyed blocks can not be repaired. There is a single secondary-
+cost constraint, limiting the expected number of destroyed blocks to
+c ∈R≥0. We consider specific starting and goal arrangements of
+blocks from the 2008 International Probabilistic Planning Competi-
+tion [10], and identify specific problems by the parameter id.
+PARC Printer (PARC) [32].
+Based on the IPC domain, a modular
+printer must print four pages with various requirements. Three of the
+printer’s components are unreliable, where a page can get jammed
+with probability 0.1, simultaneously ruining the page and rendering
+the component unusable. There are two secondary-cost constraints:
+f ∈[0, 1] constrains how many components are allowed to fail and
+u ∈N limits how often a particular component is allowed to be used
+(u = ∞deactivates this constraint).
+Triangle Tireworld (CTW) [27].
+In the Triangle Tireworld for
+SSPs we must drive across a triangular network of cities, where
+n ∈N specifies the size of the network, and d ∈N gives the start-
+ing distance from the goal [24, 26]. Between any two cities the car
+gets a flat tyre with probability 0.5; with a spare tyre the flat can be
+replaced and the journey can continue; if no spare is loaded, the car
+is stuck and no actions are available. The car only fits one spare tyre
+at a time, and spare tyres can only be acquired in select cities. In the
+CSSP variant, tyres can be purchased in these cities for one of c ∈N
+currencies, and the problem has secondary-cost constraints over the
+c-many currencies.
+We ran each planner and heuristic on 30 instances of each problem
+on a cluster with Intel Xeon 3.2 GHz CPUs limited to one CPU core
+with 30 mins and 4GB RAM. For SAR and Elev, a problem instance
+is a randomly generated problem for the specified parameters. For
+the other domains, the parameters specify a unique problem and an
+instance couples this problem with a random seed that is passed to
+the algorithm. We use CPLEX Version 22.1.1 to solve LPs and SOLs.
+The source code and benchmarks are available at [28].
+The results of our experiments are presented in tab. 1. We give
+each algorithm’s coverage (the number of instances solved within its
+time and memory limits), and over the instances where the algorithm
+converged we give its mean runtime (and 95% C.I.). We highlight the
+fastest algorithms, where an algorithm is considered the fastest for a
+particular problem if it has the maximum coverage and then its mean
+time plus 95% C.I. is less than the next best algorithm’s mean time
+minus 95% C.I. We now identify the best performing algorithm per
+domain.
+SAR, ExBW, and CTW.
+CARL dominates in these domains:
+either CARL(λ-ROC) or CARL(λ-LMcut) is the best perform-
+ing planner and, with exception of ExBW (1,5,.1) and (3,6,.91),
+the second best performing planning is also CARL. Moreover,
+CARL can obtain substantially larger coverage with the extreme
+case of ExBW (6,8,.3) in which CARL using both heuristics
+obtained full coverage while all other planners had zero cover-
+age. Comparing only entries with full coverage in these domains,
+CARL has 10×, 19×, and 42× speedup on average w.r.t. i-dual
+(C-ROC), i-dual (IP-LMcut) and i2-dual, respectively. Between
+CARL(λ-ROC) and CARL(λ-LMcut), there is no clear winner on
+SAR; CARL(λ-LMcut) dominates on ExBW; and CARL(λ-ROC)
+dominates on CTW.
+Elev.
+With one elevator i-dual dominates, and with two elevators
+CARL dominates. With one elevator, CARL fails to solve some in-
+stances for one of two reasons: (1) CARL’s coordinate search fails
+and falls back on the subgradient method, which is significantly
+slower than coordinate search; (2) S(λ)s are too difficult to solve in
+some cases, which suggests the heuristic does not give adequate guid-
+ance. Regarding (1), we note that these Elev instances are the only
+cases in our benchmarks where coordinate search fails and CARL is
+forced to fall back on the subgradient method to ensure complete-
+ness (see section 3.1). Here, the subgradient method is significantly
+slower than coordinate search and failed to converge in time. How-
+ever, we reiterate that falling back to the subgradient method ensures
+that CARL is complete, and given enough time and memory CARL
+would solve the instances. With two elevators, the problem structure
+changes so that coordinate search succeeds and (1) does not occur,
+and any instances where CARL fails to find a solution is because
+of (2), that is, the coordinate search’s subproblems take too long to
+
+
+algorithm
+CARL
+i-dual
+i2-dual
+heuristic
+λ-ROC
+λ-LMcut
+C-ROC
+IP-LMcut
+SAR (n, d, r)
+4, 3, .75 30
+5.6±
+1.4 30
+4.3±
+1.0 30
+104.1± 51.0 30
+45.8± 21.1 30
+69.2± 56.4
+4, 4, .75 30
+41.9±
+5.3 30
+34.1±
+4.2
+5 1345.7±534.1
+9
+979.8±296.6
+8
+495.5±417.8
+5, 3, .50 30
+4.9±
+0.9 30
+4.8±
+1.1 30
+25.1±
+8.5 30
+13.1±
+4.6 30
+11.1±
+4.0
+5, 3, .75 30
+12.3±
+2.5 30
+13.3±
+2.9 30
+253.8±110.6 30
+113.3± 46.0 30
+168.0±105.9
+5, 4, .50 30
+30.8±
+6.8 30
+36.2±
+7.9 17
+695.0±268.5 24
+550.6±166.1 27
+637.8±213.1
+5, 4, .75 30
+126.6± 45.2 30
+142.5± 49.3
+6
+930.9±369.3
+6
+499.2±226.4
+8
+349.1±288.1
+Elev (e,w,h)
+1, 1, 1
+30
+1.6±
+0.6 30
+1.2±
+0.3 30
+1.5±
+0.1 30
+0.8±
+0.1 30
+6.2±
+0.6
+1, 1, 2
+29
+50.9± 26.8 29
+35.0± 12.7 30
+25.3±
+1.0 30
+21.1±
+2.6 30
+280.0± 46.5
+1, 2, 1
+25
+14.2±
+5.6 25
+13.1±
+4.2 30
+13.9±
+0.9 30
+9.8±
+1.4 30
+174.2± 38.4
+1, 2, 2
+22
+313.3±150.2 22
+336.9±115.8 30
+340.1± 35.7 30
+392.5± 72.1
+1
+989.2
+2, 1, 1
+30
+104.5± 23.2 30
+121.8± 26.7 23
+670.6±173.7 26
+576.1±181.4
+1 1799.7
+2, 1, 2
+20 1321.5±161.1
+3 1344.2±341.5
+1 1799.6
+1 1799.1
+0
+2, 2, 1
+28
+569.2±131.7 23
+890.5±164.2
+5 1608.9±229.1
+5 1444.4±352.4
+0
+ExBW (id,N,c)
+1, 5, .1
+30
+8.6±
+0.1 30
+1.6
+30
+97.2±
+1.0 30
+7.9±
+0.1 30
+626.6± 18.8
+2, 5, .07 30
+40.4±
+0.3 30
+18.7±
+0.1
+0
+30
+732.9± 30.6
+0
+3, 6, .91 30
+173.5±
+5.1 30
+7.5±
+0.1
+0
+30
+10.9±
+0.2
+0
+4, 6, .16 30
+161.2±
+1.4 30
+63.7±
+0.5
+0
+27 1462.2± 79.6
+0
+5, 7, .01 30
+30.7±
+0.2 30
+25.8±
+0.2 30
+82.7±
+1.5 30
+38.5±
+0.6 30
+451.0± 14.5
+6, 8, .3
+30
+300.4± 10.9 30
+91.6±
+0.6
+0
+0
+0
+7, 8, .5
+30
+0.3
+30
+0.2
+30
+2.2±
+0.1 30
+0.9±
+0.1 30
+12.1±
+0.4
+8, 8, .63 30
+35.1±
+0.5 30
+34.8±
+0.4
+6 1799.2±
+0.1 13 1691.9± 45.5
+0
+9, 8, .4
+30
+177.9±
+1.4 30
+14.9±
+0.1
+0
+30
+202.3±
+7.5
+0
+algorithm
+CARL
+i-dual
+i2-dual
+heuristic
+λ-ROC
+λ-LMcut
+C-ROC
+IP-LMcut
+PARC (f,u)
+0.0, 1
+30 311.2±13.6 30 270.9± 8.3 30
+126.2± 9.1 30
+103.1± 2.4 30
+42.8±
+3.1
+0.0, ∞30 100.7± 0.8 30 141.3± 1.0 30
+47.1± 2.5 30
+42.1± 1.8 30
+29.5±
+1.8
+0.2, 1
+30 600.7± 3.6 30 863.4± 9.7
+0
+0
+30
+65.1± 11.1
+0.2, ∞30 121.7± 1.9 30 185.7± 1.2 30 1537.7±72.8
+0
+30
+41.7±
+4.9
+0.4, 1
+30 882.8±31.7 30 564.1±12.8
+0
+0
+3
+801.5±536.2
+0.4, ∞30 130.9± 2.5 30 188.1± 1.3
+0
+0
+3
+665.9±308.3
+0.6, 1
+30 318.4±10.3 30 255.4± 6.9
+0
+0
+0
+0.6, ∞30
+25.5± 0.5 30
+39.6± 0.3 26 1508.9±68.9
+0
+0
+0.8, 1
+30 345.5± 7.4 30 267.1± 8.0
+0
+0
+0
+0.8, ∞30
+25.7± 0.6 30
+39.8± 0.3 29 1375.1±89.9
+0
+0
+1.0, 1
+30 208.1± 6.8 30 226.0± 5.4
+0
+0
+0
+1.0, ∞30
+25.6± 0.6 30
+39.6± 0.3 30 1298.1±55.3
+0
+0
+CTW (n,d,c)
+4, 4, 2
+30
+1.6± 0.1 30
+1.8± 0.1 30
+4.5± 0.1 30
+24.2± 0.7 30
+24.3±
+0.8
+4, 4, 4
+30
+2.4
+30
+3.2
+30
+8.2± 0.5 30
+43.0± 1.0 30
+36.1±
+2.0
+4, 4, 6
+30
+3.1
+30
+4.6± 0.1 30
+10.5± 0.4 30
+56.0± 2.4 30
+42.5±
+1.5
+4, 5, 2
+30
+3.9± 0.2 30
+4.2± 0.3 30
+18.7± 0.8 30
+119.1± 5.5 30
+115.3±
+6.3
+4, 5, 4
+30
+5.9± 0.1 30
+7.5± 0.1 30
+32.4± 1.0 30
+239.5± 9.0 30
+157.0±
+5.3
+4, 5, 6
+30
+7.3± 0.3 30
+10.3± 0.4 30
+41.7± 1.0 30
+310.6±14.7 30
+194.5±
+7.1
+4, 6, 2
+30
+9.3± 0.5 30
+10.1± 0.6 30
+90.9± 4.7 30
+840.2±47.1 30
+937.7± 45.7
+4, 6, 4
+30
+13.9± 0.3 30
+17.8± 0.3 30
+187.0± 5.9 13 1656.6±76.8 30 1281.6± 64.0
+4, 6, 6
+30
+18.2± 0.4 30
+24.9± 0.7 30
+225.1±10.0
+4 1424.3±88.9 30 1238.9± 81.6
+Table 1.
+For the benchmark problems, we show each planner and heuristic’s coverage (out of 30) and over the converged runs the mean runtime (secs) with
+95% C.I. For each problem, the fastest planner and heuristic pairs are in bold.
+solve. This contrasts i-dual and i2-dual, which are not affected by
+problem structure but scale worse with the larger search spaces as
+the second elevator is introduced.
+PARC.
+i2-dual dominates when the constraint over failure is tighter
+(f
+≤0.2) and CARL dominates when the constraint is looser
+(f ≥0.4). CARL struggles with the tight constraints because its
+heuristic fails to take secondary-cost constraints into account. This
+is supported by the result that CARL becomes competitive with
+i2-dual on the tightly constrained problems when used with C-ROC,
+a heuristic that takes secondary-cost constraints into account (see ap-
+pendix F).2 I2-dual has the opposite weakness: its heuristic is very
+informative for highly constrained problems and it prunes a lot of
+the search space but, as the constraints become looser, its heuris-
+tic becomes less effective. On problems with the loosest constraints,
+namely (0.6, 1), (0.8, 1), and (1.0, 1), CARL completely dominates
+by achieving full coverage while the baselines obtain zero coverage.
+What makes CARL so effective on our benchmarks?
+The part of
+CARL that takes the most time is solving S(λ)s and, over the solved
+instances, CARL only solves a mean and maximum of 6.7 and 30
+S(λ)s in its search. We identify two domain features that make co-
+ordinate search efficient and let CARL solve so few subproblems:
+single secondary-cost constraint and sparse λ. In the former, coordi-
+nate search only has to solve a single coordinate and it is guaranteed
+to converge to λ∗. SAR, ExBW, and PARC problems with u = ∞
+have a single constraint. It is convenient if λ∗= 0 because λ = 0
+is the initial guess and coordinate search then only has to verify that
+its candidate is optimal. CTW has λ∗= 0 for almost all its prob-
+lems. More generally, coordinate search tends to work well when λ∗
+is sparse because it is inexpensive to determine these, but this trend
+is not guaranteed and depends on the search space structure. Over
+the solved instances, λ∗is quite sparse having a mean and maximum
+of 0.62 and 2 non-zero entries. Note that if Ci(π∗) < ui, i.e., a
+secondary-cost constraint is satisfied with some slack, then λ∗
+i = 0
+by complementary slackness, which suggests that many problems
+will have a sparse λ∗. In contrast, we have seen that particular prob-
+lems are structured such that coordinate search fails to find λ∗, e.g.,
+some Elev instances with a single elevator. Fortunately, these seem to
+appear infrequently. We emphasise that these benchmarks were taken
+2 CARL (C-ROC) is not in the main results because C-ROC is inadmissible
+for S(λ)s, so the algorithm has no optimality guarantee.
+from the existing literature on CSSPs, and were not hand-picked to
+accommodate CARL. This may suggest that problems are more often
+amenable to CARL than not.
+6
+Conclusion and Future Work
+We introduced CARL, a novel algorithm for finding optimal, poten-
+tially stochastic, policies for CSSPs. It works by solving a sequence
+of scalarised SSPs, called S(λ)s, with efficient heuristic search al-
+gorithms for SSPs, and combining the optimal policies of the final
+S(λ) solved into an optimal policy for the original CSSP. CARL is
+the first heuristic search algorithm over the primal space for finding
+optimal CSSP policies and, although CARL follows the Lagrangian
+ascent framework from OR, this paper presents novel methods for
+solving S(λ)s efficiently, adapting heuristics to S(λ)s and extract-
+ing stochastic policies. CARL outperforms the state-of-the-art algo-
+rithms on nearly all our benchmark problems, solving 50% more
+instances and, for some problems, it solves all instances while the
+state-of-the-art solve none. Over the problems where all algorithms
+solved all problems, CARL offers an average 10× speedup.
+In terms of future work, we believe more investigation is required
+into optimisation procedures for finding λ∗. CARL uses coordinate
+search, which works well and is significantly faster than the plain
+subgradient method, but it is unsatisfying that it can not guarantee
+an optimal solution and it may not scale well with many secondary-
+cost constraints. We also believe it is important to better understand
+the problems themselves and what features make them more or less
+amenable to CARL’s search procedure.
+7
+Acknowledgements
+This research project was undertaken with the assistance of resources
+and services from the National Computational Infrastructure (NCI),
+which is supported by the Australian Government. Johannes Schmalz
+received funding from DFG grant 389792660 as part of TRR 248 (see
+https://www.perspicuous-computing.science).
+
+
+A
+CSSP Example
+Here, we present an example of a CSSP.
+Getting to Work.
+The agent needs to make its way from home
+to work. It can run, use a taxi, or walk to the train station where it
+can try to take the train. The train is cancelled with 50% probability.
+Each action has a cost vector [t p e] in terms of time (t), price (p),
+and personal effort (e). The agent’s task is to get to work in minimal
+time s.t. price ≤15 and effort ≤10 over expectation. The CSSP is
+shown in fig. 1. This problem has three proper deterministic policies:
+• πrun = {sI 7→run},
+• πtaxi = {sI 7→taxi},
+• πtrain = {sI 7→walk, s1 7→train, s2 7→train}.
+This problem has a unique optimal policy π∗which is stochastic with
+π∗(sI, run) = 0.5 and π∗(sI, taxi) = 0.5 where
+• C0(π∗) = 1 (time),
+• C1(π∗) = 15 ≤15 (price),
+• C2(π∗) = 10 ≤10 (effort).
+Note that π∗can be expressed as π∗= 0.5πrun + 0.5πtaxi.
+B
+Visualisation of L(λ)
+In this section, we visualise the surface of L(λ) for two different
+CSSPs.
+Getting to Work.
+First, we consider the “Getting to Work” exam-
+ple from appendix A. Fig. 2 shows this problem’s L(λ) as λ varies.
+Each linear surface of the plot corresponds to one of the determinis-
+tic policies; we have labelled the linear surfaces associated with πrun
+and πtrain with “run” and “train” respectively, and πtaxi is obscured. A
+linear surface indicates that the corresponding policy is optimal for
+the S(λ) at the relevant values of λ; edges and vertices indicate that
+multiple deterministic policies are optimal at the S(λ). In particular,
+note that at λ∗= 0 we have an edge between πrun and πtaxi, and
+πtrain does not intersect there; this indicates that the optimal (in this
+case stochastic) policy consists of πrun and πtaxi, which we know to
+be true. This example is not interesting in terms of coordinate search,
+because λ∗= 0 is found in the first step.
+Interesting CSSP for Coordinate Search.
+Consider the CSSP in
+fig. 3, with u1 = u2 = 15. Its optimal policy π∗is stochastic with
+• π∗(sI, a2) = 1
+• π∗(s1, a4) = 1
+4
+π∗(s1, a5) = 3
+4
+and it has C0(π∗) = 4 and C1(π∗) = C2(π∗) = 15. Fig. 4 shows
+this CSSP’s L(λ) as λ varies. As before, each linear surface corre-
+sponds to a deterministic policy that is optimal for the relevant S(λ).
+We visualise the values of λ considered by coordinate search with
+the red lines across the surface, i.e., the line starts at the initial value
+of λ = 0, then moves to λ = [0.025 0], then λ = [0.025 0.025],
+and so on, eventually converging to λ∗= [0.2 0.2]. Recall that coor-
+dinate search only changes a single coordinate per step, which gives
+the red lines’ “stair-case” shape.
+C
+Pathological Example for Coordinate Search
+There are non-smooth problems where coordinate search fails. For
+example, consider the CSSP in fig. 5 with two secondary-cost con-
+straints u1 = u2 = 1, i.e., a policy π is feasible if C1(π) ≤1 and
+C2(π) ≤1. The CSSP has three actions that lead deterministically
+from sI to the goal with costs
+s0
+s1
+s2
+g
+walk [1 0 1]
+train [1 20 0]
+walk [3 0 6]
+run [1 0 20]
+taxi [1 30 0]
+Figure 1.
+The CSSP associated with the “Getting to Work” example.
+Figure 2.
+L(λ) for the “Getting To Work” example.
+sI
+s1
+sg
+[1 40 40]
+a0
+[5 5 5]
+a1
+[3 10 0]
+a2
+[1 0 20]
+a3
+[1 20 0]
+a4
+[1 0 20]
+a5
+Figure 3.
+A CSSP that is interesting for coordinate search. It has
+u1 = u2 = 15.
+• C(a0) = [10 1 1],
+• C(a1) = [1 11 0], and
+• C(a2) = [1 0 11],
+inducing the three deterministic policies π0, π1, π2 with πi(sI) = ai
+for i ∈{0, 1, 2}. Taking into account the terminal costs, the policy
+costs are
+
+
+Figure 4.
+L(λ) for the “Interesting CSSP for Coordinate Search” example.
+sI
+sg
+[10 1 1]
+a0
+[1 11 0]
+a1
+[1 0 11]
+a2
+Figure 5.
+A pathological CSSP where coordinate search fails to find λ∗. It
+has u1 = u2 = 1.
+• Cλ(π0) = 10 + λ1(1 −u1) + λ2(1 −u2) = 10,
+• Cλ(π1) = 1 + λ1(11 −u1) + λ2(0 −u2) = 1 + 10λ1 −λ2, and
+• Cλ(π2) = 1 + λ1(0 −u1) + λ2(11 −u2) = 1 −λ1 + 10λ2.
+L(λ) selects the cheapest one of these, i.e., L(λ) = min{10, 1 +
+10λ1 −λ2, 1 −λ1 + 10λ2}. This surface is shown in fig. 6; note
+there are three linear surfaces corresponding to the three determinis-
+tic policies (the flat one is π0, and the sloped ones are π1 and π2). If
+we consider λ = 0 as a starting point then L([0 0]) = 1 and we can
+see that there is no way to get a larger L(λ) by moving in a single
+coordinate. Algebraically,
+L([x 0]) = min{10, 1 + 10x, 1 −x} = 1 −x < 1
+and symmetrically
+L([0 x]) = min{10, 1 −x, 1 + 10x} = 1 −x < 1
+for all x ∈R>0. Thus, coordinate search gets stuck at λ = [0 0]
+with L(λ) = 1 and fails to progress to an optimal solution such as
+λ∗= [2 2] with L(λ∗) = 10.
+D
+Bellman Backups over Vector Value Function
+Instead of using a scalar value function V : S →R≥0, we use a
+vector value function V : S →Rn+1
+≥0 , with entries for each cost
+function. This modification still solves the S(λ) SSP by projecting
+Figure 6.
+Surface of L(λ) for the pathological CSSP where coordinate
+search fails to find λ∗.
+the vector value function onto Vλ(s) = [1 λ] · V (s), but we now
+apply Bellman backups on V directly. We write Q(s, a) = C(a) +
+P
+s′∈S P(s′|s, a)V (s′), then the λ modified Bellman backups are
+given as follows:
+Definition 2 (λ Bellman backup). Given the vector value function
+V : S →Rn+1
+≥0
+and a scalarisation λ ∈Rn
+≥0, a vector Bellman
+backup applied to state s sets
+V (s) ←Q(s, amin)
+for
+amin ∈argmin
+a∈A(s)
+
+[1 λ] · Q(s, a)
+
+.
+By applying λ Bellman backups, we can solve S(λ) and evaluate
+its policy for each cost function Ci(π∗
+λ) at the same time. This idea
+was used by Hong and Williams [22].
+The λ Bellman backups introduce two technical issues. First, to
+ensure that each Ci(π∗
+λ) is evaluated accurately, we must redefine the
+Bellman residual so that each value function converges, otherwise
+the backups may converge to an optimal vector value function for
+the S(λ) without the scalar value functions converging. We can do
+this by considering maxn
+i=0 |Vi(s) −Q(s, amin)| for s’s amin. The
+second technical issue follows from the redefined Bellman residual,
+because it is possible to get stuck in cycles where actions with similar
+scalarised Q-values change individual value functions significantly,
+so that the new residual never goes to 0. To address this, we need to
+use tie-breaking rules, e.g., if two actions have costs within ϵ of each
+other, iterate through the value function indices and pick the action
+that has a smaller Q-value first.
+E
+Strong ϵ-consistency vs ϵ-consistency
+For unconstrained SSPs, if a value function V is ϵ-consistent [7],
+then it is guaranteed to induce a deterministic optimal policy (as
+ϵ →0); however, it may not induce all optimal deterministic poli-
+cies. To produce all optimal deterministic policies, we require strong
+
+
+sI
+4
+s1
+3
+s2
+1
+s3
+2
+sg
+0
+4
+a′
+0
+1
+a0
+1
+a′
+1
+1
+a1
+5
+a2
+2
+a3
+Figure 7.
+An SSP with a value function that is ϵ-consistent but not
+strongly ϵ-consistent, and fails to describe all optimal policies.
+ϵ-consistency. We give an example where ϵ-consistency fails to cap-
+ture all optimal deterministic policies: consider the SSP in fig. 7, with
+the value function V specified in the bottom of each node. The SSP
+has two optimal policies:
+• π∗
+0 = {sI 7→a′
+0}
+• π∗
+1 = {sI 7→a0, s1 7→a1, s3 7→a3}.
+V has two greedy policies: the optimal π∗
+0 and a suboptimal policy
+• π′ = {sI 7→a0, s1 7→a′
+1, s2 7→a2}.
+V is ϵ-consistent w.r.t. the greedy policy π∗
+0, and V is admissible;
+so, V could be produced by an optimal SSP algorithm such as CG-
+iLAO∗[26] (which is what we use to solve our S(λ) SSPs). Impor-
+tantly, V is not ϵ-consistent w.r.t. the other greedy policy π′ because
+RES(s2) = |1 −5| > ϵ (assume small ϵ such as 0.0001), and there-
+fore V is not strongly ϵ-consistent. This has the effect that V fails to
+capture the second optimal policy π∗
+1, i.e., π∗
+1 is not a greedy policy
+w.r.t. V .
+F
+More Results
+We present an extended table of results in tab. 2. It has the same
+entries as tab. 1, and additionally includes CARL with ideal-point
+heuristics and C-ROC. Recall that C-ROC is not admissible for
+CARL’s S(λ)s, so it provides no guarantee of optimality nor conver-
+gence. Nevertheless, in our experiments, wherever CARL(C-ROC)
+has a coverage entry, it found the optimal solution.
+References
+[1] E. Altman. Constrained Markov Decision Processes. Technical report,
+INRIA, 1995. URL https://inria.hal.science/inria-00074109.
+[2] P. Baumgartner, S. Thiébaux, and F. Trevizan. Heuristic Search Plan-
+ning With Multi-Objective Probabilistic LTL Constraints.
+In Proc.
+of Int. Conf. on Principles of Knowledge Representation and Reason-
+ing (KR), pages 415–424, 2018. URL https://cdn.aaai.org/ocs/18039/
+18039-78663-1-PB.pdf.
+[3] R. Bellman. Dynamic programming. Princeton University Press, 1957.
+[4] D. Bertsekas and J. Tsitsiklis. An analysis of stochastic shortest path
+problems. Mathematics of Operations Research, pages 580–595, 1991.
+doi: 10.1287/moor.16.3.580.
+[5] D. Bertsimas and J. Tsitsiklis.
+Introduction to Linear Optimization.
+Athena Scientific, 1997.
+[6] B. Bonet and H. Geffner. Planning as heuristic search: New results. In
+Recent Advances in AI Planning, pages 360–372, 2000. doi: 10.1007/
+10720246_28.
+[7] B. Bonet and H. Geffner. Faster heuristic search algorithms for planning
+with uncertainty and full feedback. In Proc. of Int. Conf. on Automated
+Planning and Scheduling (ICAPS), pages 1233–1238, 2003. URL https:
+//www.dtic.upf.edu/~hgeffner/html/reports/hdp.pdf.
+[8] B. Bonet and H. Geffner. Labeled RTDP: Improving the Convergence of
+Real-Time Dynamic Programming. In Proc. of Int. Conf. on Automated
+Planning and Scheduling (ICAPS), pages 12–21, 2003. URL https://dl.
+acm.org/doi/abs/10.5555/3036969.3036972.
+[9] B. Bonet and R. Givan.
+5th International Planning Competition:
+Non-deterministic track. call for participation, 2006. URL https://www.
+researchgate.net/publication/228724778_5th_International_Planning_
+Competition_Non-deterministic_track_call_for_participation.
+[10] D. Bryce and O. Buffet.
+International Planning Competition Un-
+certainty Part: Benchmarks and Results, 2008.
+URL https://ipc08.
+icaps-conference.org/probabilistic/wiki/images/0/03/Results.pdf.
+[11] D. Chen, F. Trevizan, and S. Thiébaux. Heuristic Search for Multi-
+Objective Probabilistic Planning.
+In Proc. of AAAI Conf. on Artifi-
+cial Intelligence, pages 11945–11954, 2023. doi: 10.1609/aaai.v37i10.
+26409.
+[12] M. Ehrgott.
+Multicriteria Optimization.
+Springer London, Limited,
+2006. doi: 10.1007/3-540-27659-9.
+[13] V. Forejt, M. Kwiatkowska, and D. Parker. Pareto Curves for Proba-
+bilistic Model Checking. In Automated Technology for Verification and
+Analysis, pages 317–332, 2012. doi: 10.1007/978-3-642-33386-6_25.
+[14] F. Geißer, G. Povéda, F. Trevizan, M. Bondouy, F. Teichteil-
+Königsbuch, and S. Thiébaux. Optimal and heuristic approaches for
+constrained flight planning under weather uncertainty.
+Proc. of Int.
+Conf. on Automated Planning and Scheduling (ICAPS), pages 384–393,
+2020. doi: 10.1609/icaps.v30i1.6684.
+[15] F. Geißer, P. Haslum, S. Thiébaux, and F. Trevizan.
+Admissible
+heuristics for multi-objective planning.
+Proc. of Int. Conf. on Auto-
+mated Planning and Scheduling (ICAPS), pages 100–109, 2022. doi:
+10.1609/icaps.v32i1.19790.
+[16] G. Y. Handler and I. Zang. A dual algorithm for the constrained short-
+est path problem. Networks, pages 293–309, 1980. doi: 10.1002/net.
+3230100403.
+[17] E. Hansen and I. Abdoulahi. Efficient bounds in heuristic search al-
+gorithms for stochastic shortest path problems. Proc. of AAAI Conf.
+on Artificial Intelligence, pages 3283–3290, 2015. doi: 10.1609/aaai.
+v29i1.9643.
+[18] E. Hansen and S. Zilberstein. LAO∗: A heuristic search algorithm that
+finds solutions with loops. Artificial Intelligence, pages 35–62, 2001.
+doi: 10.1016/S0004-3702(01)00106-0.
+[19] E. A. Hansen.
+Error bounds for stochastic shortest path problems.
+Mathematical Methods of Operations Research, pages 1–27, 2017. doi:
+10.1007/s00186-017-0581-5.
+[20] P. Hart, N. Nilsson, and B. Raphael. A formal basis for the heuristic
+determination of minimum cost paths. IEEE Transactions on Systems
+Science and Cybernetics, pages 100–107, 1968. doi: 10.1109/tssc.1968.
+300136.
+[21] M. Helmert and C. Domshlak. Landmarks, Critical Paths and Abstrac-
+tions: What’s the Difference Anyway?
+Proc. of Int. Conf. on Auto-
+mated Planning and Scheduling (ICAPS), pages 162–169, 2009. doi:
+10.1609/icaps.v19i1.13370.
+[22] S. Hong and B. C. Williams. An anytime algorithm for constrained
+stochastic shortest path problems with deterministic policies. Artificial
+Intelligence, page 103846, 2023. doi: 10.1016/j.artint.2022.103846.
+[23] J. Lee, G.-H. Kim, P. Poupart, and K.-E. Kim. Monte-Carlo Tree Search
+for Constrained POMDPs. In Advances in Neural Information Process-
+ing Systems (NIPS), 2018. URL https://proceedings.neurips.cc/paper_
+files/paper/2018/file/54c3d58c5efcf59ddeb7486b7061ea5a-Paper.pdf.
+[24] I. Little and S. Thiebaux.
+Probabilistic planning vs. replanning.
+In
+ICAPS Workshop on IPC: Past, Present and Future, 2007. URL http:
+//users.cecs.anu.edu.au/~iain/icaps07.pdf.
+[25] Mausam and A. Kolobov. Planning with Markov Decision Processes:
+An AI Perspective. Springer International Publishing, 2012. doi: 10.
+1007/978-3-031-01559-5.
+[26] J. Schmalz and F. Trevizan. Efficient constraint generation for stochastic
+shortest path problems. Proc. of AAAI Conf. on Artificial Intelligence,
+pages 20247–20255, 2024. doi: 10.1609/aaai.v38i18.30005.
+[27] J. Schmalz and F. Trevizan. Finding optimal deterministic policies for
+constrained stochastic shortest path problems. In Proc. of European
+Conf. on Artificial Intelligence (ECAI), pages 4148–4156, 2024. doi:
+10.3233/FAIA240986.
+[28] J. Schmalz and F. Trevizan. Code and Benchmarks for ECAI 2025 paper
+“Solving Constrained Stochastic Shortest Path Problems with Scalari-
+sation”, 2025. doi: 10.5281/zenodo.16871056.
+[29] H.-J. M. Shi, S. Tu, Y. Xu, and W. Yin. A primer on coordinate descent
+algorithms, 2017.
+[30] N. Z. Shor. Minimization Methods for Non-Differentiable Functions.
+Springer Berlin Heidelberg, 1985. doi: 10.1007/978-3-642-82118-9.
+[31] F. Trevizan, S. Thiébaux, P. Santana, and B. Williams. Heuristic Search
+in Dual Space for Constrained Stochastic Shortest Path Problems. In
+Proc. of Int. Conf. on Automated Planning and Scheduling (ICAPS),
+pages 326–334, 2016. doi: 10.1609/icaps.v26i1.13768.
+[32] F. Trevizan, S. Thiébaux, and P. Haslum. Occupation Measure Heuris-
+
+
+CARL
+i-dual
+i2-dual
+λ-ROC
+IP-ROC
+C-ROC
+λ-LMcut
+IP-LMcut
+C-ROC
+IP-LMcut
+SAR
+(n, d, r)
+(4, 3, 0.75)
+30
+5.6±
+1.4 30
+11.5±
+2.3 30
+12.1±
+2.4 30
+4.3±
+1.0 30
+9.2±
+1.8 30
+104.1± 51.0 30
+45.8± 21.1 30
+69.2± 56.4
+(4, 4, 0.75)
+30
+41.9±
+5.3 30
+75.5±
+7.6 30
+79.5±
+8.3 30
+34.1±
+4.2 30
+65.3±
+7.6
+5 1345.7±534.1
+9
+979.8±296.6
+8
+495.5±417.8
+(5, 3, 0.50)
+30
+4.9±
+0.9 30
+9.0±
+1.6 30
+9.3±
+1.7 30
+4.8±
+1.1 30
+10.0±
+2.4 30
+25.1±
+8.5 30
+13.1±
+4.6 30
+11.1±
+4.0
+(5, 3, 0.75)
+30
+12.3±
+2.5 30
+26.2±
+5.8 30
+27.9±
+6.0 30
+13.3±
+2.9 30
+33.1±
+9.0 30
+253.8±110.6 30
+113.3± 46.0 30
+168.0±105.9
+(5, 4, 0.50)
+30
+30.8±
+6.8 30
+52.3±
+9.5 30
+54.7±
+9.8 30
+36.2±
+7.9 30
+70.5± 12.9 17
+695.0±268.5 24
+550.6±166.1 27
+637.8±213.1
+(5, 4, 0.75)
+30
+126.6± 45.2 30
+270.0± 80.7 30
+282.9± 83.9 30
+142.5± 49.3 30
+353.9±105.7
+6
+930.9±369.3
+6
+499.2±226.4
+8
+349.1±288.1
+Elev
+(e,w,h)
+(1, 1, 1)
+30
+1.6±
+0.6 30
+2.0±
+0.4 30
+2.1±
+0.3 30
+1.2±
+0.3 30
+1.4±
+0.3 30
+1.5±
+0.1 30
+0.8±
+0.1 30
+6.2±
+0.6
+(1, 1, 2)
+29
+50.9± 26.8 29
+42.7± 12.6 29
+42.2± 11.9 29
+35.0± 12.7 29
+44.4± 14.1 30
+25.3±
+1.0 30
+21.1±
+2.6 30
+280.0± 46.5
+(1, 2, 1)
+25
+14.2±
+5.6 25
+17.7±
+3.7 25
+17.7±
+3.7 25
+13.1±
+4.2 25
+15.8±
+4.3 30
+13.9±
+0.9 30
+9.8±
+1.4 30
+174.2± 38.4
+(1, 2, 2)
+22
+313.3±150.2 22
+399.8± 99.9 22
+407.9±102.0 22
+336.9±115.8 22
+460.1±118.5 30
+340.1± 35.7 30
+392.5± 72.1
+1
+989.2
+(2, 1, 1)
+30
+104.5± 23.2 30
+131.7± 26.2 30
+126.9± 25.1 30
+121.8± 26.7 30
+149.7± 31.5 23
+670.6±173.7 26
+576.1±181.4
+1 1799.7
+(2, 1, 2)
+20 1321.5±161.1
+4 1281.0±114.2
+5 1309.1±230.8
+3 1344.2±341.5
+0
+1 1799.6
+1 1799.1
+0
+(2, 2, 1)
+28
+569.2±131.7 28
+830.8±160.8 28
+796.4±158.7 23
+890.5±164.2 18 1157.4±180.4
+5 1608.9±229.1
+5 1444.4±352.4
+0
+ExBW
+(id,N,c)
+(01, 5, 0.1)
+30
+8.6±
+0.1 30
+8.5±
+0.1 30
+8.5±
+0.1 30
+1.6
+30
+1.2
+30
+97.2±
+1.0 30
+7.9±
+0.1 30
+626.6± 18.8
+(02, 5, 0.07) 30
+40.4±
+0.3 30
+36.0±
+0.2 30
+35.3±
+0.3 30
+18.7±
+0.1 30
+15.2±
+0.1
+0
+30
+732.9± 30.6
+0
+(03, 6, 0.91) 30
+173.5±
+5.1 30
+138.0±
+1.4 30
+135.7±
+1.2 30
+7.5±
+0.1 30
+3.3
+0
+30
+10.9±
+0.2
+0
+(04, 6, 0.16) 30
+161.2±
+1.4 30
+142.9±
+1.0 30
+142.1±
+1.7 30
+63.7±
+0.5 30
+45.6±
+0.3
+0
+27 1462.2± 79.6
+0
+(05, 7, 0.01) 30
+30.7±
+0.2 30
+28.1±
+0.2 30
+27.2±
+0.3 30
+25.8±
+0.2 30
+12.8±
+0.1 30
+82.7±
+1.5 30
+38.5±
+0.6 30
+451.0± 14.5
+(06, 8, 0.3)
+30
+300.4± 10.9 30
+276.0±
+3.1 30
+276.7±
+4.1 30
+91.6±
+0.6 30
+48.2±
+0.4
+0
+0
+0
+(07, 8, 0.5)
+30
+0.3
+30
+0.5
+30
+0.5
+30
+0.2
+30
+0.2
+30
+2.2±
+0.1 30
+0.9±
+0.1 30
+12.1±
+0.4
+(08, 8, 0.63) 30
+35.1±
+0.5 30
+40.5±
+0.8 30
+41.1±
+1.0 30
+34.8±
+0.4 30
+35.5±
+0.7
+6 1799.2±
+0.1 13 1691.9± 45.5
+0
+(09, 8, 0.4)
+30
+177.9±
+1.4 30
+374.6±
+3.3 30
+374.2±
+5.2 30
+14.9±
+0.1 30
+24.5±
+0.1
+0
+30
+202.3±
+7.5
+0
+PARC
+(f,u)
+(0.0, 1)
+30
+311.2± 13.6 30
+183.7±
+6.9 30
+1.5±
+1.4 30
+270.9±
+8.3 30
+252.5±
+8.7 30
+126.2±
+9.1 30
+103.1±
+2.4 30
+42.8±
+3.1
+(0.0, ∞)
+30
+100.7±
+0.8 30
+52.1±
+0.9 30
+0.1
+30
+141.3±
+1.0 30
+64.7±
+0.5 30
+47.1±
+2.5 30
+42.1±
+1.8 30
+29.5±
+1.8
+(0.2, 1)
+30
+600.7±
+3.6 30
+234.8±
+3.1 13
+184.2±
+3.5 30
+863.4±
+9.7 30
+337.1±
+3.8
+0
+0
+30
+65.1± 11.1
+(0.2, ∞)
+30
+121.7±
+1.9 30
+91.0±
+1.3 30
+56.9±
+0.6 30
+185.7±
+1.2 30
+79.2±
+0.6 30 1537.7± 72.8
+0
+30
+41.7±
+4.9
+(0.4, 1)
+30
+882.8± 31.7 30
+247.5±
+3.8 30
+241.8±
+3.2 30
+564.1± 12.8 30
+308.2±
+4.0
+0
+0
+3
+801.5±536.2
+(0.4, ∞)
+30
+130.9±
+2.5 30
+98.0±
+1.8 30
+94.0±
+1.7 30
+188.1±
+1.3 30
+82.0±
+1.2
+0
+0
+3
+665.9±308.3
+(0.6, 1)
+30
+318.4± 10.3 30
+186.0±
+3.6 30
+148.3±
+2.3 30
+255.4±
+6.9 30
+141.0±
+2.1
+0
+0
+0
+(0.6, ∞)
+30
+25.5±
+0.5 30
+40.0±
+0.9 30
+40.4±
+0.9 30
+39.6±
+0.3 30
+40.9±
+0.3 26 1508.9± 68.9
+0
+0
+(0.8, 1)
+30
+345.5±
+7.4 30
+185.3±
+2.4 30
+148.2±
+2.2 30
+267.1±
+8.0 30
+148.1±
+2.2
+0
+0
+0
+(0.8, ∞)
+30
+25.7±
+0.6 30
+40.4±
+1.1 30
+40.8±
+1.0 30
+39.8±
+0.3 30
+41.3±
+0.4 29 1375.1± 89.9
+0
+0
+(1.0, 1)
+30
+208.1±
+6.8 30
+184.6±
+2.2 30
+150.3±
+3.1 30
+226.0±
+5.4 30
+148.6±
+1.6
+0
+0
+0
+(1.0, ∞)
+30
+25.6±
+0.6 30
+40.5±
+1.1 30
+41.5±
+1.1 30
+39.6±
+0.3 30
+41.1±
+0.4 30 1298.1± 55.3
+0
+0
+CTW
+(n,d,c)
+(4, 4, 2)
+30
+1.6±
+0.1 30
+2.7±
+0.1 30
+3.2±
+0.1 30
+1.8±
+0.1 30
+1.8±
+0.1 30
+4.5±
+0.1 30
+24.2±
+0.7 30
+24.3±
+0.8
+(4, 4, 4)
+30
+2.4
+30
+4.6±
+0.1 30
+5.4±
+0.1 30
+3.2
+30
+3.2
+30
+8.2±
+0.5 30
+43.0±
+1.0 30
+36.1±
+2.0
+(4, 4, 6)
+30
+3.1
+30
+6.6±
+0.1 30
+7.4±
+0.1 30
+4.6±
+0.1 30
+4.7±
+0.1 30
+10.5±
+0.4 30
+56.0±
+2.4 30
+42.5±
+1.5
+(4, 5, 2)
+30
+3.9±
+0.2 30
+6.3±
+0.3 30
+7.4±
+0.3 30
+4.2±
+0.3 30
+4.2±
+0.2 30
+18.7±
+0.8 30
+119.1±
+5.5 30
+115.3±
+6.3
+(4, 5, 4)
+30
+5.9±
+0.1 30
+11.3±
+0.3 30
+13.4±
+0.6 30
+7.5±
+0.1 30
+7.6±
+0.2 30
+32.4±
+1.0 30
+239.5±
+9.0 30
+157.0±
+5.3
+(4, 5, 6)
+30
+7.3±
+0.3 30
+15.9±
+0.4 30
+18.6±
+0.5 30
+10.3±
+0.4 30
+11.1±
+0.5 30
+41.7±
+1.0 30
+310.6± 14.7 30
+194.5±
+7.1
+(4, 6, 2)
+30
+9.3±
+0.5 30
+14.9±
+0.6 30
+17.8±
+0.8 30
+10.1±
+0.6 30
+9.8±
+0.6 30
+90.9±
+4.7 30
+840.2± 47.1 30
+937.7± 45.7
+(4, 6, 4)
+30
+13.9±
+0.3 30
+27.1±
+0.8 30
+31.3±
+0.9 30
+17.8±
+0.3 30
+18.5±
+0.3 30
+187.0±
+5.9 13 1656.6± 76.8 30 1281.6± 64.0
+(4, 6, 6)
+30
+18.2±
+0.4 30
+37.7±
+0.9 30
+44.7±
+0.9 30
+24.9±
+0.7 30
+26.5±
+0.6 30
+225.1± 10.0
+4 1424.3± 88.9 30 1238.9± 81.6
+Table 2.
+For the benchmark problems, we show each planner and heuristic’s coverage (out of 30) and over the converged runs the mean runtime (secs) with
+95% C.I. The fastest planner and heuristic per problem are in bold.
+tics for Probabilistic Planning.
+In Proc. of Int. Conf. on Automated
+Planning and Scheduling (ICAPS), pages 306–315, 2017. doi: 10.1609/
+icaps.v27i1.13840.

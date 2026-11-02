@@ -1,0 +1,424 @@
+Non-Blocking Batch A* (Technical Report)
+Rishi Veerapaneni, Maxim Likhachev
+Robotics Institute, Carnegie Mellon University
+{rveerapa, mlikhach}@andrew.cmu.edu
+Abstract
+Heuristic search has traditionally relied on hand-crafted or
+programmatically derived heuristics. Neural networks (NNs)
+are newer powerful tools which can be used to learn com-
+plex mappings from states to cost-to-go heuristics. However,
+their slow single inference time is a large overhead that can
+substantially slow down planning time in optimized heuris-
+tic search implementations. Several recent works have de-
+scribed ways to take advantage of NN’s batch computations
+to decrease overhead in planning, while retaining bounds on
+(sub)optimality. However, all these methods have used the
+NN heuristic in a “blocking” manner while building up their
+batches, and have ignored possible fast-to-compute admis-
+sible heuristics (e.g. existing classically derived heuristics)
+that are usually available to use. We introduce Non-Blocking
+Batch A* (NBBA*), a bounded suboptimal method which
+lazily computes the NN heuristic in batches while allowing
+expansions informed by a non-NN heuristic. We show how
+this subtle but important change can lead to substantial reduc-
+tions in expansions compared to the current blocking alterna-
+tive, and see that the performance is related to the information
+difference between the batch computed NN and fast non-NN
+heuristic.
+Introduction
+Heuristic search is a common deterministic motion planning
+class of algorithms that plans paths from start and goal po-
+sitions by searching over different paths. Heuristic search
+algorithms use heuristics, along with other mechanisms, to
+speed up the path planning process.
+Modern machine learning techniques (e.g. reinforcement,
+imitation and supervised learning) learn complex mappings
+from states to values that can be viewed as cost-to-go heuris-
+tics. Recent work have started to use these techniques to
+learn neural network heuristics on combinatorial search and
+pathﬁnding problems which are better able to guide search
+compared to existing heuristics (Agostinelli et al. 2019,
+2021; Kim and An 2020; Jabbari Arfaee, Zilles, and Holte
+2011; Chrestien et al. 2021).
+A major bottleneck of using neural networks (NNs) dur-
+ing search is that the computational overhead to compute a
+single heuristic value is signiﬁcantly higher than non-neural
+network approaches. Neural network inferences are known
+to be faster when computed on batches of inputs allowing
+them to take advantage of their single instruction multiple
+data (SIMD) nature and specialized SIMD hardware (i.e.
+GPUs) rather than computed many times individually.
+Recently, there have been several works that describe dif-
+ferent ways for Batch A*. Agostinelli et al. (2019) describes
+“Batch Weighted A*”, BWAS, which expands K states from
+their OPEN queue. This unfortunately does not maintain any
+suboptimality bounds with the inadmissible learnt heuris-
+tics. Greco et al. (2022) introduces “K-Focal Search” which
+improves upon BWAS by utilizing a fast admissible heuris-
+tic (hfast) and a wso bounded suboptimal Focal Search and
+expanding K nodes at once from the FOCAL queue that have
+f-values ≤minn g(n) + hfast(n). The admissible hfast
+(which is usually a classically derived heuristic, or the zero
+heuristic if none are available) maintains bounded subopti-
+mality in the Focal queue and enables batch computation of
+the inadmissible hNN during each batch expansion. Their
+method shows large runtime beneﬁts by increasing the batch
+size B to decrease the runtime overhead of hNN. Another re-
+cent work Li et al. (2022) describes a batch A* mechanism
+that maintains optimality, but contains several restrictions on
+its use case as it requires an admissible learnt heuristic and
+a problem where many states may share the same heuristic
+values.
+Our method, Non-Blocking Batch A*, is closest to Greco
+et al. (2022) as we utilize a wso bounded suboptimal search,
+an admissible fast heuristic hfast, and an inadmissible neu-
+ral network heuristic hNN. Our two key differences are that
+instead of expanding K states at once, we lazily compute the
+NN heuristic in batches and that we eliminate waiting by al-
+lowing the search to expand states without requiring the NN
+heuristic to be computed. We show that these are required to
+sustain reduction in nodes generated and obtain speed-ups.
+Non-Blocking Batch A*
+“K-Focal Search” is constructed using a NN function
+hsucc() that takes in a state n and returns the h values of all
+its successors n′. Thus, expanding K nodes at once allowed
+them to compute the heuristics of all their successors at once
+and insert them into queues accordingly. This requirement
+on the NN function is restrictive as the same NN cannot
+work with different action spaces as the successor states and
+corresponding heuristic values would change when using
+different action spaces. Additionally this requirement gen-
+erally increases the complexity of the learning problem as
+arXiv:2208.07031v2  [cs.AI]  16 Aug 2022
+
+
+we must map one parent state to many successor heuristic
+values. We instead formulate our work with a NN heuristic
+function hstate which returns the heuristic value of one state
+which simpliﬁes the learning problem and is independent of
+the action space. Note we can easily construct hsucc() by
+using this single-state NN hstate internally.
+The K-Focal Search analogue using hstate is to expand K
+nodes, collect their successor states into a single large batch
+B, and pass the batch into hstate to generate the heuris-
+tic values. However, this does not maintain a ﬁxed batch
+size B as expanded states can have different numbers of
+valid successors. An iterative approach can mitigate this is-
+sue by expanding states sequentially, adding successor states
+onto a waitlist until a target batchsize of B is approximately
+reached, and then calling hstate and inserting the nodes into
+the queues.
+We show that this approach has two fundamental prob-
+lem; 1) the waitlist blocks “deeper” expansions, and 2) the
+search only uses the non-neural network fast admissible
+heuristic (hfast) to maintain a lower bound and never uti-
+lizes it to guide search. Speciﬁcally, once a node n is ex-
+panded, its successors are placed in the waitlist until the
+waitlist is full, preventing any successor from being ex-
+panded in the meanwhile. This prevents rapid expansions of
+subsequent states, essentially forcing us away from a greedy
+heuristic search and into a K-breadth greedy search. This
+construction also ignores the fact that we may have a fairly
+informative hfast that we can use along with hstate, instead
+of solely using hstate for guiding search efforts. Addition-
+ally, ﬁnding a solution path of length L (not cost) will now
+require a minimum of L batches which can be a large prob-
+lem if B and L are large.
+Our alternative removes this blocking behaviour by utiliz-
+ing hfast along with hstate, allowing our search algorithm to
+expand consecutive nodes guided by hfast without needing
+to wait for the expensive batch computation.
+Algorithm 1 shows the full pseudo-code of our method.
+The main changes are commented in blue. Speciﬁcally, line
+18 inserts nodes into FOCAL based on hfast instead of
+solely residing in the waitlist as in “K-Focal Search”. Lines
+19-22 call hNN on a batch of states once the batchsize has
+surpassed B, and updates hfast to use the these values (as
+they can be cached into hfast and accessed quickly). Lines
+7-9 check if hfast has a new updated value (i.e. from an ear-
+lier hNN batch call) and updates n’s priority and reinserts
+accordingly.
+NBBA* Experimental Results
+Set-up
+We show results on path-ﬁnding in a 2D Map using a Neu-
+ral Network. Our planning space is (x, y, θ) with the fol-
+lowing three actions: 1) forward in respect to the θ head-
+ing, 2) stationary turn left 90◦, 3) turn right stationary turn
+left 90◦. Our goals are (xg, yg) tuples and our point mass
+agent starts at positions (xs, ys, 0). We test on 30 instances
+on a large 8192x8192 binary “sand-trap” obstacle map (5%
+obstacles randomly generated) where all transitions in the
+map are valid and unit cost except for transitions exiting
+Algorithm 1: Non-Blocking Batch A*
+Hyper-parameters: Suboptimality bound wso, Heuristic
+weight wh
+Input: nstart, atGoal(), Batch NN heuristic hNN(), Fast ad-
+missible heuristic hfast()
+Output: Path from nstart with suboptimality ≤wso
+1: OPEN = FOCAL = {nstart}, Waitlist = {}
+2: while FOCAL̸ = ∅do
+3:
+n ←FOCAL.pop()
+4:
+OPEN.remove(n)
+5:
+if atGoal(n) then
+6:
+return Solution backtracking from n
+▷Lazily update hfocal and reinsert if needed
+7:
+if n.hfocal̸ = hfast(n) then
+8:
+n.hfocal ←hfast(n)
+9:
+AddToQueues(n)
+10:
+else
+▷Generate successors
+11:
+for n′ ∈succ(n) do
+12:
+n′.g ←n.g + cost(n, n′)
+13:
+n′.hopen, n.hfocal ←hfast(n′)
+14:
+AddToQueues(n)
+▷Update FOCAL
+15:
+for all n′ ∈OPEN, /∈FOCAL do
+16:
+if n′.Fopen ≤wso ∗n.Fopen then
+17:
+Waitlist.insert(n′)
+18:
+FOCAL.insert(n′)
+▷Non-blocking
+19:
+if Waitlist.size() ≥B then
+▷Compute batch heuristic and update hfast
+20:
+h1:K ←hNN(ni ∈Waitlist)
+21:
+∀ni ∈Waitlist, hfast(ni) ←hi
+22:
+Waitlist = {}
+23: return No solution
+24: procedure ADDTOQUEUES(n):
+25:
+n.Fopen ←n.g + n.hopen
+26:
+n.Ffocal ←n.g + wh ∗n.hfocal
+27:
+OPEN.insert(n)
+28:
+if n.Fopen ≤wso ∗minn′ n′.Fopen then
+29:
+FOCAL.insert(n)
+sand-traps which cost 100. Figures show the mean and stan-
+dard deviation across the 30 instances. We run methods with
+wso = wh = 2.5 until they ﬁnd the goal or expand a max-
+imum of 1 million nodes. This set-up was arbitrarily used
+from an existing project, but from spot-checking brieﬂy on
+different parameters the trends from these experiments seem
+to hold across different 2D grid world scenarios (and likely
+to other domains as well).
+Our method requires two heuristics, the base fast heuristic
+hfast and the batch NN heuristic hNN. To relate the differ-
+ence between the quality of the heuristics provided by hfast
+and hNN, we make both hNN noisy versions of the Man-
+hattan distance of (x, y). Concretely, let hm(s) by the true
+Manhattan distance heuristic. We deﬁne a “noisy” version
+with k ∈[0, 1] as of hmk = hm ∗N where N ∼U[1−k, 1].
+A noisy hmk with k = 0 is a “strong” heuristic, perfectly
+
+
+bs1
+bs5
+bs25
+bs125
+bs625
+noNN
+Varying batch sizes
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Nodes expanded
+1e6
+n0.005
+n0.05
+n0.5
+block
+Figure 1: Node expansions — We see the numbers of nodes ex-
+panded during search by our method with various ﬁdelity hfast
+(blue, orange, red) and compare it against the blocking version
+(red) across different batch sizes. Note that the blocking version
+does not depend on hfast in FOCAL so varying hfast did not
+change performance much. The last column shows the results of
+just running the noisy hfast; we see from the orange and green
+baselines struggle. We see that increasing batch size increases the
+number of expansions as predicted, and that our non-blocking ver-
+sion generally outperforms the blocking version.
+noiseless and equal to hm, while increase k makes hmk in-
+creasingly weak and noisy. Note that although hm0 has a
+clear meaning, hm1 does not and is not the same as a per-
+fectly uninformative heuristic.
+Since our goal is to demonstrate the effectiveness of our
+non-blocking nature, we do not train a neural network to
+output hm. Instead we use a dummy hNN which creates a
+random tensor input of size (B, 242) and passes it into a
+small 3-layer neural network for a timing purposes, but actu-
+ally returns a noisy hm0.01. We compare our method against
+K-Focal which uses hfast for OPEN queue and hNN in FO-
+CAL, and implement the iterative batch building variant for
+a clear comparison against our method. We label this K-
+Focal variant as “blocking” in our experiments.
+Results
+Figure 1 shows the number of nodes expanded during search
+by our method as well as the blocking version with varying
+hfast and batch sizes. The right most column shows the re-
+sults of running search with just hfast where we see that
+a noisy n level of 0.005 runs fast (blue), n = 0.05 strug-
+gles but still manages to ﬁnd paths with an average of 500k
+expansions (orange), while n = 0.5 is not informative and
+results in a majority of failures. We ﬁrst observe that in gen-
+eral, increasing batch sizes increases the number of nodes
+expanded, which makes sense as increasing the batch size re-
+quires expanding more nodes until hNN is called again and
+the updated heuristic values can be used. However we ob-
+serve that our non-blocking version outperforms the block-
+ing version across most instances. If hfast gets stronger, the
+performance gap increases as our non-blocking algorithm
+allows successive expansions guided by hfast.
+Figure 2 highlights the ratio of inference time that hNN
+bs1
+bs5
+bs25
+bs125
+bs625
+Varying batch sizes
+0.0
+0.1
+0.2
+0.3
+0.4
+0.5
+0.6
+0.7
+0.8
+NN inference ratio of total runtime
+n0.005
+n0.05
+n0.5
+block
+Figure 2: Neural network overhead — We plot the total infer-
+ence time for computing the heuristic compared to the total run-
+time. We ﬁrst observe that increasing batchsize reduces runtime as
+expected. The exact ratio changes based on the strength of hfast.
+As hfast becomes stronger, each hNN call becomes less useful
+and more of a relative overhead.
+bs1
+bs5
+bs25
+bs125
+bs625
+Varying batch sizes
+0
+1
+2
+3
+4
+5
+6
+Runtime
+n0.005
+n0.05
+n0.5
+block
+Figure 3: Runtime — We compare the runtime of blocking versus
+non-blocking methods. We see that for larger batchsizes (e.g. 25,
+125), our non-blocking variant offers runtime beneﬁts at the cost
+of increased variance due to the use of hfast. Note that both the
+green and red methods reach the maximum node expansion and
+terminate early on the rightmost side (batchsize of 625), but that
+there our orange non-blocking method performs much faster even
+though the orange heuristic itself is pretty weak (see Figure 1).
+takes compared to the overall search time. Increasing batch
+size decreases the ratio as expected. However, we see that
+the absolute value depends on the strength of hfast. We are
+unclear why this exactly occurs but can offer some initial
+thoughts. As hfast becomes stronger, the search advances
+deeper between hNN calls, generating more unique children
+and populating the waitlist faster (which we conﬁrmed ex-
+perimentally, although it does not explain all the difference).
+Each hNN call occurs relatively more frequent, but at the
+same time adds marginally less information than hfast. We
+feel this “marginally less” information has a side-effect ef-
+fecting the runtime ratio but are unable to ﬁnd concrete cause
+and effect with our initial effort.
+Finally, we show the aggregate runtime of NBBA* and
+
+
+the blocking K-Focal. At a low batch size and higher hfast
+noise, the blocking behaviour can be beneﬁcial as it elim-
+inates expanding extra nodes and reduces overall runtime.
+However with larger batchsizes this blocking behaviour be-
+comes a bottleneck resulting in our method being faster on
+average.
+Conclusion
+We show a general method for incorporating a learned
+heuristic hNN in bounded suboptimal manner that leverages
+batch computation as well as the fast but not as informa-
+tive base heuristic hfast. Non-Blocking Batch A* (NBBA*)
+lazily creates batches for hNN while permitting expansions
+based on hfast. We show this can provide speed ups over
+the current state of the art K-Focal Search depending on the
+strength of hfast and batch size. This technical report has
+several limitations; namely that we do not conduct robust ex-
+perimentation across different domains and neural networks
+sizes. Further analysis could also be done into determining
+how the strength of hfast changes the ratio of time spent on
+hNN’s inference time as mentioned in the previous section.
+However we believe and hope that NBBA* will be useful
+to future practitioners incorporating learned heuristics with
+search. Acknowledgements: Rishi V. would like to thank
+Shivam S. for their helpful discussion in proofreading this
+report.
+
+
+References
+Agostinelli, F.; McAleer, S.; Shmakov, A.; and Baldi, P.
+2019. Solving the Rubik’s cube with deep reinforcement
+learning and search. Nature Machine Intelligence, 1–8.
+Agostinelli, F.; Shmakov, A.; McAleer, S.; Fox, R.; and
+Baldi, P. 2021.
+A* Search Without Expansions: Learn-
+ing Heuristic Functions with Deep Q-Networks.
+CoRR,
+abs/2102.04518.
+Chrestien, L.; Pevn´y, T.; Komenda, A.; and Edelkamp, S.
+2021.
+Heuristic Search Planning with Deep Neural Net-
+works using Imitation, Attention and Curriculum Learning.
+CoRR, abs/2112.01918.
+Greco, M.; Toro, J.; Ulloa, C. H.; and Baier, J. A. 2022.
+K-Focal Search for Slow Learned Heuristics (Extended Ab-
+stract). In Chrpa, L.; and Saetti, A., eds., Proceedings of
+the Fifteenth International Symposium on Combinatorial
+Search, SOCS 2022, Vienna, Austria, July 21-23, 2022, 279–
+281. AAAI Press.
+Jabbari Arfaee, S.; Zilles, S.; and Holte, R. C. 2011. Learn-
+ing heuristic functions for large state spaces. Artiﬁcial Intel-
+ligence, 175(16): 2075–2098.
+Kim, S.; and An, B. 2020. Learning Heuristic A: Efﬁcient
+Graph Search using Neural Network. In 2020 IEEE Inter-
+national Conference on Robotics and Automation (ICRA),
+9542–9547.
+Li, T.; Chen, R.; Mavrin, B.; Sturtevant, N. R.; Nadav, D.;
+and Felner, A. 2022. Optimal Search with Neural Networks:
+Challenges and Approaches. In Chrpa, L.; and Saetti, A.,
+eds., Proceedings of the Fifteenth International Symposium
+on Combinatorial Search, SOCS 2022, Vienna, Austria, July
+21-23, 2022, 109–117. AAAI Press.

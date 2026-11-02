@@ -1,0 +1,1603 @@
+A Parallel CPU-GPU Framework for Batching Heuristic Operations in
+Depth-First Heuristic Search
+Ehsan Futuhi1, Nathan R. Sturtevant1,2
+1University of Alberta, 2Alberta Machine Intelligence Institute (Amii)
+{futuhi, nathanst}@ualberta.ca
+Abstract
+The rapid advancement of GPU technology has unlocked
+powerful parallel processing capabilities, creating new oppor-
+tunities to enhance classic search algorithms. This hardware
+has been exploited in best-first search algorithms with neural
+network-based heuristics by creating batched versions of A*
+and Weighted A* that delay heuristic evaluation until suffi-
+ciently many states can be evaluated in parallel on the GPU.
+But, research has not addressed how depth-first algorithms
+like IDA* or Budgeted Tree Search (BTS) can have their
+heuristic computations batched. This is more complicated in
+a tree search, because progress in the search tree is blocked
+until heuristic evaluations are complete. In this paper we
+show that GPU parallelization of heuristics can be effectively
+performed when the tree search is parallelized on the CPU
+while heuristic evaluations are parallelized on the GPU. We
+develop a parallelized cost-bounded depth-first search (CB-
+DFS) framework that can be applied to both IDA* and BTS,
+significantly improving their performance. We demonstrate
+the strength of the approach on the 3x3 Rubik’s Cube and the
+4x4 sliding tile puzzle (STP) with both classifier-based and
+regression-based heuristics.
+Introduction
+There has been significant recent growth in computational
+resources, particularly in GPUs (Dally, Keckler, and Kirk
+2021; Rotem et al. 2022). GPUs have become indispensable
+for computation-intensive tasks due to their massive paral-
+lelism, capable of performing millions of operations simul-
+taneously. Modern CPUs also continue to evolve with en-
+hanced parallel processing capabilities, enabling faster ex-
+ecution of complex algorithms. This advancement in both
+CPU and GPU technologies has been well exploited in
+many fields of Artificial Intelligence, especially deep learn-
+ing (Schrittwieser et al. 2020; Yao et al. 2024).
+In classical search algorithms, several approaches (Li
+et al. 2022; Zhou and Zeng 2015; Agostinelli et al. 2019,
+2024) have been developed to enhance search using the par-
+allel processing capabilities of modern GPUs. One poten-
+tial use of deep learning on GPUs is to learn heuristics to
+guide search. For instance, Li et al. (2022) introduced ad-
+missible neural network heuristics that compresses a large
+Copyright © 2026, Association for the Advancement of Artificial
+Intelligence (www.aaai.org). All rights reserved.
+pattern database (PDB) heuristic with less information loss
+than standard compression techniques (Felner et al. 2007;
+Helmert, Sturtevant, and Felner 2017).
+A* (Hart, Nilsson, and Raphael 1968) and Weighted
+A* (Pohl 1970) have had batch versions developed which
+can use GPU-based heuristics more efficiently for optimal
+(Li et al. 2022) and sub-optimal search (Agostinelli et al.
+2019). The batched versions collect states into batches to
+evaluate their heuristics in a single parallel neural network
+lookup using the GPU. This technique, called batch heuris-
+tic evaluations, utilizes GPU parallelism and significantly
+improves performance over performing individual neural
+network lookups for each state.
+Algorithms like IDA* (Korf 1985) have not yet had
+batched variants built. The depth-first nature of IDA* search
+complicates the batching process, because in a depth-first
+search there are often only a few states available at one time,
+while batching is most efficient when hundreds of states
+are available for computing heuristic values in parallel. The
+same issue applies to algorithms such as Budgeted Tree
+Search (BTS) (Helmert et al. 2019; Sturtevant and Helmert
+2020), as both IDA* and BTS are built upon performing re-
+peated cost-bounded depth-first searches (CB-DFS).
+This paper addresses the issue by observing that ap-
+proaches used for CPU parallelization of CB-DFS make
+many more states available for batching, and thus enable
+efficient use of GPU-based heuristics. By re-designing CB-
+DFS for parallel search, we can then effectively build batch
+versions of IDA* and BTS. The effectiveness of the batched
+versions of IDA* and BTS is shown using both regression-
+based and classifier-based heuristics on the Rubik’s Cube
+and 15-puzzle domains. Batching is highly effective in im-
+proving the performance of these algorithms, resulting in
+over a 40× improvement in search speed. This improvement
+in search performance opens the door for further research on
+improving heuristic quality, and for designing new search al-
+gorithms to handle the inadmissible values that we expect to
+find in large neural network-based heuristics.
+Background and Related Work
+In heuristic search, the broad task is to find a path in a graph
+{G = {V, E}, s, g, c, h} from a start state s ∈V to a goal
+state g ∈V , where c : E →R+ is a cost function associated
+with the edges between states. The heuristic function h(v)
+arXiv:2507.11916v2  [cs.AI]  16 Nov 2025
+
+
+provides an estimate of the distance from a state v to the
+goal g. The heuristic is considered admissible if, for all states
+v, h(v) does not exceed the true shortest distance h∗(v) to
+the goal. It is consistent if, for any two states a and b, the
+heuristic satisfies h(a) ≤c(a, b)+h(b). In large state spaces,
+the graph G is represented implicitly, meaning it is generated
+online by expanding states and exploring their neighbors. A*
+and IDA* are guaranteed to find optimal solutions when the
+heuristic is admissible (Felner et al. 2011).
+Heuristics
+Pattern Database (PDB) heuristics (Culberson and Schaeffer
+1998) and the related merge and shrink framework (Helmert
+et al. 2007) are widely utilized, particularly in problems
+that exhibit exponential growth (Gnad, Sievers, and Torralba
+2023). These heuristics abstract the original graph V into a
+reduced state space ϕ(V ). In this abstract space, edges be-
+tween vertices in the original graph are preserved in the ab-
+stracted graph, meaning if an edge exists between v1 and
+v2 in V , a corresponding edge will exist between ϕ(v1) and
+ϕ(v2) in ϕ(V ). As a result, abstract distances are admissible
+estimates of distances in V . PDBs can reduce the size of the
+state space exponentially with only a small loss in heuristic
+accuracy (Felner, Sturtevant, and Schaeffer 2009).
+Standard PDB compression methods (Felner et al. 2007;
+Helmert, Sturtevant, and Felner 2017) primarily treat the
+PDB as a table of numbers. These methods group entries
+to reduce the PDB’s size and replace each entry in a group
+with the smallest value in that group to ensure the heuristic
+remains admissible. One common method is DIV, where k
+adjacent entries are grouped by dividing the index by k. An-
+other method is MOD, which combines entries offset by m
+k
+in a PDB with m total entries using the modulo operator.
+Neural networks have been used to compress PDB heuris-
+tics. ADP (Samadi et al. 2008) used a range of techniques to
+ensure admissibility. These included a unique loss function
+to penalize overestimation, a decision tree to partition states,
+and employing ANNs only for the resulting subsets of states.
+Any states with inadmissible heuristics were then stored in
+a hash table. ADP was developed prior to current hardware
+and is orthogonal to work in this paper on designing more
+efficient algorithms that use these heuristics.
+Li et al. (2022) also studied approaches for learning ad-
+missible heuristics. They treated the learning of heuristics
+as a classification problem rather than using regression,
+because in NP-complete problems the solution length is
+polynomial, meaning a small number of heuristic values
+(classes), while the state space is exponential. Admissibil-
+ity is guaranteed in two ways. First, because the heuristic
+classes are ordered, the classification quantile used for the
+predicted class can be adjusted to ensure admissibility. Sec-
+ond, an ensemble of neural networks can be trained, with
+the minimum value from the ensemble used as the predic-
+tion. This technique leverages the diversity of the ensemble
+to produce an admissible heuristic.
+Search Algorithms
+A variety of search algorithms can be used for solving short-
+est path problems.
+Initial Data 
+Partitioning
+Search Tree
+…
+…
+Shared 
+Work Queue
+Distributed 
+CPU Search
+…
+Search
+(Root)
+Figure 1: The structure of AIDA*.
+IDA* combines a cost-bounded depth-first search (CB-
+DFS) with iterative deepening to find optimal solutions.
+IDA* performs a series of depth-first searches, each with an
+increasing cost threshold, which is determined by the cur-
+rent path cost and the heuristic estimate to the goal. IDA*
+increases the cost threshold conservatively so it can termi-
+nate once the goal is found. IDA* is memory-efficient, as
+it only requires storage for the current path. However, if the
+number of nodes in each iteration does not grow fast enough,
+the sum of costs of the iterations may outweigh the cost of
+the final iteration, increasing the total expansions to O(N 2).
+BTS (Helmert et al. 2019) is identical to IDA* when the
+iterations grow by a suitable constant factor, but reduces the
+worst-case overhead to O(N log C∗), where C∗is the opti-
+mal solution cost. As in IDA*, BTS repeatedly invokes CB-
+DFS, just with more aggressive thresholds and additional
+node expansion limits. Thus, both IDA* and BTS can be
+improved through GPU parallelization of CB-DFS.
+AIDA* is designed to parallelize the CB-DFS portion of
+IDA*. While some forms of depth-first search cannot be par-
+allelized well (Reif 1985), AIDA* exploits the structure of
+the problem to create independent subproblems. AIDA* has
+three phases for CPU parallelization of the CB-DFS portion
+of IDA*, as shown in Figure 1:
+Initial Data Partitioning
+In this phase a single search is
+performed from the root of the search tree where the leaves
+of the search have cost greater than the current cost thresh-
+old. The threshold is increased until there are sufficiently
+many leaves above the cost threshold to efficiently perform
+the following algorithmic steps. At the end of this phase, du-
+plicate nodes are eliminated from the frontier nodes.
+Distributed Node Assignment
+Next, the leaf nodes from
+the data partitioning are put into a shared work queue for dis-
+tributed assignment of work. Path information is maintained
+to prevent the search from returning to the parents.
+Distributed CPU Search
+In this phase, processors inde-
+pendently search the subtrees found below the states in the
+shared work queue, maintaining the lowest unexpanded f-
+cost in the search. In each iteration either a solution is found
+and the search terminates, or no solution is found, and the
+search is repeated at the next cost threshold. Since the work
+queue is shared among all threads, idle threads dynamically
+retrieve unprocessed work from the queue as they complete
+their current work.
+
+
+GPU Architecture
+GPU parallelization is fundamentally different than CPU
+parallelization. While in CPU parallelization we need inde-
+pendent subtasks, GPU parallelization works best with cor-
+related tasks that are solved with the same instructions but
+different data. GPUs use a hierarchical execution model that
+enhances parallel processing efficiency. At the heart of this
+model is the kernel, which executes across multiple thread
+blocks. Each block contains warps, groups of threads that
+execute the same instructions in parallel. Threads within a
+block can share data through on-chip memory, but blocks
+themselves work independently.
+The architecture of GPUs is designed to support this
+model, with each GPU featuring multiple Streaming Mul-
+tiprocessors (SMs). These SMs include on-chip memory,
+shader cores, and warp schedulers. Shader cores handle
+arithmetic and logic operations, while warp schedulers man-
+age the execution of warps, selecting which ones are ready
+to execute in each cycle. GPUs can be connected to systems
+either via the PCI-E bus, as in Ubuntu servers, or integrated
+on the same processor package as the CPU, like in Apple’s
+M1 or M2 chips. When connected through PCI-E, GPUs
+typically have dedicated memory, necessitating explicit data
+transfers between CPU and GPU memory.
+GPU Parallelization of Algorithms
+In recent years, several parallel versions of the IDA* al-
+gorithm have been introduced. AIDA* (Reinefeld and Sch-
+necke 1994), a highly parallel iterative-deepening search al-
+gorithm, was designed for large-scale asynchronous Mul-
+tiple Instruction, Multiple Data (MIMD) systems. The al-
+gorithm partitions the search space and processes it asyn-
+chronously across multiple CPU processors. Taking a dif-
+ferent approach, Horie and Fukunaga (2017) investigate the
+parallelization of IDA* on GPUs using a block-based ap-
+proach. The proposed Block-Parallel IDA* (BPIDA*) as-
+signs subtrees to blocks of threads that execute on the same
+streaming multiprocessors (SMs). BPIDA* takes advantage
+of local shared memory of within a SM to reduce warp di-
+vergence and improve load balancing.
+GPU parallelism has also been effectively utilized in other
+search algorithms. Zhou and Zeng (2015) introduced the first
+parallel variant of the A* search algorithm called GA* that
+leverages the computational power of GPUs. GA* uses mul-
+tiple parallel priority queues to manage the Open list, en-
+abling the simultaneous extraction and expansion of nodes
+across GPU threads. The heuristic computations are also
+parallelized across the GPU cores to optimize performance
+further. GA* is up to 45x faster than a traditional CPU-based
+A* implementations in large and complex search spaces. Q*
+search (Agostinelli et al. 2024) employs deep Q-networks to
+calculate combined transition costs and heuristic values for
+child nodes in a single forward pass, thereby eliminating the
+need to explicitly generate them.
+Edelkamp and Sulewski (2009) investigate bitvector-
+based search algorithms, where the GPU’s parallel process-
+ing capabilities allow for the efficient handling of state ex-
+pansion and duplicate detection. The GPU is also employed
+Shared 
+Work Queue
+…
+Heuristic Batches
+GPU
+Batch 
+Processing
+CPU 
+RAM
+GPU 
+RAM
+CPU Work 
+Stack
+Figure 2: The structure of SingleGPU CB-DFS.
+for ranking and unranking permutations, computing hash
+functions, and managing the search frontier, all of which are
+parallelized to exploit the GPU’s architecture. Meanwhile,
+other approaches have formulated A* and Weighted A* al-
+gorithms as differentiable and end-to-end trainable neural
+network planners (Yonetani et al. 2021; Archetti, Cannici,
+and Matteucci 2021). These data-driven approaches, rather
+than learning the heuristic function, take a raw image as an
+input and convert it to a guidance map by an encoder. GPUs
+have also been instrumental in learning heuristics. For exam-
+ple, Li et al. (2022) developed an admissible heuristic for the
+sliding tile puzzle (STP) and TopSpin using an ensemble of
+neural networks and classifier quantiles. Other approaches
+(Agostinelli et al. 2021; Arfaee, Zilles, and Holte 2011;
+Thayer, Dionne, and Ruml 2011; P´andy et al. 2022) have
+also focused on heuristic learning, though without guaran-
+teeing admissibility.
+CB-DFS for Neural Heuristics
+In a heuristic search problem, the heuristic, h, can come
+from any source. This paper studies the neural heuristic
+search problem. In this problem, h is a neural heuristic. This
+means that h ∈HNN, where HNN is the set of all heuris-
+tics that are computed by a neural network. In recent work,
+heuristics in HNN have been learned from PDB heuristics
+(Li et al. 2022), and general techniques for heuristic learning
+have been described (Khandelwal, Sheth, and Agostinelli
+2024). The aim of this paper is to improve algorithms that
+make use of such heuristics. Experimental results evaluate
+the quality of heuristics we currently have access to, but
+we are working under the assumption that neural network
+heuristics will continue to improve, and thus improved algo-
+rithms will be broadly beneficial.
+We now introduce the SingleGPU Batch CB-DFS algo-
+rithm, which can be used with both IDA* to create Batch
+IDA* and BTS to create Batch BTS. We provide pseudocode
+and prove theoretical properties. Then, we discuss the Multi-
+GPU CB-DFS algorithm.
+SingleGPU Batch CB-DFS
+Batch heuristic lookups in best-first search algorithms like
+A* are relatively easy because once the search gets started,
+there are many states waiting in the open list. But, in a cost-
+bounded depth-first tree, the depth-first search cannot con-
+tinue until the f-cost of all children is known. Thus, to get
+sufficient states for batching heuristic lookups, we must ei-
+
+
+Algorithm 1: Batch IDA*
+1: Input: hM, start s, goal g, dinit
+2: works, history, batch ←{}
+3: bound ←hM(s, g)
+4: foundSolution ←false
+5: GenerateWork(s,dinit,history)
+6: start a batch-processing CPU thread executing ProcessBatch()
+7: while not foundSolution do
+8:
+start search CPU threads executing CB-DFS(bound)
+9:
+wait for CB-DFS threads to end
+10:
+UpdateThreshold(bound)
+11: end while
+Algorithm 2: Parallel CB-DFS
+1: function CB-DFS(bound)
+2:
+Initiate stack[workNum]
+3:
+Initialize terminated ←[0, 0, ..., 0] of length workNum
+4:
+counter ←0
+5:
+miss ←0
+6:
+for i = 1 to workNum do
+7:
+stack[i] ←works.pop()
+8:
+end for
+9:
+while miss < workNum do
+▷wait for all works to
+10:
+if stack[counter] is done then
+be done
+11:
+if works is not empty then
+12:
+stack[counter] ←works.pop()
+13:
+else
+14:
+miss ←miss+1
+15:
+terminated[counter] ←1
+16:
+end if
+17:
+end if
+18:
+if not terminated[counter] then
+19:
+DoIteration(stack[counter],bound)
+20:
+end if
+21:
+counter ←counter+1
+22:
+end while
+23: end function
+ther have a large enough branching factor to permit efficient
+batching, search speculatively beyond the cost limit, or run
+several CB-DFS searches in parallel so we can batch states
+across subtrees. This paper explores the last approach.
+The overall structure of SingleGPU CB-DFS is illustrated
+in Figure 2. It begins similarly to AIDA* by generating a
+Shared Work Queue with subtrees that can be searched in-
+dependently. However, instead of having each CPU take a
+single subtree, the CPUs now fill a work stack with multi-
+ple subtrees. A single expansion is performed on the first
+subtree, which results in a set of children that need their
+heuristics evaluated before the search can continue. These
+states are placed into a shared heuristic batch queue on the
+CPU, and then work continues on the next subtree in the
+work stack, generating more states until the heuristic batch
+queue is full. If multiple CPUs are available, they can exe-
+cute this process in parallel.
+Once the heuristic batch queue is full, a dedicated batch-
+processing thread manages the batch evaluation of states.
+This involves (1) copying the data to GPU memory, (2) eval-
+uating the batch on the GPU using the model hM, and then
+(3) returning the resulting heuristics to each of the CPUs.
+Algorithm 3: Subtree expansion
+1: function DoIteration(work, bound)
+2:
+newStatesFound ←false
+3:
+while not newStatesFound do
+4:
+s ←work.GetTop()
+5:
+if hM(s) is not ready then
+6:
+return
+7:
+end if
+8:
+if hM(s,goal)<bound then
+9:
+newStatesFound←true
+10:
+end if
+11:
+end while
+12:
+actions ←env.GetActions(s)
+13:
+for each action in actions do
+14:
+snext ←env.ApplyAction(s, action)
+15:
+work.add(snext)
+16:
+batch.add(TensorRepresentation((snext)))
+17:
+end for
+18: end function
+The batch is then cleared, allowing the next set of generated
+states to be processed. More than one batch is maintained in
+RAM so the CPUs can continue to search in parallel to the
+batch evaluation. The CB-DFS completes when the shared
+work queue is exhausted and all threads have completed any
+searches remaining in their work stacks. This completes the
+high-level CB-DFS.
+The pseudo-code showing batch CB-DFS and how it is
+integrated into SingleGPU Batch IDA* is outlined in Algo-
+rithm 1. The GenerateWork function (line 5) is called
+once before the main search loop begins, instructing an
+initial search tree to depth dinit. BatchIDA* then invokes
+CB-DFS in parallel across CPU threads given the cost
+threshold of the high-level search (line 8). The cost threshold
+is updated (UpdateThreshold function) after the CB-
+DFS with the current threshold is completed (line 10).
+The DoIteration function (Algorithm 3) expands
+subtrees one at a time. While executing the DoIteration
+function, if a subtree cannot progress further—meaning the
+heuristic evaluation is not yet available for the top node (line
+5) – the thread switches to the next subtree in its stack.
+Upon revisiting the same subtree, the thread resumes from
+the same node if its heuristic evaluation is ready; otherwise,
+it switches again to the next subtree.
+The batch processing is done via the ProcessBatch
+function, which is not shown. The most important detail of
+this algorithm is that it has a timeout after which a batch is
+evalauted even if it is not completely full. This is important
+when very little work is available at the end of an iteration,
+and impacts the integration with BTS.
+Overall, the performance of Batch IDA* hinges on the
+balance between two key events: filling the batch and pro-
+cessing the batch. The time required to fill the batch depends
+on the speed of the CPU CB-DFS threads, while processing
+time is determined by the GPU’s efficiency and the trans-
+fer time via the PCI-E bus. If batch-filling is faster, CB-DFS
+threads may remain idle, either waiting to add new nodes or
+for heuristic evaluations. Conversely, if batch processing is
+faster, the GPU is underutilized. Therefore, these two pro-
+
+
+cesses must be balanced to ensure optimal resource utiliza-
+tion during the CB-DFS.
+Batch CB-DFS with Multiple GPUs
+In most servers, multiple GPU devices are available, al-
+though the design shown thus far only incorporates a single
+GPU. If there are many fast CPUs available, they can end up
+waiting on the GPU for heuristic evaluations.
+We scale Batch CB-DFS to multiple GPUs by loading hM
+onto each GPU, and running one batch-processing thread
+per GPU. CB-DFS threads are then uniformly assigned to
+the available GPUs, with each GPU processing the batch
+of nodes generated by its respective CB-DFS threads. This
+setup maximizes CPU utilization by increasing the num-
+ber of batches while ensuring sufficient GPU resources are
+available to process them concurrently.
+Correctness of Batch CB-DFS
+In this section, IDA*, BTS, and AIDA* are all implemented
+with a CB-DFS sub-routine. Thus, as long as Batch CB-DFS
+searches the same tree as a classic CB-DFS search, we can
+substitute Batch CB-DFS without impacting the correctness
+of these algorithms. The batching operation does not impact
+the fact that the cost limit in the search is bounded, because
+the cost bound is still respected in the subtree expansions.
+Detailed proofs are found in supplementary material.
+Batch BTS Enhancements
+One important feature of the BTS algorithm is that it avoids
+the worst case where the IDA* tree grows too slowly, which
+can happen when there are many unique h-costs (e.g. as a re-
+sult of using a regression-based heuristic). BTS guarantees
+that in each iteration the number of nodes will grow expo-
+nentially. It does this by establishing a limit of how fast the
+tree should grow in the next iteration (measured by node ex-
+pansions), and then does a search over the cost bounds to
+find the cost bound that achieves this growth. Thus, in Batch
+BTS we must impose an additional node expansion limit in
+the CB-DFS. For efficiency, we do not check this after every
+expansion, but often enough to ensure that the search will
+terminate within a constant bound of the limit.
+Next, we note that using classic heuristics, there is little
+cost for running many small iterations at the very beginning
+of search. But, with neural heuristics, doing so is very slow,
+because the search never grows large enough to exploit large
+batch sizes. Thus, a very small iteration of BTS can be a
+thousand times more expensive than a larger iteration.
+To mitigate this, we make two additional modifications
+in Batch BTS. First, instead of setting the initial node limit
+to a small constant, such as 1, we use a much larger con-
+stant – in our case 10,000 expansions. This allows the initial
+searches to be significantly larger. But, setting the node limit
+on its own is not sufficient, we also need to raise the cost
+bound of the first search. Thus, instead of using h(root), we
+use h(root) + 1 instead. Neither of these changes impact
+the asymptotic behavior of the algorithm. Because the over-
+heads are just large constants, on sufficiently large problems
+these modifications would not be necessary. But, in practice,
+they significantly improve performance.
+Memory Cost Analysis
+The memory cost of IDA* is O(d), where d is the solution
+depth (Korf 1985). For AIDA*, which utilizes n CB-DFS
+threads, the memory cost increases to O(dn) as it concur-
+rently expands n subtrees. In Batch IDA* and Batch BTS’s
+CB-DFS, each thread manages k subtrees in a stack, result-
+ing in a memory cost of O(dnk). We know that n and k are
+related to hardware speed on any domain. So, these param-
+eters are expected to be constant as hardware is constant.
+Additionally, while the heuristic evaluations for unexpanded
+nodes are stored temporarily, memory is freed after their ex-
+pansion, keeping the total memory cost at O(dnk).
+AIDA*, Batch IDA*, and Batch BTS require loading their
+respective heuristics into memory. If AIDA* uses a PDB
+heuristic h and Batch IDA* uses a learned model hM, the
+total memory cost for AIDA* is O(nd + size(h)) and for
+Batch IDA* it is O(dnk + size(hM)). While PDB heuris-
+tics typically fit into memory and thus their cost is constant,
+large PDBs, such as the 12-edge Rubik’s cube PDB (500
+GB), exceed memory capacity, making them impractical for
+AIDA*. This limitation underscores the importance of fur-
+ther work on compressing PDB heuristics using deep learn-
+ing and designing search algorithms, such as the CB-DFS
+used by Batch IDA* and Batch BTS, to use them efficiently.
+Experimental Results
+The primary purpose of the experimental results is to evalu-
+ate whether or not the batched version of CB-DFS can effec-
+tively reduce the overhead of neural heuristics through GPU
+parallelism. We evaluate this in both the Batch IDA* and
+Batch BTS algorithms with neural heuristics built on both
+classifiers and regression, as regression-based heuristics are
+expected to fail with IDA*, but not BTS. We further eval-
+uate the impact of GPU count and neural heuristic size on
+performance. Additional experiments examining the effects
+of hardware and algorithmic hyperparameters are included
+in the supplementary material.
+Experimental Setup
+We conduct our experiments across two domains: the 3x3
+Rubik’s cube and the 4x4 sliding tile puzzle (STP). We
+use relatively modest computational resources in our ex-
+periments. Specifically, we utilize a server equipped with
+32 AMD Ryzen Threadripper 2950X CPU cores and two
+NVIDIA GeForce RTX 2080 Ti GPUs running CUDA ver-
+sion 12.4. The Batch algorithms are implemented in C++,
+and Libtorch is employed for the deep learning components.
+Any CPU parallelization uses one thread per CPU core. For
+batched algorithms, we use a 4-millisecond timeout to trig-
+ger batch processing when an insufficient number of states
+are available to fully populate the batch. For the standard
+algorithms, IDA* and AIDA*, we use hPDB which is the 8-
+corners PDB for Rubik’s cube, and the sum of 1-7 and 8-15
+tile additive PDBs for STP. For the STP, we use standard
+benchmark instances (Korf 1985). For the Rubik’s Cube do-
+main, unless otherwise stated, we generated instances of so-
+lution length 11 using random walks starting from the goal
+
+
+Average Performance Over 50 Instances
+Algorithm
+Batch Size
+3x3 Rubik’s Cube
+4x4 STP
+Time (s)
+Expanded
+Generated
+Time (s)
+Expanded
+Generated
+SingleGPU Batch IDA*
+1
+> 100
+-
+-
+16.80
+104,869
+225,542
+SingleGPU Batch IDA*
+8
+> 100
+-
+-
+3.97
+93,610
+201,217
+SingleGPU Batch IDA*
+80
+58.07
+902,026
+11,966,615
+0.94
+93,575
+201,145
+SingleGPU Batch IDA*
+800
+5.46
+908,522
+12,054,452
+0.54
+104,945
+225,704
+SingleGPU Batch IDA*
+8,000
+3.46
+900,725
+13,734,532
+0.71
+115,190
+248,108
+2GPU Batch IDA*
+800
+2.78
+982,864
+13,044,563
+0.44
+104,833
+225,468
+2GPU Batch IDA*
+8,000
+2.51
+936,426
+13,172,161
+0.64
+115,876
+249,264
+Batch A*
+1,000
+23.58
+779,495
+14,030,893
+0.18
+17,892
+41,465
+Table 1: Summary results comparing Batch IDA* and Batch A* using the same PDB heuristic.
+state. PDB heuristics and baselines are from HOG21.
+The heuristic hM for the STP domain is the model intro-
+duced by Li et al. (2022). It is constructed by combining two
+ensemble models: the first is trained on the difference be-
+tween the 1–7 tile PDB and the Manhattan distance heuris-
+tic, while the second is similarly trained using the 8–15 tile
+PDB. For the Rubik’s Cube domain, we trained two admis-
+sible heuristics hM, both based on the 8-corner PDB, with a
+size of 1.9 MB. The first model is a classifier that was trained
+extensively to achieve both admissibility and the same aver-
+age heuristic as in the input PDB. The second model is a
+regression network trained using mean squared error (MSE)
+loss. For admissibility, we subtracted 2.2 from all predicted
+heuristic values. However, this adjustment reduced the aver-
+age heuristic by 2.3 compared to the perfect heuristic.
+Fixed-Tree Evaluation
+Our first experiment is designed to evaluate the effective-
+ness of batch operations in Batch IDA* with a classifier-
+based heuristic. We designed this experiment to isolate as
+many variables as possible in the experiment and to isolate
+the quality of neural heuristic from the mechanics of Batch
+IDA*. We isolate the impact of the neural heuristic training
+by fixing the tree to only contain states expanded by a base-
+line PDB heuristic (hPDB). The search evaluates the neural
+heuristic at each state, but uses hPDB for pruning.
+Under this methodology all algorithms are searching ex-
+actly the same tree. This allows us to initialize the neu-
+ral heuristic randomly and quickly experiment with differ-
+ent network topologies without having to re-train the neural
+heuristics. This approach can measure the effectiveness of
+parallelism, but does not measure the quality of any learned
+heuristics, which is not the primary concern of this paper.
+Results of this experiment are presented in Table 1. Each
+algorithm is given 5000s to solve all problems in the prob-
+lem set, or an average of 100s per problem. Batch IDA* with
+a batch size of 1 or 8 fails to solve all of the Rubik’s Cube
+instances within the time limit. But, increasing the batch size
+to 8000 reduces the average time to 3.46s. Using two GPUs
+and a batch size of 8000 further reduces this to 2.51s, which
+is almost ten times faster than Batch A*. Note that Batch
+1https://github.com/nathansttt/hog2/tree/PDB-refactor
+Average Performance Over 50 RC Instances
+Algorithm
+Batch Size
+Time ± SE (s)
+Expanded
+Solution Length 8
+Batch BTS
+10
+33.41 ± 5.80
+537,763
+Batch BTS
+100
+4.26 ± 0.54
+569,475
+Batch BTS
+1,000
+0.97 ± 0.13
+571,179
+Batch BTS
+2,000
+0.83 ± 0.11
+583,135
+Batch IDA*
+1,000
+163.20 ± 54.63
+366,530,531
+Batch IDA*
+2,000
+144.91 ± 37.63
+360,097,779
+Solution Length 9
+Batch BTS
+10
+169.73 ± 65.58
+1,211,327
+Batch BTS
+100
+20.25 ± 6.58
+1,217,398
+Batch BTS
+1,000
+3.64 ± 0.94
+1,294,972
+Batch BTS
+2,000
+3.01 ± 0.94
+1,294,329
+Batch IDA*
+2,000
+-
+-
+Table 2: Performance on 3x3 Rubik’s Cube instances with
+the regression model.
+A* is only parallel on the GPU, not the CPU. Adding CPU
+parallelization to Batch A* is an open challenge.
+We use the first 50 instances from Korf’s benchmarks for
+the STP domain. On this domain, going from batch size of
+1 to 800 reduces the running time from 16.80s to 0.54s, a
+30× improvement. Using two GPUs and batch size 800 re-
+duces this further to 0.44s. The variance in nodes expanded
+is due to a deep initial phase in Batch IDA* aimed at produc-
+ing sufficient work pieces, which results in batches contain-
+ing extra nodes that are not necessary to solve the problem
+(f-cost greater than the threshold). Although Batch IDA*
+is faster than Batch A* with respect to time per node ex-
+pansion, Batch A* expands fewer nodes because it detects
+duplicates, which Batch IDA* does not.
+Regression-Based Neural Heuristics
+In Table 2 we evaluate the impact of using a real-valued
+heuristic on Batch IDA* and Batch BTS. In this experiment
+both algorithms are using an identical neural heuristic, and
+we are measuring the cost of searching the resulting tree
+with that algorithm. Because the heuristic is learned using
+regression, which produces real-valued heuristics, we the
+
+
+Average Time (s) Over 50 Instances
+Model size (MB)
+SingleGPU Batch IDA*
+Batch A*
+RC
+STP
+RC
+STP
+0.2
+3.46
+0.52
+11.16
+0.18
+2.3
+4.75
+0.78
+16.71
+0.29
+13.6
+10.23
+1.45
+20.66
+0.38
+Table 3: Impact of model size on Batch IDA* speed.
+Average Performance Over 50 Instances
+Algorithm
+RC
+STP
+Time (s)
+Generated
+Time (s)
+Generated
+4GPU Batch IDA*
+2.56
+12,027,388
+0.57
+238,440
+2GPU Batch IDA*
+2.97
+11,322,876
+0.58
+239,492
+SingleGPU Batch IDA*
+6.11
+12,498,111
+0.99
+231,958
+AIDA*
+2.26
+14,793,061
+0.02
+101,020
+Table 4: Impact of GPU counts on Batch IDA* performance.
+IDA* iterations to grow very slowly. This is confirmed by
+the experimental results.
+Due to the poor performance of Batch IDA*, we only re-
+port results where the algorithm is able to solve all instances
+within the 4-hour time limit. Batch IDA* expands orders
+of magnitude more states than Batch BTS, reinforcing that
+Batch BTS is better suited for regression-based heuristics.
+On instances with solution length 9, Batch IDA* expands
+billions of nodes per instance and fails complete within the
+time limit, while Batch BTS successfully solves all instances
+across all batch sizes. Notably, Batch BTS achieves a 56×
+speedup when the batch size is increased from 10 to 2000.
+Model Size
+Our third experiment looks at the impact of model size on
+CB-DFS performance. We run Batch IDA* on the same do-
+mains with a single GPU and the best parameters from Ta-
+ble 1. We vary the model size by fixing the number of lay-
+ers, but changing the number of fully connected neurons in
+each layer. The results of this experiment are found in Table
+3. These results show that increasing the size of the model
+does not linearly increase the time required to evaluate the
+model, although larger models are more expensive to eval-
+uate. Thus, there will be trade-offs between model quality
+and speed when deploying neural heuristics.
+The results also show that Batch A* is less affected by
+model size than Batch IDA*. The main reason for this dif-
+ference is that the batches in Batch IDA* are not always full,
+meaning the GPU isn’t being used as efficiently. This can be
+caused by node generations above the cost thresholds and
+the uneven distribution of work between subtrees. When the
+model requires more time to evaluate, these issues are accen-
+tuated. See the Supplementary Material for further analysis.
+GPU Count
+To evaluate the impact of GPU count, we present the per-
+formance of Batch IDA* with different numbers of GPUs
+in Table 4, using other servers for this experiment. In both
+Average Performance Over 50 Instances
+Algorithm
+4*4 STP
+batch size
+Time (s)
+Expanded
+Generated
+SingleGPU Batch IDA*
+8000
+13.11
+777,652
+1,598,045
+2GPU Batch IDA*
+8000
+11.78
+770,341
+1,428,177
+AIDA*
+-
+1.21
+10,513,092
+30,254,284
+IDA*
+-
+4.23
+8,180,928
+17,639,025
+Batch A*
+1000
+2.26
+88,977
+273,505
+Table 5: STP results using a learned admissible heuristic.
+Average Performance Over 50 Instances
+Algorithm
+3*3 Rubik’s cube
+batch size
+Time (s)
+Expanded
+Generated
+2GPU Batch IDA*
+8000
+5.11
+1,001,733
+13,028,957
+SingleGPU Batch IDA*
+8000
+8.06
+1,005,874
+13,082,769
+AIDA*
+-
+2.74
+2,218,215
+29,401,255
+IDA*
+-
+5.84
+2,106,615
+27,900,766
+Batch A*
+1000
+42.07
+779,491
+14,030,761
+Table 6: RC results using a learned admissible heuristic.
+domains, performance improves with additional GPUs, with
+the 4-GPU version matching AIDA*’s performance on the
+Rubik’s Cube. However, the performance gains diminish
+with increasing GPU counts, due to fewer threads being
+available to populate batches. Additionally, we assess Batch
+IDA* using various hardware configurations, with results
+provided in the Supplementary Material.
+PDB Comparison
+We conclude by evaluating neural heuristics in Batch IDA*
+against AIDA*. Batch algorithms rely on admissible neural
+network heuristic hM, while standard algorithms use a com-
+pressed PDB heuristic hDIV of equal size. Results for STP
+and Rubik’s Cube are presented in Table 5 and Table 6, re-
+spectively. The slower performance of learning algorithms
+compared to the results in Table 1 is due to the need for
+additional tensor operations per node to ensure heuristic ad-
+missibility. Standard algorithms expand more nodes in both
+domains since hDIV is a weaker heuristic than hM. AIDA*
+performs significantly better than all other algorithms, while
+among the batch algorithms, Batch IDA* remains faster than
+Batch A* in terms of constant time per node. We provide a
+Detailed analysis of this performance gap between AIDA*
+and Batch IDA* in the Supplementary Material.
+Discussion and Conclusions
+This paper has shown how to parallelize CB-DFS on the
+CPU and GPU for efficiently using neural heuristics dur-
+ing search. CB-DFS is explored with both Batch IDA and
+Batch BTS. The batching approach provides significant
+gains when batch sizes reach a sufficiently large size. Thus,
+this work provides the foundation for future research on
+building larger and stronger neural heuristics.
+Acknowledgements
+This work was supported by the National Science and Engi-
+neering Research Council of Canada Discovery Grant Pro-
+
+
+gram and the Canada CIFAR AI Chairs Program.
+References
+Agostinelli, F.; McAleer, S.; Shmakov, A.; and Baldi, P.
+2019. Solving the Rubik’s cube with deep reinforcement
+learning and search.
+Nature Machine Intelligence, 1(8):
+356–363.
+Agostinelli, F.; McAleer, S.; Shmakov, A.; Fox, R.; Valtorta,
+M.; Srivastava, B.; and Baldi, P. 2021. Obtaining approx-
+imately admissible heuristic functions through deep rein-
+forcement learning and A* search. In Bridging the Gap be-
+tween AI Planning and Reinforcement Learning workshop
+at ICAPS.
+Agostinelli, F.; Shperberg, S. S.; Shmakov, A.; McAleer, S.;
+Fox, R.; and Baldi, P. 2024. Q* Search: Heuristic Search
+with Deep Q-Networks.
+Archetti, A.; Cannici, M.; and Matteucci, M. 2021. Neural
+Weighted A*: Learning graph costs and heuristics with dif-
+ferentiable anytime A*. In International Conference on Ma-
+chine Learning, Optimization, and Data Science, 596–610.
+Springer.
+Arfaee, S. J.; Zilles, S.; and Holte, R. C. 2011. Learning
+heuristic functions for large state spaces. Artificial Intelli-
+gence, 175(16-17): 2075–2098.
+Culberson, J. C.; and Schaeffer, J. 1998. Pattern databases.
+Computational Intelligence, 14(3): 318–334.
+Dally, W. J.; Keckler, S. W.; and Kirk, D. B. 2021. Evolution
+of the graphics processing unit (GPU). IEEE Micro, 41(6):
+42–51.
+Edelkamp, S.; and Sulewski, D. 2009. Parallel state space
+search on the GPU. In Symposium on Combinatorial Search
+(SoCS).
+Felner, A.; Korf, R. E.; Meshulam, R.; and Holte, R. C. 2007.
+Compressed pattern databases. Journal of Artificial Intelli-
+gence Research, 30: 213–247.
+Felner,
+A.;
+Sturtevant,
+N.;
+and
+Schaeffer,
+J.
+2009.
+Abstraction-based heuristics with true distance computa-
+tions. Symposium on Abstraction, Reformulation and Ap-
+proximation (SARA), 9.
+Felner, A.; Zahavi, U.; Holte, R.; Schaeffer, J.; Sturtevant,
+N.; and Zhang, Z. 2011. Inconsistent heuristics in theory
+and practice. Artificial Intelligence, 175(9-10): 1570–1603.
+Gnad, D.; Sievers, S.; and Torralba, ´A. 2023.
+Efficient
+Evaluation of Large Abstractions for Decoupled Search:
+Merge-and-Shrink and Symbolic Pattern Databases. Inter-
+national Conference on Automated Planning and Schedul-
+ing (ICAPS), 33(1): 138–147.
+Hart, P. E.; Nilsson, N. J.; and Raphael, B. 1968. A for-
+mal basis for the heuristic determination of minimum cost
+paths. IEEE transactions on Systems Science and Cybernet-
+ics, 4(2): 100–107.
+Helmert, M.; Haslum, P.; Hoffmann, J.; et al. 2007. Flexi-
+ble Abstraction Heuristics for Optimal Sequential Planning.
+In International Conference on Automated Planning and
+Scheduling (ICAPS), 176–183.
+Helmert, M.; Lattimore, T.; Lelis, L. H. S.; Orseau, L.;
+and Sturtevant, N. R. 2019. Iterative Budgeted Exponen-
+tial Search. In International Joint Conference on Artificial
+Intelligence, 1249–1257.
+Helmert, M.; Sturtevant, N.; and Felner, A. 2017. On vari-
+able dependencies and compressed pattern databases.
+In
+Symposium on Combinatorial Search (SoCS), volume 8,
+129–133.
+Horie, S.; and Fukunaga, A. 2017. Block-parallel IDA* for
+GPUs. In Symposium on Combinatorial Search (SoCS), vol-
+ume 8, 134–138.
+Khandelwal, V.; Sheth, A.; and Agostinelli, F. 2024. To-
+wards Learning Foundation Models for Heuristic Func-
+tions to Solve Pathfinding Problems.
+arXiv preprint
+arXiv:2406.02598.
+Korf, R. E. 1985. Depth-first iterative-deepening: An op-
+timal admissible tree search. Artificial Intelligence, 27(1):
+97–109.
+Li, T.; Chen, R.; Mavrin, B.; Sturtevant, N. R.; Nadav, D.;
+and Felner, A. 2022. Optimal search with neural networks:
+Challenges and approaches. In Symposium on Combinato-
+rial Search (SoCS), volume 15, 109–117.
+P´andy, M.; Qiu, W.; Corso, G.; Veliˇckovi´c, P.; Ying, Z.;
+Leskovec, J.; and Li`o, P. 2022.
+Learning graph search
+heuristics.
+In Learning on Graphs Conference, 10–1.
+PMLR.
+Pohl, I. 1970. Heuristic search viewed as path finding in a
+graph. Artificial intelligence, 1(3-4): 193–204.
+Reif, J. H. 1985. Depth-first search is inherently sequential.
+Information Processing Letters, 20(5): 229–234.
+Reinefeld,
+A.;
+and
+Schnecke,
+V.
+1994.
+AIDA*-
+Asynchronous Parallel IDA*. In Canadian Society for Com-
+putational Studies of Intelligence, 295–302.
+Rotem, E.; Yoaz, A.; Rappoport, L.; Robinson, S. J.; Man-
+delblat, J. Y.; Gihon, A.; Weissmann, E.; Chabukswar, R.;
+Basin, V.; Fenger, R.; et al. 2022. Intel alder lake CPU ar-
+chitectures. IEEE Micro, 42(3): 13–19.
+Samadi, M.; Siabani, M.; Felner, A.; and Holte, R. 2008.
+Compressing pattern databases with learning. In ECAI 2008,
+495–499. IOS Press.
+Schrittwieser, J.; Antonoglou, I.; Hubert, T.; Simonyan, K.;
+Sifre, L.; Schmitt, S.; Guez, A.; Lockhart, E.; Hassabis, D.;
+Graepel, T.; et al. 2020. Mastering atari, go, chess and shogi
+by planning with a learned model. Nature, 588(7839): 604–
+609.
+Sturtevant, N.; and Helmert, M. 2020.
+A Guide to Bud-
+geted Tree Search. In Symposium on Combinatorial Search
+(SoCS).
+Thayer, J.; Dionne, A.; and Ruml, W. 2011. Learning inad-
+missible heuristics during search. In International Confer-
+ence on Automated Planning and Scheduling (ICAPS), vol-
+ume 21, 250–257.
+Yao, S.; Yu, D.; Zhao, J.; Shafran, I.; Griffiths, T.; Cao,
+Y.; and Narasimhan, K. 2024. Tree of thoughts: Deliber-
+ate problem solving with large language models. Advances
+in Neural Information Processing Systems, 36.
+
+
+Yonetani, R.; Taniai, T.; Barekatain, M.; Nishimura, M.; and
+Kanezaki, A. 2021. Path planning using neural A* search.
+In International Conference on Machine Learning, 12029–
+12039. PMLR.
+Zhou, Y.; and Zeng, J. 2015. Massively parallel A* search
+on a GPU. In AAAI Conference on Artificial Intelligence.
+
+
+Appendix
+In this section, we first present the results for the average
+batch size during runtime. Next, we examine the perfor-
+mance difference between Batch IDA* and AIDA*, consid-
+ering their similar search procedures. Finally, we provide ad-
+ditional results with various hardware configurations to fur-
+ther assess the robustness of Batch IDA*.
+Batch Size in Practice
+As discussed earlier, the batch size during runtime is not al-
+ways consistent. This occurs because CPU threads may not
+be able to fully populate the batch when there are only a
+few pieces of work remaining in the queue. Additionally, in
+the initial iterations with low cost thresholds, a significant
+portion of nodes are pruned, resulting in fewer nodes being
+collected within the specified timeout than the target batch
+size. Figure 3 shows the average batch size and total number
+of batches during runtime for both domains. The target batch
+size is 8000 for the Rubik’s cube and 500 for STP. In both
+domains, as the search space grows, the number of batches
+and their sizes increase. In the STP domain, the maximum
+average batch size reaches only about half of the target batch
+size due to deeper trees, more IDA* iterations, and a lower
+branching factor. This limitation in batch size prevents full
+utilization of GPU parallelism, contributing to the reduced
+speedup observed in STP.
+Comparative Analysis of Batch IDA* and AIDA*
+In this section, we analyze the performance gap between
+Batch IDA* and AIDA*. Let hM represent a neural net-
+work heuristic and hPDB a pattern database (PDB) heuristic.
+We denote the batch size for hM by bNN. If we assume that
+we have n CPU threads, AIDA* also uses batch strategy as
+all threads perform PDB lookups in parallel. Thus, AIDA*’s
+batch size can be considered bPDB = n. Suppose each hM
+lookup requires tNN time. Although tNN slightly varies with
+batch size, we assume here that it remains constant across
+batch sizes. Additionally, we define tcopy as the time required
+to transfer the batch between CPU and GPU.
+For AIDA*, where all threads perform PDB lookups in
+parallel without race conditions, the lookup overhead for all
+threads is comparable to that for a single thread: tPDB for n
+lookups is roughly equivalent to tPDB for one lookup. Now,
+we make the following assumption regarding batch sizes in
+Batch IDA*:
+Assumption 1. The batch size for all hM lookups is always
+bNN.
+We leave out of scope certain conditions in which CPU
+threads cannot fill the batches, activating the timeout mech-
+anism. Given Assumption 1, for Batch IDA* and AIDA* to
+achieve comparable timing performance, the following con-
+dition must hold:
+bNN ∗tPDB
+bPDB
+= bNN ∗tPDB
+n
+= tNN + 2tcopy
+(1)
+The left-hand side of Equation 1 represents the time
+AIDA* needs to process bNN nodes, while the right-hand
+side shows the time for Batch IDA* to process the same
+batch. A straightforward approach to improving Batch IDA*
+performance is to increase bNN, which initially yields sub-
+stantial gains. However, beyond a certain point, further in-
+creases offer diminishing returns due to the rise in tcopy.
+Therefore, other solutions to enhance Batch IDA* efficiency
+include minimizing tNN and tcopy. This can be achieved by
+employing faster GPUs or optimizing hM using the follow-
+ing objective:
+max
+hM
+1
+|S|
+X
+s∈S
+hM(s),
+subject to
+hM(s) ≤h∗(s),
+∀s ∈S,
+|hM| is minimized
+(2)
+This optimization balances the heuristic model size
+while maintaining admissibility and maximizing the average
+heuristic value.
+Hardware
+In this section, we assess the performance of Batch IDA*
+across different hardware configurations, categorized as H1,
+H2, and H3. Table 7 provides an overview of these configu-
+rations, with their comparative analysis as follows:
+• CPU performance: H3 > H1 > H2
+• GPU performance: H3 > H1 > H2
+Server
+GPU
+CPU
+H1
+GeForce RTX 2080 Ti
+AMD Ryzen Threadripper 2950X
+H2
+GeForce GTX TITAN X
+Intel Xeon E5-2620 v3
+H3
+GeForce RTX A5000
+AMD EPYC 7313
+Table 7: Details of hardware resources.
+Average Time(s) Over 50 Instances
+Hardware
+SingleGPU Batch IDA*
+AIDA*
+RC
+STP
+RC
+STP
+H1
+5.87
+0.78
+2.32
+0.026
+H2
+10.78
+1.01
+6.81
+0.045
+H3
+4.32
+0.60
+2.01
+0.015
+Table 8: Performance across different hardware resources.
+Table 8 presents the performance of SingleGPU Batch
+IDA* and AIDA* across these systems. All systems are con-
+figured with 8 threads, due to one server having a maxi-
+mum of 8 threads. Both methods achieve their best perfor-
+mance on H3 as it has the best CPU and GPU. Although
+further analysis is required to understand the individual im-
+pact of CPU and GPU, these results indicate that AIDA* is
+more sensitive to hardware variations, as demonstrated by
+the more performance gap between H3 and H2 compared to
+that of Batch IDA*.
+
+
+100
+101
+102
+103
+Total Generated Nodes (Millions)
+1
+2
+3
+4
+5
+6
+7
+8
+Average Batch Size (Thousands)
+Search Space vs Average Batch Size (Log Scale)
+(a) Average batch size in RC
+100
+101
+102
+103
+Total Generated Nodes (Millions)
+0
+20
+40
+60
+80
+100
+120
+140
+Number of Batches (Thousands)
+Search Space vs Number of Batches (Log Scale)
+(b) Number of batches in RC
+101
+102
+103
+Total Generated Nodes (Thousands)
+50
+100
+150
+200
+250
+Average Batch Size
+Search Space vs Average Batch Size (Log Scale)
+(c) Average batch size in STP
+101
+102
+103
+Total Generated Nodes (Thousands)
+0
+5
+10
+15
+20
+25
+30
+Number of Batches (Thousands)
+Search Space vs Number of Batches (Log Scale)
+(d) Number of batches in STP
+Figure 3: Average batch size and total number of batches during runtime.
+
+
+50
+100
+200
+300
+400
+500
+number of subtrees
+4k
+6k
+8k
+10k
+12k
+batch size
+2.71
+2.69
+2.66
+2.70
+2.85
+2.74
+2.69
+2.52
+2.59
+2.84
+2.72
+2.69
+2.61
+2.51
+2.65
+2.68
+2.70
+2.71
+2.58
+2.59
+2.66
+2.66
+2.69
+2.77
+2.70
+2.62
+2.63
+2.59
+2.63
+2.85
+Time Heatmap
+2.55
+2.65
+2.75
+2.85
+(a) 2GPU in RC
+20
+30
+50
+100
+200
+number of subtrees
+500
+1k
+2k
+3k
+4k
+batch size
+0.45
+0.46
+0.50
+0.60
+0.81
+0.43
+0.44
+0.48
+0.58
+0.79
+0.43
+0.47
+0.47
+0.57
+0.83
+0.45
+0.45
+0.47
+0.57
+0.80
+0.45
+0.44
+0.46
+0.56
+0.82
+Time Heatmap
+0.45
+0.57
+0.68
+0.80
+(b) 2GPU in STP
+50
+100
+200
+300
+400
+500
+number of subtrees
+4k
+6k
+8k
+10k
+12k
+batch size
+3.49
+3.49
+3.55
+3.66
+3.78
+3.84
+3.48
+3.51
+3.59
+3.67
+3.89
+3.82
+3.47
+3.46
+3.74
+3.70
+3.74
+3.74
+3.61
+3.57
+3.71
+3.68
+3.71
+3.78
+3.60
+3.64
+3.61
+3.62
+3.77
+3.73
+Time Heatmap
+3.5
+3.6
+3.7
+3.8
+(c) SingleGPU in RC
+20
+30
+50
+100
+200
+number of subtrees
+500
+1k
+2k
+3k
+4k
+batch size
+0.61
+0.56
+0.63
+0.70
+0.90
+0.63
+0.52
+0.65
+0.70
+0.87
+0.62
+0.63
+0.66
+0.74
+0.93
+0.57
+0.59
+0.66
+0.70
+0.91
+0.58
+0.60
+0.62
+0.74
+0.96
+Time Heatmap
+0.6
+0.7
+0.8
+0.9
+(d) SingleGPU in STP
+Figure 4: Hyperparameter analysis for Batch IDA*.
+Hyperparameter Analysis
+In this section, we present the impact of hyperparameters
+on the performance of Batch IDA*. For this experiment,
+we consider the batch size and the number of subtrees per
+thread, specified by workNum in Algorithm 2. The timing
+results for different combinations of hyperparameter val-
+ues are shown in Figure 4. In Rubik’s Cube there is only
+about 10% variation between the best and worst parameters,
+whereas in STP there is a 1.84× difference. The STP do-
+main has less balanced subtrees than Rubik’s Cube. With
+too many subtrees, the work is divided out to all threads
+too quickly, reducing the ability to load-balancing between
+smaller and larger subtrees. The range of batch sizes did not
+have a large impact on performance. This is due to the time-
+out mechanism in place; if batch filling exceeds the timeout,
+the process is stopped, and the batch is processed with its
+current size.
+Proofs of Theoretical Results
+Lemma 1. Given an admissible monotone cost function,
+iterative-deepening- A* will find a solution of least cost if
+one exists (Korf 1985).
+Lemma 2. Let f be an admissible and monotone cost func-
+tion. Then, the AIDA* algorithm is guaranteed to find an
+optimal solution, provided that a solution exists.
+Proof. From Lemma 1, we know that IDA* using the cost
+function f finds an optimal solution if a solution exists.
+Therefore, our task is to demonstrate that AIDA*, using the
+same cost function f as IDA*, expands all the nodes that
+IDA* expands at each cost threshold. We know that, like
+IDA*, AIDA* does not increase the cost threshold until all
+nodes with costs below the current threshold have been ex-
+panded. Assume, for the sake of contradiction, that there ex-
+ists a node smissed that IDA* expands but AIDA* does not.
+Let us also assume that the initial phase in AIDA* proceeds
+up to a depth of dinit. We select a path from the root to
+smissed, denoted as path. The node smissed falls into one of
+two categories:
+1. The length of path is less than or equal to dinit.
+2. The length of path exceeds dinit.
+If smissed falls within the first category, it must be ex-
+panded during initial phase, as this phase generates the
+entire tree up to dinit levels. Therefore, in this case,
+smissed cannot be missed by AIDA*. If smissed falls
+into the second category, we can express the path as
+{root, s1, ...sdinit, ..., smissed}. The path intersects the tree
+generated in the initial phase at node sdinit. We know that,
+during second and third phases, AIDA* grows the subtree
+for all leaf nodes of the initial tree, including sdinit. Since
+both AIDA* and IDA* use the same cost function f, the
+same cost threshold, and both employ a depth-first search
+strategy, AIDA* is guaranteed to expand the node smissed
+during subtree expansion of sdinit. Thus, AIDA* does not
+miss any node that IDA* expands. This concludes the proof
+that AIDA* will find an optimal solution if one exists.
+Theorem 1. Let hM be an admissible heuristic learned from
+a PDB heuristic h. Then, Batch IDA* using hM is guaran-
+teed to find an optimal solution, assuming that a solution
+exists.
+Proof. From Lemma 2, we know that AIDA*, using a PDB
+heuristic h, is guaranteed to find the optimal solution if a
+solution exists. To extend this guarantee to Batch IDA*,
+we must demonstrate that CB-DFS, when using the learned
+heuristic hM derived from h, does not omit any node expan-
+sions at any cost threshold. The primary difference between
+Batch IDA* and AIDA* lies in the heuristic computation.
+Therefore, we need to verify two properties:
+1. Heuristic Evaluation Completeness: No node is ex-
+panded or discarded without having its heuristic properly
+evaluated. In CB-DFS, each thread switches to another
+subtree if the heuristic evaluation of the top node in its
+work is not yet available. The thread does not advance
+the subtree until the batch evaluation is complete and the
+heuristics are ready. This mechanism guarantees that ev-
+ery node is assessed using a valid heuristic hM.
+2. Expansion Condition Alignment: Given that hM is an ad-
+missible heuristic, it inherently serves as a lower bound
+for the original PDB heuristic h:
+hM(s) ≤h(s)
+∀s ∈S.
+This inequality implies that if a node satisfies the expan-
+sion condition under AIDA*, meaning h(s) + g(s) ≤
+threshold, it will also satisfy the expansion condition un-
+der the CB-DFS: hM(s) + g(s) ≤threshold. Therefore,
+any node that qualifies for expansion in AIDA* will also
+qualify in Batch IDA*’s CB-DFS.
+Since both properties hold, Batch IDA* is guaranteed to
+find an optimal solution, assuming one exists.
+
+
+A similar argument extends to BTS, and any algorithm
+that uses our CPU/GPU-based CB-DFS.

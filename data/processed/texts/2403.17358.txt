@@ -1,0 +1,592 @@
+Addressing Myopic Constrained POMDP Planning
+with Recursive Dual Ascent
+Paula Stocco1, Suhas Chundi3, Arec Jamgochian2, Mykel J. Kochenderfer2
+1Stanford University, Department of Mechanical Engineering
+2Stanford University, Department of Aeronautics and Astronautics
+3Stanford University, Department of Computer Science
+{stoccop, chundi72, arec, mykel}@stanford.edu
+Abstract
+Lagrangian-guided Monte Carlo tree search with global dual
+ascent has been applied to solve large constrained partially
+observable Markov decision processes (CPOMDPs) online.
+In this work, we demonstrate that these global dual parame-
+ters can lead to myopic action selection during exploration,
+ultimately leading to suboptimal decision making. To ad-
+dress this, we introduce history-dependent dual variables that
+guide local action selection and are optimized with recur-
+sive dual ascent. We empirically compare the performance
+of our approach on a motivating toy example and two large
+CPOMDPs, demonstrating improved exploration, and ulti-
+mately, safer outcomes.
+Introduction
+Deploying autonomous systems in complex environments
+requires methods for safe planning under uncertainty. Con-
+strained partially observable Markov decision processes
+(CPOMDPs) are mathematical models that codify decision
+making problems whose solutions must satisfy cost con-
+straints under both outcome and state uncertainty (Kochen-
+derfer, Wheeler, and Wray 2022; Kim et al. 2011; Poupart
+et al. 2015). From robotics systems (Kurniawati 2022) to
+geological carbon sequestration (Corso et al. 2022), the
+CPOMDP framework enables safe policy generation in a di-
+verse set of applications entailing uncertainty.
+Offline solutions find approximately optimal policies but
+are limited to small discrete state, action, and observa-
+tion spaces. Online methods can scale to larger spaces
+by searching across reachable outcomes. For example,
+cost-constrained partially observable Monte Carlo plan-
+ner (CC-POMCP) searches for safe actions online using a
+Lagrangian-guided heuristic that trades off future costs and
+rewards through dual variables λ (Lee et al. 2018). Crucially,
+a single set of global dual variables are optimized by dual
+ascent and shared between all history nodes during search.
+Lagrangian-guided action selection with global dual vari-
+ables can lead to myopic decision making. Consider the sim-
+ple CPOMDP depicted in fig. 1, where an agent must maxi-
+mize a terminal reward R while satisfying a cost C ≤1. The
+optimal strategy takes a1 followed by a2 towards a belief b4
+Copyright © 2024, Association for the Advancement of Artificial
+Intelligence (www.aaai.org). All rights reserved.
+Figure 1: A CPOMDP illustrating myopic decision mak-
+ing when guiding search with global dual variables. With a
+global λ, search explores either the cautious green belief or
+the budget violating red belief and misses the optimal, fea-
+sible blue belief.
+that yields maximal reward while satisfying the cost con-
+straint. However, guiding search with a global dual parame-
+ter will fail to explore the optimal action sequence, as large
+dual variables will explore the cautious low-reward node b2
+while small dual variables will explore the infeasible high-
+reward node b3. Exploring the optimal node requires a dif-
+ferent strategy after taking the first a1 action.
+To address this problem, we augment Lagrangian-guided
+Monte Carlo tree search (MCTS) (Silver and Veness 2010)
+algorithms with history-dependent, local dual variables.
+These local variables are optimized recursively by dual as-
+cent at each history node against local constraint violations.
+By adapting safe action selection to local constraint viola-
+tions in different beliefs, we can better explore optimal safe
+paths, ultimately yielding better policies.
+To evaluate our approach, which we denote by appending
+a ‘+’ to the underlying algorithms, we conduct experiments
+in both discrete and continuous spaces on an illustrative
+small problem and two larger CPOMDPs. Results demon-
+strate that constrained MCTS with global dual parameters
+can lead to either excessively risky or cautious exploration,
+issues our modifications address.
+In summary, our main contributions are to (i) highlight
+myopic decision making in CPOMDPs, (ii) propose recur-
+sive dual ascent with history-dependent dual variables to
+improve online dual-ascent-guided CPOMDP planning, and
+(iii) empirically demonstrate improved search efficiency and
+constraint satisfaction in three problem domains.
+arXiv:2403.17358v1  [cs.AI]  26 Mar 2024
+
+
+Background
+CPOMDPs
+CPOMDPs provide a structured approach for
+optimal decision making under uncertainty when consider-
+ing competing objectives (Roijers et al. 2013). A CPOMDP
+can be defined with the tuple ⟨S, A, O, T, Z, R, C, ˆc, γ, b0⟩.
+At each step, an agent in a partially observable state s ∈S
+takes an action a ∈A, transitions to a successor state, and
+emits an observation o ∈O. Transitions and observations
+follow Markov distributions T and Z, which model outcome
+uncertainty and partial observability. Each transition emits
+an immediate reward following R and k immediate costs
+following C. Optimal CPOMDP planning selects actions to
+maximize expected cumulative rewards while satisfying ex-
+pected cumulative cost budgets ˆc.
+As states are partially observable, agents must plan us-
+ing histories of past actions and observations ht, which may
+be succinctly represented as instantaneous beliefs over state
+bt = b(st) = Pr(st = s | ht). In infinite horizons,
+CPOMDP policies π optimize expected discounted cumu-
+lative reward V π
+R from an initial belief b0 such that expected
+discounted costs Vπ
+C satisfy their budgets in expectation:
+max
+π
+V π
+R (b0) = Eπ
+" ∞
+X
+t=0
+γtR(bt, at) | b0
+#
+(1)
+s.t. V π
+Ck(b0) = Eπ
+" ∞
+X
+t=0
+γtCk(bt, at) | b0
+#
+≤ˆck ∀k,
+where γ ∈(0, 1) is a discount factor that bounds objectives.
+This constrained optimization problem can be expressed
+equivalently through its Lagrangian (Lee et al. 2018)
+max
+π
+min
+λ≥0
+h
+V π
+R (b0) −λ⊤(Vπ
+C(b0) −ˆc)
+i
+,
+(2)
+where λ are dual variables.
+Online Planning in CPOMDPs
+Offline solution meth-
+ods to CPOMDPs, such as point-based backups (Kim et al.
+2011), approximate linear programming (Poupart et al.
+2015), column generation (Walraven and Spaan 2018), and
+projected gradient ascent (Wray and Czuprynski 2022), can-
+not be applied to continuous or large problems. In contrast,
+online planning can scale to large state spaces by consider-
+ing the set of reachable histories at runtime.
+Online solution methods have coupled search with safety
+critics from offline solutions (Undurti and How 2010)
+or previous searches (Parthasarathy et al. 2023). Rather
+than rely on a critic, cost-constrained partially observable
+Monte Carlo planning (CC-POMCP) (Lee et al. 2018) opti-
+mizes eq. (1) online directly by interleaving a Lagrangian-
+guided partially observable MCTS with dual ascent. In
+MCTS, actions and their resulting transitions are sampled to
+gradually build a search tree that estimates reward and cost
+values.
+In CC-POMCP exploration, actions are chosen at each
+history node h to maximize
+Q⊕
+λ (h, a) =
+"
+QR(h, a) + λ⊤QC(h, a) + κ
+s
+log N(h)
+N(h, a)
+#
+,
+(3)
+where QR and QC are reward and cost action value es-
+timates, λ are dual variable estimates, and node visitation
+counts N are used for optimistic exploration (Auer, Cesa-
+Bianchi, and Fischer 2002).
+In between search simulations, dual variable estimates are
+updated by gradient descent on eq. (3), updating away from
+cost violations at the root node.1 Crucially, though these up-
+dates aim to satisfy constraints at the root node, the same
+dual variables are then used globally for action selection in
+subsequent exploration. To extend CC-POMCP to continu-
+ous action and observation spaces, the constrained partially
+observable Monte Carlo planning with observation widening
+(CPOMCPOW) algorithm uses double progressive widen-
+ing to artificially limit branching factors based on node visit
+counts (Jamgochian, Corso, and Kochenderfer 2023).
+Approach
+Lagrangian-guided action selection with global dual vari-
+ables as presented in eq. (3) can lead to myopic decision
+making; consider the simple CPOMDP depicted in fig. 1.
+Guiding search with a global dual parameter fails to explore
+the optimal action sequence, as exploration of the optimal
+node requires a different strategy then initially used.
+To
+address
+this
+issue,
+we
+propose
+augmenting
+Lagrangian-guided
+tree
+search
+algorithms
+to
+enable
+history-dependent constrained exploration. In our aug-
+mentation, each history node maintains its own local dual
+variables λ(h) used to guide local action selection. These
+dual variables are optimized separately using a recursive
+dual ascent that updates them away from constraint viola-
+tions in their subtrees. We refer to our augmentations by
+adding a ‘+’ to the underlying algorithms.
+Algorithm 1 depicts our adaptation applied to CC-
+POMCP. The SIMULATE procedure of a constrained MCTS
+algorithm recursively simulates trajectories to a fixed depth
+and backpropagates rewards and costs to iteratively build a
+search tree. A ROLLOUT, where the algorithm runs an es-
+timate policy to completion, provides an initial value ap-
+proximation when leaf nodes are first encountered. In our
+augmentation, leaf nodes also initialize local dual variables
+with the values of their parents (line 13). Actions are then
+selected using local dual variable estimates (line 16), with
+optimism guided by eq. (1) (line 27) and a stochastic policy
+of best actions formed by the STOCHASTICPOLICY method
+of Lee et al. (2018) (line 28).
+While using backpropagated rewards and costs to update
+value and single-step cost estimates (lines 21–23), our aug-
+mentation performs dual ascent to guide local dual variables
+to penalize constraint violations in their associated subtrees
+(line 24). Doing so requires forward propagating cost esti-
+mates for earlier actions to estimate the remaining budget in
+each subtree ˆcrem. This is done by using the single-step cost
+estimates ¯c to estimate ˆc(hao) = (ˆc(h) −¯c(ha))/γ (line
+18). This recursive dual ascent procedure enables history
+nodes to adapt their exploration strategies based on local
+constraint violations in their subtrees. This results in more
+1The term dual ascent arises from convention that minimizes
+the objective rather than maximizing it.
+
+
+Algorithm 1: CC-POMCP+
+1: procedure PLAN(h)
+2:
+λ ←λ0
+3:
+for i ∈1 : n
+4:
+s ←sample from b
+5:
+SIMULATE(s, h, ˆc), dmax
+6:
+a ∼UCBPOLICY(h, λ, 0, 0)
+7:
+λ ←[λ + αi(QC(h, a) −ˆc)]
+8:
+return UCBPOLICY(h, λ, 0, ν)
+9: procedure SIMULATE(s, h, ˆcrem,d)
+10:
+if d = 0
+11:
+return [0, 0]
+12:
+if h /∈T
+13:
+λ(h) ←λ(h \ a−o−)
+14:
+T(ha) ←(Ninit, QR,init, QC,init, ¯cinit)∀a
+15:
+return ROLLOUT(s, h, ˆcrem, d)
+16:
+a ∼UCBPOLICY(h, λ(h), κ, ν)
+17:
+s′, o, r, c ←G(s, a)
+18:
+[R, C] ←[r, c] +
+γ · SIMULATE(s′, hao, ˆcrem−¯c(ha)
+γ
+, d −1)
+19:
+QR(ha) ←QR(ha) + R−Q(ha)
+N(ha)
+20:
+N(h) ←N(h) + 1
+21:
+N(ha) ←N(ha) + 1
+22:
+¯c(ha) ←¯c(ha) + c−¯c(ha)
+N(ha)
+23:
+QC(ha) ←QC(ha) + C−QC(ha)
+N(ha)
+24:
+λ(h) ←[λ(h) + αN(h)(QC(ha) −ˆcrem)]+
+25:
+return [R, C]
+26: procedure UCBPOLICY(h, λ, κ, ν)
+27:
+Q⊕
+λ (h, a) =
+h
+QR(h, a) + λ⊤QC(h, a) + κ
+q
+log N(h)
+N(h,a)
+i
+28:
+return STOCHASTICPOLICY(Q⊕
+λ , ν)
+accurate value estimation, as future nodes can make deci-
+sions appropriate to their local constraint violations.
+As with CC-POMCP, planning at each step entails inter-
+weaving simulations (line 5) with dual ascent at the root
+node (line 7). After executing the best root node policy, plan-
+ning at the next step necessitates updating the belief using
+new observations and the remaining cost budget using the
+immediate costs associated with the executed actions, which
+can be estimated using ¯c. Though not shown, our augmenta-
+tions extend trivially to CPOMCPOW, which uses progres-
+sive widening to overcome the multitude of branching in
+continuous problems. We note that our method could also
+be used to plan online in recursively constrained POMDPs
+(RC-POMDPs), which overcome inconsistencies of Bell-
+man optimality in CPOMDPs through the recursive appli-
+cation of constraints (Ho et al. 2023).
+Experiments
+In this section, we compare the overall performance
+and search efficacy with and without local dual param-
+eters in three CPOMDPs of varying sizes. Our experi-
+ments are performed in Julia using the POMDPs.jl frame-
+work (Egorov et al. 2017). Our code is available at
+https://github.com/sisl/CPOMCPPlus.
+CPOMDP Problems
+We first briefly overview our target
+problem domains, denoting whether their state, action, and
+observation spaces are discrete (D) or continuous (C):
+1. Constrained Tiger (D, D, D) Adapted from Kaelbling,
+Littman, and Cassandra (1998), in this CPOMDP envi-
+ronment high reward comes with high cost. The agent
+must avoid a tiger who is behind either the left or right
+door by either noisily listening to localize the tiger or
+opening a door.
+2. Constrained LightDark (C, D, C): In this CPOMDP
+from Lee et al. (2018), an agent must localize itself be-
+fore navigating to a goal without entering a high cost re-
+gion.
+3. Constrained Spillpoint (C, D, C): Introduced as a
+POMDP by Corso et al. (2022) to guide safe carbon
+sequestration within subsurface formations under geo-
+logical uncertainty. As done by Jamgochian, Corso, and
+Kochenderfer (2023), we replace penalization for CO2
+leaks with constraint violation.
+Search Efficacy
+Generating accurate action value esti-
+mates within a Monte Carlo search tree requires repeated
+node visits. It is therefore desirable for an online solver to
+spend most of its planning budget simulating the highest
+reward nodes that satisfy constraints. We first see that our
+modifications can improve search efficacy by spending more
+time exploring optimal action sequences.
+Model
+N(b0, a)/N(b0)
+Pr(a | b0)
+CPOMCPOW+
+[0.34, 0.63, 0.02]
+[0.00, 0.82, 0.00]
+CPOMCPOW
+[0.08, 0.49, 0.09]
+[0.05, 0.65, 0.09]
+Table 1: Statistics comparing the exploration and execu-
+tion of initial actions +1, +5, +10 in Constrained LightDark
+across all runs. CPOMCPOW+ concentrated search on the
+optimal action for a larger fraction of the 6 × 105 search
+queries, and ultimately chose +5 in more trials.
+For example, in the Constrained LightDark CPOMDP, the
+largest safe step the agent may take towards the light region
+to localize itself is a = +5. Larger steps with some proba-
+bility may violate the constraint above s = 12, because of
+the uncertainty in the agent’s initial location. In table 1, we
+see that the modified solver concentrates more of the search
+around a = +5 despite it having subtrees with both unsafe
+and safe subsequent actions. This ultimately results in more
+trials that select the optimal action.
+We see similar behavior in the Constrained Tiger
+CPOMDP. To visualize this, fig. 2 compares key areas of
+the converged search trees for the first two actions. On the
+right is CC-POMCP with global dual variables and on the
+left is our proposed modification with local dual variables.
+In the CC-POMCP solution, the root node global dual
+variable λg stabilizes at a low value, confining the search
+
+
+Domain
+Simulations
+|S|, |A|, |O|, γ
+ˆc
+Algorithm
+Reward, ˆVR
+Cost, ˆVC
+Violations (%)
+CC-POMCP
+−4.83±0.82
+0.66±0.04
+59
+Constrained Tiger
+100
+2, 3, 2, 0.95
+0.9
+CC-POMCP+
+−16.17±0.79
+0.30±0.04
+27
+CPOMCPOW
+30.31±7.56
+0.092±0.027
+10
+Constrained LightDark
+100
+∞, 7, ∞, 0.95
+0.1
+CPOMCPOW+
+28.00±7.47
+0.017±0.012
+2
+CPOMCPOW
+3.90±0.55
+0.001±0.000
+80
+Constrained Spillpoint
+10
+∞, 20, ∞, 0.9
+0.0
+CPOMCPOW+
+3.93±0.55
+0.001±0.000
+90
+Table 2: Performance with and without local dual variables on three problem domains comparing mean and standard error of
+discounted cumulative rewards and costs, alongside the fraction of runs that violate the cost budget by the end of the run.
+Figure 2: Constrained Tiger history trees showing visitation
+count N. From left to right, actions nodes are listen noisily,
+open left door, and open right door, and observations nodes
+are tiger heard behind the right door and tiger not heard be-
+hind the right door. Local dual variables enable better explo-
+ration of the optimal action path, which necessitates listen-
+ing before selecting actions.
+to actions with high cost and high reward. As a result, the
+agent immediately opens a door, often incurring an imme-
+diate cost violation. In the CC-POMCP+ solution, the root
+node dual variable stabilizes at a larger value than the subse-
+quent dual variables, allowing the search to explore low-cost
+low-reward nodes that listen for the tiger before safely open-
+ing a door. This safe exploration is reflected by the larger
+visitation counts for safe actions.
+Performance
+Table 2 compares mean rewards and costs
+on the three problems; lower rewards that satisfy cost con-
+straints are preferred over violating constraints. In Con-
+strained LightDark, CPOMCPOW+ achieves similar aver-
+age rewards as CPOMCPOW without violating the con-
+straint limit, as seen in fig. 3. CPOMCPOW+ is more likely
+to explore actions at the safety limit because it can avoid
+subsequent high costs after taking risky initial steps.
+In contrast, CPOMCPOW+ had similar performance as
+the original CPOMCPOW when run on Constrained Spill-
+point. In problems with small cost budgets, when no cost
+violation is allowable, a high-value global dual variable suf-
+fices to safely guide action selection. When run on Con-
+strained Tiger, the modified algorithm obtained lower dis-
+−20
+−10
+0
+10
+20
+30
+40
+Return, ˆVR
+CPOMCPOW+
+CPOMCPOW
+Constraint budget
+3.0 × 10
+5
+6.0 × 10
+5
+0.00
+0.05
+0.10
+0.15
+simulations
+Cost, ˆVC
+Figure 3: Discounted results for Constrained LightDark. Av-
+erage discounted returns and costs with error bars denoting
+standard error and constrained budget indicated in green.
+counted total rewards but halved cost violations when over
+half of trials without the modification violated constraints.
+Conclusion
+Constrained POMDP solvers optimize planning objectives
+while satisfying cost constraints under state and outcome
+uncertainty. Constrained Monte Carlo tree search methods
+guided by global dual variables can be myopic, yielding ex-
+cessively risky or cautious actions as a result of improper
+exploration. To address this, we proposed local dual vari-
+ables to guide safe, history-dependent action selection, and
+optimized them using recursive dual ascent. We empirically
+demonstrated that our approach resulted in a decrease in
+simulations spent exploring unsafe or overly cautious ac-
+tions, ultimately improving safe outcomes.
+Limitations This approach may increase the time to con-
+vergence, dependant on initialization, as each dual vari-
+able converges independently. Considering our modification
+mainly benefits problems that require adaptive exploration,
+the additional time to find an optimal safe path should be
+considered. Finally, our modifications inherit the shortcom-
+ings of their underlying algorithms, namely, lack of anytime
+safety guarantees and high variance in costs and returns.
+
+
+Acknowledgments
+This work was supported by funding from OMV Energies.
+We thank Anthony Corso from Stanford University for in-
+sightful discussion.
+References
+Auer, P.; Cesa-Bianchi, N.; and Fischer, P. 2002. Finite-time
+analysis of the multiarmed bandit problem. Machine Learn-
+ing, 47: 235–256.
+Corso, A.; Wang, Y.; Zechner, M.; Caers, J.; and Kochen-
+derfer, M. J. 2022.
+A POMDP model for safe geologi-
+cal carbon sequestration. In Workshop on Tackling Climate
+Change with Machine Learning, Advances in Neural Infor-
+mation Processing Systems (NeurIPS).
+Egorov, M.; Sunberg, Z. N.; Balaban, E.; Wheeler, T. A.;
+Gupta, J. K.; and Kochenderfer, M. J. 2017. POMDPs.jl:
+a framework for sequential decision making under uncer-
+tainty. 18: 1–5.
+Ho, Q. H.; Becker, T.; Kraske, B.; Laouar, Z.; Feather,
+M. S.; Rossi, F.; Lahijanian, M.; and Sunberg, Z. N. 2023.
+Recursively-Constrained Partially Observable Markov De-
+cision Processes. arXiv:2310.09688.
+Jamgochian, A.; Corso, A.; and Kochenderfer, M. J. 2023.
+Online planning for constrained POMDPs with continuous
+spaces through dual ascent. In International Conference on
+Automated Planning and Scheduling (ICAPS).
+Kaelbling, L. P.; Littman, M. L.; and Cassandra, A. R. 1998.
+Planning and acting in partially observable stochastic do-
+mains. Artificial Intelligence, 101: 99–134.
+Kim, D.; Lee, J.; Kim, K.-E.; and Poupart, P. 2011. Point-
+based value iteration for constrained POMDPs. In Interna-
+tional Joint Conference on Artificial Intelligence (IJCAI).
+Kochenderfer, M. J.; Wheeler, T. A.; and Wray, K. H. 2022.
+Algorithms for Decision Making. MIT Press.
+Kurniawati, H. 2022. Partially observable Markov decision
+processes and robotics. Annual Review of Control, Robotics,
+and Autonomous Systems, 5: 253–277.
+Lee,
+J.;
+Kim,
+G.-H.;
+Poupart,
+P.;
+and
+Kim,
+K.-E.
+2018. Monte-Carlo tree search for constrained POMDPs.
+In Advances in Neural Information Processing Systems
+(NeurIPS), volume 31.
+Parthasarathy, D.; Kontes, G.; Plinge, A.; and Mutschler,
+C. 2023. C-MCTS: Safe Planning with Monte Carlo Tree
+Search. arXiv:2305.16209.
+Poupart, P.; Malhotra, A.; Pei, P.; Kim, K.-E.; Goh, B.; and
+Bowling, M. 2015. Approximate linear programming for
+constrained partially observable Markov decision processes.
+In AAAI Conference on Artificial Intelligence (AAAI), vol-
+ume 29.
+Roijers, D. M.; Vamplew, P.; Whiteson, S.; and Dazeley,
+R. 2013. A survey of multi-objective sequential decision-
+making. Journal of Artificial Intelligence Research, 48: 67–
+113.
+Silver, D.; and Veness, J. 2010. Monte-Carlo planning in
+large POMDPs. In Advances in Neural Information Pro-
+cessing Systems (NeurIPS), 2164–2172.
+Undurti, A.; and How, J. P. 2010. An online algorithm for
+constrained POMDPs. In IEEE International Conference on
+Robotics and Automation (ICRA), 3966–3973.
+Walraven, E.; and Spaan, M. T. 2018. Column generation
+algorithms for constrained POMDPs. Journal of Artificial
+Intelligence Research, 62: 489–533.
+Wray, K. H.; and Czuprynski, K. 2022. Scalable gradient as-
+cent for controllers in constrained POMDPs. In IEEE Inter-
+national Conference on Robotics and Automation (ICRA),
+9085–9091.

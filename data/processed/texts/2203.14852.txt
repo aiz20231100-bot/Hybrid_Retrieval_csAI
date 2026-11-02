@@ -1,0 +1,1772 @@
+Learning Sketches for Decomposing Planning Problems
+into Subproblems of Bounded Width: Extended Version
+Dominik Drexler1, Jendrik Seipp1, Hector Geffner3,2,1
+1Link¨oping University, Link¨oping, Sweden
+2Universitat Pompeu Fabra, Barcelona, Spain
+3Instituci´o Catalana de Recerca i Estudis Avanc¸ats (ICREA), Barcelona, Spain
+{dominik.drexler, jendrik.seipp}@liu.se, hector.geffner@upf.edu
+Abstract
+Recently, sketches have been introduced as a general lan-
+guage for representing the subgoal structure of instances
+drawn from the same domain. Sketches are collections of
+rules of the form C 7→E over a given set of features where
+C expresses Boolean conditions and E expresses qualitative
+changes. Each sketch rule deﬁnes a subproblem: going from
+a state that satisﬁes C to a state that achieves the change ex-
+pressed by E or a goal state. Sketches can encode simple goal
+serializations, general policies, or decompositions of bounded
+width that can be solved greedily, in polynomial time, by the
+SIWR variant of the SIW algorithm. Previous work has shown
+the computational value of sketches over benchmark domains
+that, while tractable, are challenging for domain-independent
+planners. In this work, we address the problem of learning
+sketches automatically given a planning domain, some in-
+stances of the target class of problems, and the desired bound
+on the sketch width. We present a logical formulation of the
+problem, an implementation using the ASP solver Clingo,
+and experimental results. The sketch learner and the SIWR
+planner yield a domain-independent planner that learns and
+exploits domain structure in a crisp and explicit form.
+Introduction
+Classical planners manage to solve problems that span ex-
+ponentially large state spaces by exploiting problem struc-
+ture. Domain-independent methods make implicit assump-
+tions about structure, such as subgoals being indepen-
+dent (delete-relaxation) or having low width (width-based
+search). Domain-dependent methods, on the other hand,
+usually make problem structure explicit in the form of hi-
+erarchies that express how tasks decompose into subtasks
+(Erol, Hendler, and Nau 1994; Georgievski and Aiello 2015;
+Bercher, Alford, and H¨oller 2019).
+An alternative, simpler language for representing problem
+structure explicitly has been introduced recently in the form
+of sketches (Bonet and Geffner 2021). Sketches are collec-
+tions of rules of the form C 7→E deﬁned over a given
+set of Boolean and numerical domain features Φ where C
+expresses Boolean conditions on the features, and E ex-
+presses qualitative changes in their values. Each sketch rule
+expresses a subproblem: the problem of going from a state
+Copyright © 2022, Association for the Advancement of Artiﬁcial
+Intelligence (www.aaai.org). All rights reserved.
+s whose feature values satisfy the condition C, to a state s′
+where the feature values change in agreement with E.
+The language of sketches is powerful, as sketches can
+encode everything from simple goal serializations to full
+general policies. Indeed, the language of general policies
+is the language of sketches but with a slightly different se-
+mantics where the subgoal states s′ to be reached from a
+state s are restricted to be one step away from s (Bonet
+and Geffner 2018; Franc`es, Bonet, and Geffner 2021). More
+interestingly, sketches can split problems into subproblems
+of bounded width (Lipovetzky and Geffner 2012; Lipovet-
+zky 2021) which can then be solved greedily, in polynomial
+time, by a variant of the SIW algorithm, called SIWR (Bonet
+and Geffner 2021). The computational value of sketches
+crafted by hand has been shown over several planning do-
+mains which, while tractable, are challenging for domain-
+independent planners (Drexler, Seipp, and Geffner 2021).
+In this work, we build on these threads (general poli-
+cies, sketches, and width) to address the problem of learning
+sketches automatically. For this, the inputs are the planning
+domain, some instances, and the desired bound k on width,
+usually k = 0, 1, 2. The width k of the sketch relative to a
+class of problems bounds the width of the resulting subprob-
+lems that can be solved greedily in time and space that are
+exponential in k. In order to address the problem of learning
+sketches, we present a logical formulation, an implementa-
+tion of the learner on top of the ASP solver Clingo (Gebser
+et al. 2019), and experimental results. We start with an ex-
+ample and a review of planning, width, and sketches.
+Example
+For an illustration of the concepts and results, before pre-
+senting the formal deﬁnitions, let us recall a simple domain
+called Delivery (Bonet and Geffner 2021), where an agent
+moves in a grid to pick up packages and deliver them to
+a target cell, one by one. A general policy π for this class
+of instances can be expressed in terms of the set of fea-
+tures Φ = {H, p, t, n} that express “holding a package”,
+“distance to the nearest package”, “distance to the target
+cell”, and “number of undelivered packages”, respectively.
+A domain-independent method for generating a large pool
+of features from the domain predicates that include these
+four is given by Bonet, Franc`es, and Geffner (2019). Pro-
+vided with the features in Φ, a general policy for the whole
+arXiv:2203.14852v1  [cs.AI]  28 Mar 2022
+
+
+class QD of Delivery problems (any grid size, any number
+of packages in any location, and any location of the agent or
+the target) is given by the rules:
+{¬H, p > 0} 7→{p↓, t?}
+; go to nearest pkg
+{¬H, p = 0} 7→{H}
+; pick it up
+{H, t > 0} 7→{t↓}
+; go to target
+{H, n > 0, t = 0} 7→{H?, n↓, p?}
+; deliver pkg
+The rules say to perform any action that decreases the dis-
+tance to the nearest package (p↓), no matter the effect on the
+distance to target (t?), when not holding a package (¬H); to
+pick a package when possible, making H true; to go to the
+target cell when holding a package, decrementing t; and to
+drop the package at the target, decrementing n, making H
+false, and affecting p. Expressions p? and m? mean that p
+and m can change in any way, while no mention of a feature
+in the effect of a rule means that the value of the feature must
+not change.
+One can show that the general policy above solves any
+instance of Delivery, or alternatively, that it represents a
+width-zero sketch, where the subproblem of going from
+a non-goal state s to a state s′ satisfying a rule C 7→E
+can always be done in one step, leading greedily to the goal
+(n = 0). A pair of states (s, s′) satisﬁes a rule C 7→E when
+the feature values in s satisfy the conditions in C, and the
+change in feature values from s to s′ is compatible with the
+changes and no-changes expressed in E. A width-2 sketch
+can be deﬁned instead by means of a single rule and a single
+feature Φ = {n}:
+{n > 0} 7→{n↓}
+; deliver pkg
+The subproblem of going from a state s where n(s) > 0
+holds, to a state s′ for which n(s′) < n(s) holds, has width
+bounded by 2, as these subproblems, in the worst case, in-
+volve moving to the location of a package, picking it up,
+moving to the target, and dropping it. Halfway between
+the width-0 sketch represented by general policies, and the
+width-2 sketch above, is the width-1 sketch deﬁned with
+two rules and two features, Φ = {H, n} as:
+{¬H} 7→{H}
+; pick pkg
+{H, n > 0} 7→{H?, n↓}
+; deliver pkg
+The ﬁrst rule captures the subproblem of getting hold of
+a package, which may involve moving to the package and
+picking it up, with width 1; the second rule captures the sub-
+problem of delivering the package being held, which may
+involve moving to the target and dropping it there, also with
+width 1. Since every non-goal state is covered by one rule
+or the other, the width of the sketch is 1, which means that
+any instance of Delivery can be solved greedily by solving
+subproblems of width no greater than 1 in linear time.
+These are all handcrafted sketches. The methods to be for-
+mulated below will learn similar sketches when given the
+planning domain, a few instances, and the desired bound on
+sketch width.
+Background
+We review classical planning, width, and sketches drawing
+from Lipovetzky and Geffner (2012), Bonet and Geffner
+(2021), and Drexler, Seipp, and Geffner (2021).
+Classical Planning
+A planning problem or instance is a pair P = (D, I) where
+D is a ﬁrst-order domain with action schemas deﬁned over
+predicates, and I contains the objects in the instance and two
+sets of ground literals, the initial and goal situations Init and
+Goal. The initial situation is consistent and complete, mean-
+ing either a ground literal or its complement is in Init. An in-
+stance P deﬁnes a state model S(P) = (S, s0, G, Act, A, f)
+where the states in S are the truth valuations over the ground
+atoms represented by the set of literals that they make true,
+the initial state s0 is Init, the set of goal states G are those
+that make the goal literals in Goal true, and the actions Act
+are the ground actions obtained from the schemas and ob-
+jects. The ground actions in A(s) are the ones that are ap-
+plicable in a state s; namely, those whose preconditions are
+true in s, and the state transition function f maps a state s
+and an action a ∈A(s) into the successor state s′ = f(a, s).
+A plan π for P is a sequence of actions a0, . . . , an that is ex-
+ecutable in s0 and maps the initial state s0 into a goal state;
+i.e., ai ∈A(si), si+1 = f(ai, si), and sn+1 ∈G. A state
+s is solvable if there exists a plan starting at s, otherwise it
+is unsolvable (also called dead-end). Furthermore, a state s
+is alive if it is solvable and it is not a goal state. The length
+of a plan is the number of its actions, and a plan is optimal
+if there is no shorter plan. Our objective is to ﬁnd subopti-
+mal plans for collections of instances P = (D, I) over ﬁxed
+domains D denoted as QD or simply as Q.
+Width
+The simplest width-based search method for solving a plan-
+ning problem P is IW(1). It is a standard breadth-ﬁrst search
+in the rooted directed graph associated with the state model
+S(P) with one modiﬁcation: IW(1) prunes a newly gener-
+ated state if it does not make an atom true for the ﬁrst time
+in the search. The procedure IW(k) for k > 1 is like IW(1)
+but prunes a state if a newly generated state does not make a
+collection of up to k atoms true for the ﬁrst time. Underlying
+the IW algorithms is the notion of problem width (Lipovet-
+zky and Geffner 2012):
+Deﬁnition 1 (Width) The width w(P) of a classical plan-
+ning problem P is the minimum k for which there exists a
+sequence t0, t1, . . . , tm of atom tuples ti from P, each con-
+sisting of at most k atoms, such that:
+1. t0 is true in the initial state s0 of P,
+2. any optimal plan for ti can be extended into an optimal
+plan for ti+1 by adding a single action, i = 1, . . . , n−1,
+3. if π is an optimal plan for tm, π is an optimal plan for P.
+If a problem P is unsolvable, w(P) is set to the number of
+variables in P, and if P is solvable in at most one step, w(P)
+is set to 0 (Bonet and Geffner 2021). Chains of tuples θ =
+(t0, t1, . . . , tm) that comply with conditions 1–2 are called
+admissible, and the size of θ is the size |ti| of the largest
+
+
+tuple in the chain. The width w(P) is thus the minimum size
+of an admissible chain for P that is also optimal (condition
+3). Furthermore, the width of a conjunction of atoms T (or
+arbitrary set of states S′ in P) is the width of a problem P ′
+that is like P but with the goal T (resp. S′).1
+The IW(k) algorithm expands up to N k nodes, generates
+up to bN k nodes, and runs in time and space O(bN 2k−1)
+and O(bN k), respectively, where N is the number of atoms
+and b is a bound on the branching factor of the problem P.
+IW(k) is guaranteed to solve P optimally if w(P) ≤k. If
+the width of P is not known, the IW algorithm can be run
+instead which calls IW(k) iteratively for k = 0, 1, . . . , N
+until the problem is solved, or found to be unsolvable.
+For problems with conjunctive goals, the SIW algorithm
+(Lipovetzky and Geffner 2012) starts at the initial state s =
+s0 of P, and performs an IW search from s to ﬁnd a shortest
+path to a state s′ such that #g(s′) < #g(s) where #g(s)
+counts the number of unsatisﬁed top-level goals of P in state
+s. If s′ is not a goal state, s is set to s′ and the loop repeats.
+Sketches
+A feature is a function of the state over a class of problems
+Q. The features considered in the language of sketches are
+Boolean, taking values in the Boolean domain, or numeri-
+cal, taking values in the non-negative integers. For a set of
+features Φ = {f1, . . . , fN} and a state s of some instance
+P in Q, we denote the feature valuation determined by a
+state s as f(s) = (f1(s), . . . , fN(s)), and arbitrary feature
+valuations as f and f ′.
+A sketch rule over features Φ has the form C 7→E where
+C consists of Boolean feature conditions, and E consists of
+feature effects. A Boolean (feature) condition is of the form
+p or ¬p for a Boolean feature p in Φ, or n = 0 or n > 0 for
+a numerical feature n in Φ. A feature effect is an expression
+of the form p, ¬p, or p? for a Boolean feature p in Φ, and n↓,
+n↑, or n? for a numerical feature n in Φ. The syntax of sketch
+rules is the syntax of the policy rules used to deﬁne general-
+ized policies (Bonet and Geffner 2018), but their semantics
+is different. In policy rules, the effects have to be delivered
+in one step by state transitions, while in sketch rules, they
+can be delivered by longer state sequences.
+A pair of feature valuations of two states (f(s), f(s′)),
+referred to as (f, f ′), satisﬁes a sketch rule C 7→E iff 1) C
+is true in f, 2) the Boolean effects p (¬p) in E are true in f ′,
+3) the numerical effects are satisﬁed by the pair (f, f ′); i.e.,
+if n↓in E (resp. n↑), then the value of n in f ′ is smaller
+(resp. larger) than in f, and 4) features that do not occur in
+E have the same value in f and f ′. Adding the effects p?
+and n? allows the values of features p and n to change in
+any way. In contrast, the value of features that do not occur
+in E must be the same in s and s′.
+A sketch is a collection of sketch rules that establishes
+a “preference ordering” ‘≺’ over feature valuations where
+f ′ ≺f if the pair of feature valuations (f, f ′) satisﬁes a
+rule. If the sketch is terminating, then this preference order
+1In the literature, a chain is admissible when it complies with
+conditions 1–3. The reason for dropping condition 3 will become
+clear when we introduce the notion of “satisﬁcing width”.
+is a strict partial order: irreﬂexive and transitive. Checking
+termination requires time that is exponential in the number
+of features (Bonet and Geffner 2021).
+Following Bonet and Geffner, we do not use these order-
+ings explicitly but the associated problem decompositions.
+The set of subgoal states GR(s) associated with a sketch
+R in a state s of a problem P ∈Q, is the set of states s′
+that comprise the goal states of P along with those with fea-
+ture valuation f(s′) such that the pair (f(s), f(s′)) satisﬁes
+a rule in R. The set of states s′ in GR(s) that are closest to
+s is denoted as G∗
+R(s).
+Sketch Width
+The SIWR algorithm is a variant of SIW that uses a given
+sketch R for solving problems P in Q. SIWR starts at the
+initial state s = s0 of P and then runs an IW search to
+ﬁnd a state s′ in GR(s). If s′ is not a goal state, then s is
+set to s′, and the loop repeats until a goal state is reached.
+The SIWR(k) algorithm is like SIWR but calls the procedure
+IW(k) internally, not IW.
+For bounding the complexity of these algorithms, let us
+assume without loss of generality that the class of problems
+Q is closed in the sense that if P belongs to Q so do the
+problems P ′ that are like P but with initial states that are
+reachable in P and which are not dead-ends. Then the width
+of the sketch R over Q can be deﬁned as follows (Bonet and
+Geffner 2021):2
+Deﬁnition 2 (Sketch width) The width of sketch R over a
+closed class of problems Q is wR(Q) = maxP ∈Q w(P ′)
+where P ′ is P but with goal states G∗
+R(s) and s is the initial
+state of both, provided that G∗
+R(s) does not contain dead-
+end states.
+If the sketch width is bounded, SIWR(k) solves the in-
+stances in Q in polynomial time:3
+Theorem 3 If wR(Q) ≤k and the sketch R is terminating,
+then SIWR (k) solves the instances in Q in O(bN |Φ|+2k−1)
+time and O(bN k + N |Φ|+k) space, where |Φ| is the number
+of features, N is the number of ground atoms, and b is the
+branching factor.
+For these bounds, the features are assumed to be linear in
+N; namely, they must have at most a linear number of values
+in each instance, all computable in linear time.
+Extensions
+We ﬁnish this review with a slight generalization of Theo-
+rem 3 that is worth making explicit. For this, let us intro-
+duce a variant of the notion of width, called satisﬁcing width
+2Our deﬁnition is simpler than those used by Bonet and Geffner
+(2021), and Drexler, Seipp, and Geffner (2021), as it avoids a re-
+cursive condition of the set of subproblems P ′. However, it adds
+an extra condition that involves the dead-end states, the states from
+which the goal cannot be reached.
+3Algorithm SIWR(k) is needed here instead of SIWR because
+the latter does not ensure that the subproblems P ′ are solved op-
+timally. This is because IW(k′) may solve problems of width k
+non-optimally if k′ < k.
+
+
+or s-width. A problem P has satisﬁcing width ≤k if there
+is an admissible chain of tuples τ : t0, . . . , tm of size no
+greater than k such that the optimal plans for tuple tm are
+plans for P. In such a case, we say that τ is an admissible k-
+chain for P. The difference to the (standard) notion of width
+is that optimal plans for tm are required to be plans for P
+but not optimal. The result is that IW(k) will solve prob-
+lems of s-width bounded by k, written ws(P) ≤k, but not
+optimally. A convenient property is that a problem P with
+s-width bounded by k has the same bound when the set of
+goal states of P is extended with more states. The length of
+the plans computed by IW(k) when k bounds the s-width of
+P is bounded in turn by the length m of the shortest admissi-
+ble k-chain t0, . . . , tm for P. If the subproblem of reaching
+a state s′ in GR(s) has s-width k, and Gk
+R(s) stands for the
+states s′ in GR(s) that are no more than m steps away from
+s, the satisﬁcing width of the a sketch R can be deﬁned as:
+Deﬁnition 4 (Sketch s-width) The s-width of sketch R
+over a closed class of solvable problems Q is bounded by
+k, wsR(Q) ≤k, if maxP ∈Q ws(P ′) ≤k where P ′ is P
+but with goal states Gk
+R(s), and s is the initial state of P,
+provided that Gk
+R(s) does not contain dead-end states.
+This deﬁnition just replaces the width of subproblems by
+the weaker s-width, and the subgoal states G∗
+R(s) by Gk
+R(s).
+Let us ﬁnally say that a sketch R is state (resp. feature)
+acyclic in Q when there is no sequence of states s1, . . . , sn
+over a problem in Q (resp. feature valuations f(s0), ...,
+f(sn)), si+1 ∈GR(si), such that sn = sj, j < n (resp.
+f(sn) = f(sj), j < n). Bonet and Geffner (2021) showed
+that termination implies feature acyclicity, and it is direct to
+show that feature acyclicity implies state acyclicity. Theo-
+rem 3 can then be rephrased as:
+Theorem 5 If wsR(Q) ≤k and the sketch R is (state)
+acyclic in Q, then SIWR(k) solves the instances in Q in
+O(bN |Φ|+2k−1) time and O(bN k + N |Φ|+k) space, where
+|Φ| is the number of features, N is the number of ground
+atoms, and b is the branching factor.
+Learning Sketches: Formulation
+We turn to the problem of learning sketches given a set of
+instances P of the target class of problems Q and the desired
+bound k on sketch width. We roughly follow the approach
+for learning general policies (Bonet, Franc`es, and Geffner
+2019; Franc`es, Bonet, and Geffner 2021) by constructing a
+theory Tk,m(P, F) from P, k, a bound m on the number of
+sketch rules, and a ﬁnite pool of features F obtained from
+the domain predicates and a ﬁxed grammar.
+Theory
+Symbols s, s′, s′′, f, v, t, and i refer to reachable states, fea-
+tures, Boolean values, tuples of at most k atoms, and sketch
+rules Ci 7→Ei, respectively. States and tuples are unique to
+each training instance Pj in P and thus are not tagged with
+their instance. The variables (atoms) in Tk,m(P, F) are
+• select(f ) for features f in pool F,
+• cond(i, f, v): for f, rule i = 1, . . . , m, v Bool or ’?’,
+• eﬀ(i, f, v): for f, rule i = 1, . . . , m, v Bool or ’?’,
+• subgoal(s, t): for t of width ≤k from s,
+• subgoals(s, t, s′): if optimal plan from s to t ends in s′,
+• sat rule(s, s′, i): for s′ reachable from s, i = 1, . . . m.
+When true, these atoms represent that f is a feature used in
+the sketch, that the i-th rule Ci 7→Ei has f as a condition
+with value v, or no condition if v =?, respectively an effect
+on f with value v, possibly ‘?’,4 that t is a subgoal selected
+from s, possibly leading to state s′, and that the transition
+from s to s′ (not necessarily a 1-step transition) satisﬁes rule
+i. Constraints C1–C8 capture these meanings:
+C1 cond(i, f, v), eﬀ(i, f, v) use unique v, imply select(f )
+C2 ∨tsubgoal(s, t), each alive s has some subgoal t
+C3 subgoal(s, t) iff ∧s′subgoals(s, t, s′)
+C4 subgoals(s, t, s′) implies ∨i=1,msat rule(s, s′, i)
+C5 sat rule(s, s′′, i) implies ∨t:d(s,t)<d(s,s′′)subgoal(s, t)
+C6 sat rule(s, s′, i) implies ∨t:d(s,t)≤d(s,s′)subgoal(s, t)
+C7 sat rule(s, s′, i) iff (s, s′) compatible with rule i
+C8 collection of rules i = 1, . . . , m is terminating
+In the constraints above, s is always an alive state, t is
+a tuple in the tuple graph rooted at s, s′ is a state that re-
+sults from an optimal plan for t from s, and s′′ is a dead-end
+state. Checking the constraints involves constructing a tu-
+ple graph (Lipovetzky and Geffner 2012) and labeling dead-
+ends in the training instances in a preprocessing phase that
+is exponential in k. The interpretation of the constraints is
+direct. The ﬁrst constraint says that a feature is selected if
+it is used in some rule. Constraints 2–4 say that every (non-
+goal) solvable state s “looks” at some subgoal t of width no
+greater than k from s, and that if s′ may result from an opti-
+mal plan from s to t, then the transition (s, s′) must satisfy
+one of the m rules. Constraint 5 says that if a transition from
+s to a dead-end state s′′ satisﬁes a rule, then there must be a
+selected subgoal t of s that is closer from s than s′′ (d(s, t)
+and d(s, s′′) encode these distances, known after preprocess-
+ing). Constraint 6 says that if a pair of states (s, s′) satisﬁes a
+rule, then s′ is a state that results from an optimal plan from
+s to a subgoal t of s, or it is further from s than any such
+state. Constraint 7, not fully spelled out, captures the condi-
+tions under which a pair of states (s, s′) satisﬁes sketch rule i
+given by the atoms cond(i, f, v) and eﬀ(i, f, v). Last, Con-
+straint 8, not fully spelled out either, demands that the sketch
+deﬁned by these atoms is structurally terminating (Bonet
+and Geffner 2021). Encoding structural termination requires
+checking acyclicity in the policy graph that has size expo-
+nential in |F|. The resulting theory is sound and complete in
+the following sense:
+Theorem 6 (Soundness and Completeness) A
+terminat-
+ing sketch R with rules Ci 7→Ei, i = 1, . . . , m, over
+features F ∈F, has sketch width wR(P∗) ≤k over the
+closed class of problems P∗iff the theory Tk,m(P, F) is
+satisﬁable and has a model where the rules that are true are
+exactly those in R.
+4For a numerical feature f, a condition with value v = 0 stands
+for f = 0 while an effect with the same value stands for f↓. Simi-
+larly for v = 1.
+
+
+We provide a proof for Theorem 6 in an extended version
+of the paper (Drexler, Seipp, and Geffner 2022). The nota-
+tion P∗is used to denote the closure of the problems in P;
+i.e. for any problem P in P, P∗also includes the problems
+P ′ that are like P but with initial state s being a solvable
+state reachable from the initial state of P.
+Learning Sketches: ASP Implementation
+We implemented the theory Tk,m(P, F) expressed by
+constraints C1–C8 for learning sketches as an answer set
+program (Brewka, Eiter, and Truszczy´nski 2011; Lifschitz
+2019) in Clingo (Gebser et al. 2012). Listing 1 shows the
+code. We include two approximations for scalability. First,
+we replace constraint C8 about termination by a suitable
+acyclicity condition (Gebser, Janhunen, and Rintanen 2014),
+that prevents a sequence of states si+1 ∈Gk
+R(si) from form-
+ing a cycle, where R is the learned sketch. Second, we omit
+constraint C6 that ensures that the width is bounded by k.
+The choice of the subgoals t still ensures that such subprob-
+lems will have an s-width bounded by k. The two approxi-
+mations are not critical as even the exact theory Tk,m(P, F)
+does not guarantee acyclicity and sketch width bounded by
+k on the test problems. However, we will show in our exper-
+iments that the learned sketches are acyclic and have width
+bounded by k over all instances. The optimization criterion
+minimizes the sum of the number of sketch rules plus the
+sum of complexities of the selected features.
+Experiments
+We use the ASP implementation above to learn sketches for
+several tractable classical planning domains from the Inter-
+national Planning Competition (IPC). To learn a sketch, we
+use two Intel Xeon Gold 6130 CPUs, holding a total of 32
+cores and 384 GiB of memory and set a time limit of seven
+days (wall-clock time). For evaluating the learned sketches,
+we limit time and memory by 30 minutes and 8 GiB. Our
+source code, benchmarks, and experimental data are avail-
+able online (Drexler, Seipp, and Geffner 2022).
+Data and Feature Generation.
+For each domain, we use
+a PDDL generator (Seipp, Torralba, and Hoffmann 2022) to
+generate a set of training instances small enough to be fully
+explored using breadth-ﬁrst search. For domains with a ran-
+domized instance generator, we generate up to 200 instances
+for the same parameter conﬁguration to capture sufﬁcient
+variation. Afterwards, we remove unsolvable instances or
+instances with more than 10 000 states. We construct the
+feature pool F by automatically composing description log-
+ics constructors up to a feature complexity of 8, using the
+DLplan library (Drexler, Franc`es, and Seipp 2022) and the
+same bound as the one used by Franc`es, Bonet, and Geffner
+(2021). Compared to theirs, our grammar is slightly richer.
+However, since the “distance” features (Bonet, Franc`es, and
+Geffner 2019) signiﬁcantly increase the size of the feature
+pool, we only include them for the domains where the ASP
+is unsolvable without them (indicated by an asterisk in the
+|F| column in Table 1). We provide details about the fea-
+ture grammar in an extended version of the paper (Drexler,
+Seipp, and Geffner 2022). We set the maximum number of
+sketch rules m to 6.
+Incremental Learning.
+Instead of feeding all instances to
+the ASP at the same time, we incrementally add only the
+smallest instance that the last learned sketch fails to solve.
+In detail, we order the training instances by the number of
+states in increasing order, breaking ties arbitrarily. The ﬁrst
+sketch is the empty sketch R0 = ∅. Then, in each iteration
+i = 1, 2, . . ., we ﬁnd the smallest instance I in the order-
+ing which the sketch Ri−1 obtained in the previous iteration
+results in a subproblem of width not bounded by k or in a
+cycle s1, . . . , sn = s1 of subgoal states si+1 ∈GR(si) with
+i = 1, . . . , n −1. These tests can be performed because the
+training instances are small. If such an I exists, we use it as
+the only training instance if it is the largest among all previ-
+ous training instances, otherwise we add it and proceed with
+the next iteration. If no such I exists, the sketch solves all
+training instances, and we return the sketch.
+Learning Results.
+Table 1 shows results for the learning
+process. We learn sketches of width 0 in 6 out of the 9 do-
+mains, of width 1 in all 9 domains, and of width 2 in 8 out
+of 9 domains. In all cases, very few and very small train-
+ing instances are sufﬁcient for learning the sketches as indi-
+cated by the number of instances and the number of states
+that are actually used (columns |Pi| and |S| in Table 1). The
+choice of bound k has a strong inﬂuence because both the
+solution space and the number of subgoals (tuples) grows
+with k. Also, the number of rules decreases as the bound k
+increases. The most complex features overall have a com-
+plexity 7 (requiring the application of 7 grammar rules), the
+highest number of features in a sketch is 4, and the high-
+est number of sketch rules is 5, showing that the learned
+sketches are very compact. We describe and analyze some
+of the learned sketches in the next section.
+Search Results.
+Table 2 shows the results of SIWR
+searches (Drexler, Seipp, and Geffner 2021) on large, unseen
+test instances using the learned sketches.5 As a reference
+point, we include the results for the domain-independent
+planners LAMA (Richter and Westphal 2010) and Dual-
+BFWS (Lipovetzky and Geffner 2017). For Childsnack,
+Gripper, Miconic and Visitall, we use the Autoscale 21.11
+instances for testing (Torralba, Seipp, and Sievers 2021). For
+the other domains, where no Autoscale instances are avail-
+able, we generate 30 instances ourselves, with the number
+of objects varying between 10 and 100. Table 2 shows that
+the learned sketches of width k = 1 yield solutions to the 30
+instances of each of the domains. Some of these domains,
+such as Childsnack, Spanner and Visitall, are not trivial for
+LAMA and Dual-BFWS, which only manage to solve 9, 0,
+and 29 instances, and 5, 0, and 25 instances, respectively. In
+all cases, the maximum effective width of the SIWR search
+is bounded by the width parameter k, showing that the prop-
+erties of the learned sketches generalize beyond the training
+set.
+5Theorem 3 requires a SIWR(k) search rather than a SIWR
+search but this a minor difference for theoretical reasons.
+
+
+Listing 1: Full ASP code for learning sketches: constraints C1-C8 satisﬁed. Optimization in lines 24-25 for ﬁnding a simplest
+solutions measured by number of sketch rules plus sum of feature complexities.
+1
+% C1: construct rules and select features.
+2
+{ select(F) } :- feature(F).
+{ rule(1..max_sketch_rules) }.
+3
+{ c_eq(R, F); c_gt(R, F); c_unk(R, F) } = 1 :- rule(R), numerical(F).
+4
+{ c_pos(R, F); c_neg(R, F); c_unk(R, F) } = 1 :- rule(R), boolean(F).
+5
+{ e_dec(R, F); e_inc(R, F); e_unk(R, F); e_bot(R, F) } = 1 :- rule(R), numerical(F).
+6
+{ e_pos(R, F); e_neg(R, F); e_unk(R, F); e_bot(R, F) } = 1 :- rule(R), boolean(F).
+7
+% C4 and C7: good and bad state pairs must comply with rules and selected features.
+8
+{ good(R, I, S, S’) } :- rule(R), s_distance(I, S, S’, _).
+9
+c_satisfied(R, F, I, S) :- { c_eq(R, F) : V = 0; c_gt(R, F) : V > 0; c_pos(R, F) : V = 1;
+c_neg(R, F) : V = 0; c_unk(R, F) } = 1, rule(R), feature_valuation(F, I, S, V),
+s_distance(I, S, S’, _).
+10
+e_satisfied(R, F, I, S, S’) :- { e_dec(R, F) : V > V’; e_inc(R, F) : V < V’;
+e_pos(R, F) : V’ = 1; e_neg(R, F) : V’ = 0; e_bot(R, F) : V = V’; e_unk(R, F) } = 1,
+rule(R), feature_valuation(F, I, S, V), feature_valuation(F, I, S’, V’),
+s_distance(I, S, S’, _).
+11
+:- { not c_satisfied(R, F, I, S); not e_satisfied(R, F, I, S, S’) } != 0, select(F), good(
+R, I, S, S’).
+12
+:- { not c_satisfied(R, F, I, S) : select(F); not e_satisfied(R, F, I, S, S’) : select(F)
+} = 0, rule(R), s_distance(I, S, S’, _), not good(R, I, S, S’).
+13
+% C2: there must be one subgoal tuple for each state with unbounded width.
+14
+{ subgoal(I, S, T) : tuple(I, S, T) } = 1 :- solvable(I, S), exceed(I, S).
+15
+% C3: states underlying subgoal tuples must be good.
+16
+:- { good(R, I, S, S’) : rule(R) } = 0, subgoal(I, S, T), contain(I, S, T, S’).
+17
+% C5: good pairs to dead-end states must be at larger distance than subgoal tuple.
+18
+:- D <= D’, s_distance(I, S, S’, D), t_distance(I, S, T, D’), subgoal(I, S, T),
+good(_, I, S, S’), solvable(I, S), unsolvable(I, S’).
+19
+% C8: ensure acyclicity.
+20
+order(I, S, S’) :- solvable(I, S), solvable(I, S’), good(_, I, S, S’), order(I, S’).
+21
+order(I, S) :- solvable(I, S), order(I, S, S’) : good(_, I, S, S’), solvable(I, S),
+solvable(I, S’).
+22
+:- solvable(I, S), not order(I, S).
+23
+% Optimization objective: smallest number of rules plus the sum of feature complexities.
+24
+#minimize { C,complexity(F, C) : complexity(F, C), select(F) }.
+25
+#minimize { 1,rule(R) : rule(R) }.
+Plans.
+Comparing the plans found by SIWR to the ones
+obtained with LAMA and Dual-BFWS, we see that the
+SIWR plans have 1) half the length for Childsnack, Span-
+ner, and Visitall, 2) roughly the same length for Delivery,
+Blocks-on, Miconic, and Reward, and 3) about three times
+the length for Blocks-clear and Gripper. In Blocks-clear, the
+width-0 sketch deﬁnes that unstacking from any tower (not
+just the one with the target block) is good until the target
+block is clear. In Gripper, transporting a single ball instead
+of two balls at a time adds two extra move actions per ball.
+Sketch Analysis
+In this section, we describe and analyze some of the learned
+sketches and prove that they all have width bounded by k and
+are acyclic. We provide proofs of these claims in an extended
+version of the paper (Drexler, Seipp, and Geffner 2022).
+Gripper
+In Gripper there are two rooms a and b. A robot can move
+between a and b, and pick up and drop balls. The goal is to
+move all balls from room a to b. We analyze the three learned
+sketches for the bounds k = 0, 1, 2. The learned sketch R2
+Φ
+for k = 2 has features Φ = {g}, where g is the number of
+well-placed balls, and a single rule r1 = {} 7→{g↑} say-
+ing that increasing the number of well-placed balls is good.
+These subproblems have indeed width bounded by 2. The
+learned sketch R1
+Φ for k = 1 has features Φ = {ga, g},
+where ga is the number of balls in room a and g is the num-
+ber of balls that are either in room a or b. The rules are
+r1 = {} 7→{g?, ga↓}
+r2 = {} 7→{g↑}
+where r1 says that picking up a ball in room a is good, and
+r2 says that dropping a ball in room b is good. The learned
+sketch R0
+Φ for k = 0 has features Φ = {B, c}, where B is
+true iff the robot is in room b and c is the number of carried
+balls, and rules
+r1 = {c = 0} 7→{c?, ¬B}
+r2 = {B} 7→{B?, c↓}
+r3 = {¬B, c > 0} 7→{B?}
+where r1 says that moving to room a or picking up a ball
+in room a is good when not carrying a ball, r2 says that
+dropping a ball in room b is good, and r3 says that moving
+to room b while carrying a ball is good.
+Theorem 7 The sketches Rk
+Φ for Gripper are acyclic and
+have width k for k = 0, 1, 2.
+
+
+w = 0
+w = 1
+w = 2
+Domain
+M
+T |Pi|
+|S|
+|F| C |Φ| |R|
+M
+T |Pi|
+|S|
+|F| C |Φ| |R|
+M
+T
+|Pi|
+|S|
+|F| C |Φ| |R|
+Blocks-clear
+1
+3
+1
+22
+233
+2
+2
+2
+1
+4
+1
+22
+233
+4
+1
+1
+1
+3
+1
+22
+233
+4
+1
+1
+Blocks-on
+26 14k
+1
+22 1011
+7
+3
+3
+9
+105
+1
+22
+1011
+4
+2
+2
+13
+146
+1
+22
+1011
+4
+1
+1
+Childsnack
+–
+–
+–
+–
+–
+–
+–
+–
+122
+228k
+3
+792
+629
+6
+4
+5
+–
+–
+–
+–
+–
+–
+–
+–
+Delivery
+–
+–
+–
+–
+–
+–
+–
+–
+17
+521
+1
+96
+474
+4
+2
+2
+3
+18
+1
+20
+287
+4
+1
+1
+Gripper
+2
+19
+1
+28
+301
+4
+2
+3
+3
+60
+1
+28
+301
+4
+2
+2
+7
+48
+1
+28
+301
+4
+1
+1
+Miconic
+–
+–
+–
+–
+–
+–
+–
+–
+1
+5
+1
+32
+119
+2
+2
+2
+2
+6
+1
+32
+119
+2
+1
+1
+Reward
+3
+46
+2
+26 916*
+6
+2
+2
+1
+4
+1
+12
+210
+2
+1
+1
+10
+95
+1
+48
+427
+2
+1
+1
+Spanner
+12
+2k
+3
+227
+658
+7
+2
+2
+3
+22
+1
+74
+424
+5
+1
+1
+6
+38
+1
+74
+424
+5
+1
+1
+Visitall
+3
+54
+2
+36 722*
+5
+2
+2
+1
+1
+1
+3
+10
+2
+1
+1
+1
+1
+1
+3
+10
+2
+1
+1
+Table 1: Learning step. We show the peak memory in GiB after learning (M), the time in seconds for solving the ASP in parallel
+on 32 CPU cores (T), the number of training instances used in the encoding (|Pi|), the total number of states considered in the
+encoding (|S|), the number of Boolean and numerical features (|F|) where * denotes that the distance feature was included, the
+largest complexity of a feature f ∈Φ (C), the number of features (|Φ|), and the number of sketch rules (|R|). We use “–” to
+indicate that the learning procedure failed because of insufﬁcient resources.
+w = 0
+w = 1
+w = 2
+LAMA
+BFWS
+Domain
+S
+T
+AW
+MW
+S
+T
+AW
+MW
+S
+T
+AW
+MW
+S
+T
+S
+T
+Blocks-clear (30)
+30
+3
+0.00
+0
+30
+5
+0.80
+1
+30
+4
+0.80
+1
+30
+4
+30
+6
+Blocks-on (30)
+30
+3
+0.00
+0
+30
+6
+1.00
+1
+30
+3
+0.98
+1
+30
+4
+30
+25
+Childsnack (30)
+–
+–
+–
+–
+30
+1
+0.10
+1
+–
+–
+–
+–
+9
+2
+5
+658
+Delivery (30)
+–
+–
+–
+–
+30
+1
+1.00
+1
+30
+4
+1.66
+2
+30
+1
+30
+1
+Gripper (30)
+30
+4
+0.00
+0
+30
+3
+0.50
+1
+30
+656
+2.00
+2
+30
+1
+30
+6
+Miconic (30)
+–
+–
+–
+–
+30
+5
+0.53
+1
+30
+132
+2.00
+2
+30
+7
+30
+25
+Reward (30)
+30
+4
+0.00
+0
+30
+2
+1.00
+1
+30
+1
+1.00
+1
+30
+2
+30
+1
+Spanner (30)
+30
+3
+0.00
+0
+30
+4
+0.24
+1
+30
+3
+0.24
+1
+0
+–
+0
+–
+Visitall (30)
+26
+1360
+0.00
+0
+30
+20
+0.00
+1
+30
+21
+0.00
+1
+29
+213
+25
+833
+Table 2: Testing step. We show the number of solved instances (S), the maximum time for solving an instance for which all
+algorithms ﬁnd a solution, excluding algorithms that solve no instance at all (T), the average effective width (AW), and the
+maximum effective width (MW).
+Blocks-on
+The Blocks-on domain works like the standard Blocksworld
+domain, where a set of blocks can be stacked on top of each
+other or placed on the table. In contrast to the standard do-
+main, Blocks-on tasks just require to place a single speciﬁc
+block on top of another block, a width-2 task. The learned
+sketch RΦ for k = 1 has features Φ = {H, g}, where H is
+true iff a block is being held and g is the number of blocks
+that are at their goal location. The sketch rules are
+r1 = {} 7→{¬H, g↑}
+r2 = {H} 7→{¬H, g?}
+where r1 says that well-placing the block mentioned in the
+goal or unstacking towers on the table is good, and r2 says
+that not holding a block is good. Starting in states s0 where
+H is false, rule r1 looks for subgoal states s1 where H is
+false and g increased. Starting in states s′
+0 where H is true,
+rule r2 is also active which looks for subgoal states s′
+1 where
+H is false and g has any value. From such states s′
+1, however,
+rule r1 takes over with s0 = s′
+1, and no subgoal state where
+H is true is reached again. If such states need to be traversed
+in the solution of the subproblems, they will not be encoun-
+tered as subgoal states si+1 ∈GR(si).
+Theorem 8 The sketch RΦ for Blocks-on is acyclic and has
+width 1.
+Childsnack
+In Childsnack (Vallati, Chrpa, and McCluskey 2018), there
+is a kitchen, a set of tables, a set of plates, a set of children,
+all sitting at some table waiting to be served a sandwich.
+Some children are gluten allergic and hence they must be
+served a gluten-free sandwich that can be made with gluten-
+free bread and gluten-free content. The sandwiches are pro-
+duced in the kitchen but can be moved to the tables using
+one of several plates. The learned sketch RΦ for k = 1
+has features Φ = {sk, ua, gfs, s}, where sk is the number
+of sandwiches at the kitchen, ua is the number of unserved
+and allergic children, gfs is the number of gluten-free sand-
+wiches, and s is the number of served children. The sketch
+rules are
+r1 = {} 7→{sk?, ua?, gfs↑, s?}
+r2 = {} 7→{sk↓, ua?, gfs?, s?}
+r3 = {} 7→{sk?, ua↓, gfs?, s?}
+r4 = {ua = 0} 7→{sk↑, ua?, gfs?, s?}
+r5 = {ua = 0} 7→{sk?, ua?, gfs?, s↑}
+
+
+which say that making a gluten free sandwich is good, mov-
+ing a sandwich from the kitchen on a tray is good, serving a
+gluten-allergic child is good, making any sandwich is good
+if all gluten-allergic children have been served, serving any
+child is good if all gluten-allergic children have been served.
+Theorem 9 The sketch RΦ for Childsnack is acyclic and
+has width 1.
+Miconic
+In Miconic (Koehler and Schuster 2000), there are passen-
+gers, each waiting at some ﬂoor, who want to take an el-
+evator to a target ﬂoor. The learned sketch RΦ for k = 1
+has features Φ = {b, g}, where b is the number of boarded
+passengers and g is the number of served passengers. The
+sketch rules are
+r1 = {} 7→{b?, g↑}
+r2 = {} 7→{b↑, g?}
+where r1 says that moving a passenger to their target ﬂoor is
+good, and r2 says that letting some passenger board is good.
+Theorem 10 Sketch RΦ for Miconic is acyclic and has
+width 1.
+Related Work
+Sketches provide a language for expressing control knowl-
+edge by hand or for learning it. Other languages have been
+developed for the ﬁrst purpose, including Golog, LTL, and
+HTNs; we focus on the learning problem.
+Features, General Policies, Heuristics. Sketches were in-
+troduced by Bonet and Geffner (2021) and used by hand by
+Drexler, Seipp, and Geffner (2021). The sketch language is
+the language of general policies (Bonet and Geffner 2018)
+that has been used for learning as well (Mart´ın and Geffner
+2004; Bonet, Franc`es, and Geffner 2019; Franc`es, Bonet,
+and Geffner 2021). The description logic features have also
+been used to learn linear value functions that can be used
+to solve problems greedily (Franc`es et al. 2019; de Graaff,
+Corrˆea, and Pommerening 2021) and dead-end classiﬁers
+(St˚ahlberg, Franc`es, and Seipp 2021). The use of numeri-
+cal features that can be incremented and decremented qual-
+itatively is inspired by QNPs (Srivastava et al. 2011; Bonet
+and Geffner 2020). Other works aimed at learning general-
+ized policies or plans include planning programs (Segovia,
+Jim´enez, and Jonsson 2016), logical programs (Silver et al.
+2020), and deep learning approaches (Groshev et al. 2018;
+Bajpai, Garg, and Mausam 2018; Toyer et al. 2020), some
+of which have been used to learn heuristics (Shen, Trevizan,
+and Thi´ebaux 2020; Karia and Srivastava 2021).
+HTNs. Hierarchical task networks explicitly decompose
+tasks into simpler tasks, and a number of methods for learn-
+ing them have been studied (Zhuo, Mu˜noz-Avila, and Yang
+2014; Hogg, Mu˜noz-Avila, and Kuter 2016). These meth-
+ods, however, learn decompositions using slightly different
+inputs like annotated traces and decompositions. Jonsson
+(2009) developed a powerful approach for learning policies
+in terms of a hierarchy of macros, but the approach is re-
+stricted to domains with certain causal graphs.
+Intrinsic Rewards and (Hierarchical) RL. Intrinsic re-
+wards have been introduced for improving exploration in
+reinforcement learning (Singh et al. 2010), and several au-
+thors have addressed the problem of learning intrinsic re-
+wards over families of problems. Interestingly, the title of
+one of the papers is a question “What can learned intrinsic
+rewards capture?” (Zheng et al. 2020). The answer to this
+question in our setting is clean and simple: intrinsic rewards
+are supposed to capture common subgoal structure. Lacking
+a language to talk about families of problems and a language
+to talk about subgoal structure, however, the answer that the
+authors provide is less crisp: learned intrinsic rewards are
+supposed to speed up (deep) RL. The problem of subgoal
+structure also surfaces in hierarchical RL that aims at learn-
+ing and exploiting hierarchical structure in RL (Barto and
+Mahadevan 2003; Kulkarni et al. 2016).
+Conclusions
+We have developed a formulation for learning sketches au-
+tomatically given instances of the target class of problems Q
+and a bound k on the sketch width. The work builds on prior
+works that introduced the ideas of general policies, sketches,
+problem width, and description logic features. The learning
+formulation guarantees a bounded width on the training in-
+stances but the experiments show that this and other prop-
+erties generalize to entire families of problems Q, some of
+which are challenging for current domain-independent plan-
+ners. The properties ensure that all problems in Q can be
+solved in polynomial time by a variant of the SIW algo-
+rithm. This is possibly the ﬁrst general method for learning
+how to decompose planning problems into subproblems with
+a polynomial complexity that is controlled with a parame-
+ter. Three limitations of the proposed learning approach are
+1) it cannot be applied to intractable domains, 2) it yields
+large (grounded) ASP programs that are often difﬁcult to
+solve, and 3) it deals with collections of problems encoded in
+PDDL-like languages, even if the problem of learning sub-
+goal structure arises in other settings such as RL. Three goals
+for the future are to improve scalability, to deal with non-
+PDDL domains, taking advantage of recent approaches that
+learn such domains from data, and to use sketches for learn-
+ing hierarchical policies.
+Acknowledgements
+This work was partially supported by an ERC Advanced
+Grant (grant agreement no. 885107), by project TAILOR,
+funded by EU Horizon 2020 (grant agreement no. 952215),
+and by the Wallenberg AI, Autonomous Systems and Soft-
+ware Program (WASP) funded by the Knut and Alice Wal-
+lenberg Foundation. Hector Geffner is a Wallenberg Guest
+Professor at Link¨oping University, Sweden. The computa-
+tions were enabled by resources provided by the Swedish
+National Infrastructure for Computing (SNIC), partially
+funded by the Swedish Research Council through grant
+agreement no. 2018-05973.
+
+
+Appendix
+In this section, we describe the feature grammar, and we pro-
+vide proofs for the theorems on the soundness and complete-
+ness of the theory and the properties of the learned sketches.
+Feature grammar
+The feature grammar is constructed by iteratively compos-
+ing description logics grammar rules (Baader et al. 2003)
+and additional grammar rules for Boolean and numerical
+features. The feature complexity is then measured as the
+number of grammar rules used in the composition. We ﬁrst
+deﬁne the description logics grammar rules and then deﬁne
+the grammar rules for Boolean and numerical features.
+Concepts and Roles
+In description logics (Baader et al. 2003), we have concepts
+and roles where concepts represent unary relations, and roles
+represent binary relations over the universe ∆, that is, the set
+of objects occurring in the instances. The concepts and roles
+we use are similar to the ones used in work on computing
+general policies (Franc`es, Bonet, and Geffner 2021). How-
+ever, we compute a richer pool of primitives by projecting n-
+ary predicates to concepts and roles. Consider a state s in an
+instance I. For every n-ary predicate p in I and 1 ≤i ≤n,
+there is a concept that evaluates to the set of objects that oc-
+cur in the i-th position of the respective ground atoms of p
+that are true in s. Similarly, for every n-ary predicate p in
+I and 1 ≤i < j ≤n, there is a role that evaluates to the
+set of pairs of objects that occur in the i-th and j-th posi-
+tion of the respective ground atoms of p that are true in s.
+Furthermore, for every such primitive concept and role as
+above, there is a respective goal version that is evaluated in
+the goal instead of the state s. Next, for each constant x in a
+domain, there is a concept that evaluates to the singleton set
+{x}. Last, there are the following additional primitive and
+compositional concepts and roles. Consider concepts C, D,
+and roles R, S. We have
+• the universal concept ⊤with denotation ⊤s ≡∆,
+• the bottom concept ⊥with denotation ⊥s ≡∅,
+• the role-value mapping R = S with denotation (R =
+S)s ≡{a ∈∆| (a, b) ∈Rs ↔(a, b) ∈Ss},
+• the concept intersection C ⊓D with denotation (C ⊓
+D)s = Cs ∩Ds,
+• the concept negation ¬C with denotation (¬C)s ≡∆\
+Cs,
+• the
+existential
+abstraction
+∃R.C
+with
+denotation
+(∃R.C)s ≡{a ∈∆| ∃b : (a, b) ∈Rs ∧b ∈Cs},
+• the
+universal
+abstraction
+∀R.C
+with
+denotation
+(∀R.C)s ≡{a ∈∆| ∀b : (a, b) ∈Rs →b ∈Cs},
+• the role inverse R−1 with denotation (R−1)s ≡{(b, a) |
+(a, b) ∈Rs},
+• the role restriction R : C with denotation (R : C)s ≡
+Rs ⊓(∆× Cs),
+• the role composition R ◦S with denotation (R ◦S)s ≡
+{(a, c) ∈∆× ∆| (a, b) ∈Rs ∧(b, c) ∈Ss}, and
+• the transitive closure role R+ with denotation (R+)s ≡
+S
+n≥1(Rs)n where the iterated composition is deﬁned as
+(Rs)0 = {(d, d) | d ∈Cs} and (Rs)n+1 = (Rs)n ◦Rs.
+We place additional restrictions on the above grammar. Sim-
+ilar to Franc`es, Bonet, and Geffner (2021), we do not include
+role composition, and allow the transitive closure role, in-
+verse role, and restrict role on primitive concepts and roles.
+From Concepts and Roles to Features
+The concepts and roles from the grammar above represent
+more complex derived predicates. We are interested in mea-
+suring a change in the number of ground atoms over such
+derived predicates. For this purpose, we deﬁne the follow-
+ing Boolean and numerical grammar rules as an additional
+level of composition. Consider a state s in an instance I. For
+every nullary predicate p, there is a Boolean feature that is
+true in s iff the ground atom of p is true in s. Next, let C, D
+be concept, R be a role, and X be either a concept or role.
+We have
+• Boolean empty feature Empty(X)s is true iff |Xs| = ∅,
+• numerical counting feature Count(X)s ≡|Xs|, and
+• numerical distance feature Distance(C, R, D) is small-
+est n ∈N0, s.t., there are objects x0, . . . , xn with x0 ∈
+Cs, xn ∈Ds, and (xi−1, xi) ∈Rs for i = 1, . . . , n. If
+no such n exists then it evaluates to ∞.
+We also place restrictions on this part of the grammar. Our
+distances features are richer than those used by Franc`es,
+Bonet, and Geffner (2021) as we allow arbitrary concepts
+C in them, and R can have at most complexity 2, meaning
+that R can take the restriction as well but also other roles.
+Proofs
+Theorem 6 (Soundness and Completeness) A
+terminat-
+ing sketch R with rules Ci 7→Ei, i = 1, . . . , m, over
+features F ∈F, has sketch width wR(P∗) ≤k over the
+closed class of problems P∗iff the theory Tk,m(P, F) is
+satisﬁable and has a model where the rules that are true are
+exactly those in R.
+The notation P∗is used to denote the closure of the prob-
+lems in P; i.e. for any problem P in P, P∗also includes the
+problems P ′ that are like P but with initial state s being a
+solvable non-goal state that is reachable from the initial state
+of s.
+Proof: (⇐; soundness). Let σ be a truth assignment that sat-
+isﬁes Tk,m(P, F) and let Rσ be the sketch encoded in σ;
+i.e., the rule Ci 7→Ei has conditions f = v for the atoms
+cond(i, f, v) true in σ, and effects f (resp. f) if eﬀ(i, f, v)
+with f Boolean and v is true (resp. false), and effects f↓,
+f↑, or f? if f is numerical, and v is true, false, and ‘?’
+resp. Since the class of problems P is closed, in order to
+prove that the sketch Rσ has width ≤k it sufﬁces to show
+that for any problem P in P with initial state s, the prob-
+lem P ′ that is like P but with goals G(P) ∪GRσ(s), has
+width ≤k. For this, some atom subgoal(s, t) must be true
+for a tuple t with size and width ≤k, and therefore, and all
+the states s′ that result from optimal plans from s to t, will
+
+
+be such that (s, s′) satisﬁes some rule in Rσ, and therefore
+all such states s′ will belong to G(s). Moreover, such states
+s′ will be the closest states in G(s) from s, as enforced by
+constraint C6 above and are not dead-ends as enforced by
+constraint C5, and therefore, since the width of t is ≤k,
+then the width of problem P ′ is also bounded by k.
+Proof: (⇒; completeness) One must show that a sketch
+R yields an assignment σR that satisﬁes the theory
+Tk,m(P, F). First, in the assignment σR, the truth of
+all the atoms select(f ), cond(i, f, v), eﬀ(i, f, v), and
+sat rule(s, s′, i) is clearly determined by R such that C1
+is satisﬁed. Second, since wR(P∗) ≤k, it means that all
+the problems P ′ with initial state s and goal states among
+those of P and GR(s) have width ≤k, and therefore, that
+for each such state s, there is an admissible chain t0, . . . , tm
+of size ≤k leading to such goal states optimally. It sufﬁces
+to make the atoms subgoal(s, tm) true along with all atoms
+subgoals(s, tm, s′) for the states s′ that result from optimal
+plans from s to tm such that constraints C2 and C3 are satis-
+ﬁed. Third, for every subgoal s′ ∈GR(s) from state s with
+s /∈SG where subgoals(s, tm, s′) is satisﬁed there is at least
+one compatible rule i because otherwise, s′ would not be
+a subgoal in the ﬁrst place, meaning that sat rule(s, s′, i)
+can be set to true, satisfying constraint C4. Forth, due to ter-
+mination, we know that the sketch can not deﬁne a closest
+subgoal state that is unsolvable because once in an unsolv-
+able state, any acyclic state sequence will never end in a goal
+state such that constraint C5 is satisﬁed. Fifth, since the sub-
+goals subgoal(s, tm) are reached optimally that means that
+there cannot be some state s′ that is closer than the subgoal
+tm satisfying sat rule(s, s′, i) for some rule i. Therefore,
+C6 is satisﬁed because those states s′ are at the same dis-
+tance or further away. Sixth, according to the semantics of
+sketches, we set every sat rule(s, s′, i) to true for every rule
+i iff (s, s′) is compatible with rule i such that C7 is satisﬁed.
+Theorem 11 The sketch R2
+Φ for Gripper is acyclic and has
+width 2.
+Proof: The sketch is acyclic because the number of balls in
+room b is incremented but is never decremented. Next, we
+show that the sketch width is 2. If the robot is at b without
+carrying a ball and there is at least one ball at a, then we
+have the admissible chain
+(at-robot(b), (at-robot(a), carrying(x)),
+(at-robot(b), carrying(x)), (at-robot(b), at(x, b)))
+where r1 deﬁnes the subgoal at(x, b). In all other cases,
+where the robot is already at a, carrying a ball at a, or car-
+rying a ball at b can be described with respective sufﬁxes of
+the above admissible chain. The largest tuple is 2, implying
+that the sketch width is 2.
+Theorem 12 The sketch R1
+Φ for Gripper is acyclic and has
+width 1.
+Proof: rule r1 decrements ga which is never incremented
+by some other rule. Hence, we can remove it. Rule
+r2 increments g which no remaining rule decrements.
+Hence, g increases ﬁnitely many times and the sketch
+is acyclic. Next, we show that the sketch width is 1. If
+the robot is at b without carrying a ball and there is at
+least one ball at a, then we have the admissible chain
+(at-robot(b), at-robot(a), carrying(x)) where r1 deﬁnes
+the subgoal carrying(x). If the robot is already at a, then
+the sufﬁx (at-robot(a), carrying(x)) applies. If the robot
+is at a and carrying a ball, then we have the admissible
+chain (at-robot(a), at-robot(b), at(x, b)) where r2 deﬁnes
+the subgoal at(x, b). If the robot is already at b, then the
+sufﬁx (at-robot(b), at(x, b)) applies. The largest tuple is 1,
+implying that the sketch width is 1.
+Theorem 13 The sketch R0
+Φ for Gripper is acyclic and has
+width 0.
+Proof: we begin with showing acyclicity. We also consider
+the feature g that counts the number of balls at b. The sketch
+decreases g but never increases g because picking balls in
+room a is a subgoal deﬁned by r1, dropping balls in room b
+is a subgoal deﬁned by r2, moving from b to a if not carry-
+ing a ball is subgoal deﬁned by r1, and moving from a to b if
+carrying a ball is subgoal deﬁned by r3. Hence, the sketch is
+acyclic. Next, we show that the sketch width is 0. If the robot
+is at b and not carrying a ball but there is a ball at a, then we
+have the admissible chain (at-robot(b), at-robot(a)) where
+r1 deﬁnes the subgoal at-robot(a). If the robot is at a in-
+stead not carrying a ball x, then we have the admissible
+chain (at(x, a), carrying(x)) where r1 deﬁnes the subgoal
+carrying(x). If the robot is at a and carrying a ball, then
+we have the admissible chain (at-robot(a), at-robot(b))
+where r3 deﬁnes the subgoal at-robot(b). If the robot is
+at b instead carrying ball x, then we have the admissible
+chain (carrying(x), at(x, b)) where r2 deﬁnes the subgoal
+at(x, b). The largest tuple is 1, and the subproblems are
+solved in a single step implying that the sketch width is 0.
+Theorem 7 The sketches Rk
+Φ for Gripper are acyclic and
+have width k for k = 0, 1, 2.
+Proof: follows from Theorems 11,12, and 13.
+Theorem 8 The sketch RΦ for Blocks-on is acyclic and has
+width 1.
+Proof: rule r2 sets H to false which no other rule sets to
+true such that we can eliminate r2. The remaining rule r1
+deﬁnes the subgoal of either moving a block on the table
+or stacking the block mentioned in the goal on top of the
+correct block. Both cases can only happen ﬁnitely many
+times because there are ﬁnitely many blocks. Hence, the
+sketch is acyclic. Next, we show that the sketch width is
+1. If some block b is being held, then we have the admis-
+sible chain (hold(b), on-table(b)) where r2 deﬁnes the sub-
+goal on-table(b). For the remaining, we can assume that no
+block is being held. If there is block b above b′, i.e., on(b, b′)
+holds, and this is not mentioned in the goal, then we have the
+admissible chain (on(b, b′), hold(b), on-table(b)) where r1
+deﬁnes the subgoal on-table(b). If both b, b′ are clear and b
+must be stacked on top of b′ in the goal, then we have the
+admissible chain (clear(b), hold(b), on(b, b′)) where r1 de-
+ﬁnes the subgoal on(b, b′). The largest tuple is 1, implying
+that the sketch width is 1.
+Theorem 9 The sketch RΦ for Childsnack is acyclic and
+has width 1.
+
+
+Proof: we begin with showing acyclicity. Rule r1 can be
+used as many times as there are ingredients to make gluten-
+free sandwiches because the available ingredients decrease.
+Similarly, r4 can be used as many times as there are in-
+gredients to make sandwiches. Since the number of sand-
+wiches in the kitchen is ﬁnite, and sandwiches can be put
+on a tray and served, but not be moved from tray to kitchen,
+r2 can be used ﬁnitely many times to put a sandwich on a
+tray. Sandwiches are served ﬁrst to gluten allergic children
+using r3 and to other children using r5 at most as many
+times as there are children. Hence, the sketch is acyclic.
+Next, we show that the width is 1. If there are ingredients
+to make a gluten-free sandwich s, then we have the admis-
+sible chain (notexist(s), gluten-free-sandwich(s)) where
+r1 deﬁnes the closest subgoal at-kitchen-sandwich(s). If
+all gluten allergic children are served, and there are ingre-
+dients to make a sandwich s, then we have the admissible
+chain (notexist(s), at-kitchen-sandwich(s)) where r4 de-
+ﬁnes the closest subgoal at-kitchen-sandwich(s).
+Now assume, that no more sandwich can be made
+as above, and there is a sandwich s and a tray t
+in the kitchen, then we have the admissible chain
+(at(t, kitchen), ontray(s, t)) where r2 deﬁnes the closest
+subgoal ontray(s, t). If t is instead at a table x and there is
+no tray with a sandwich on the same table as a child that
+can be served with it, then we have the admissible chain
+(at(t, x), at(t, kitchen), ontray(s, t)) where r2 deﬁnes the
+closest subgoal ontray(s, t).
+Now assume, that no more sandwich can be made as
+above, and there is a gluten free sandwich s on tray t at the
+same table x as an unserved gluten allergic child c, then we
+have the admissible chain (at(t, x), served(c)) where r3 de-
+ﬁnes the closest subgoal served(c). If t is instead at a place
+x′ including the kitchen different than x then we have the ad-
+missible chain (at(t, x′), at(t, x), served(c)) where r3 de-
+ﬁnes the closest subgoal served(c). Furthermore, if we drop
+the requirement for s to be gluten-free, child c is not gluten
+allergic and require that there are no more unserved gluten
+allergic children, then the same admissible chains also hold
+where r5 deﬁnes the closest subgoals.
+An unsolvable state is reached, if either a non-gluten-free
+sandwich is made using gluten-free ingredients or if serv-
+ing gluten-free sandwiches to non-gluten allergic children
+such that not all gluten allergic children can be served. How-
+ever, the sketch deﬁnes making gluten-free sandwiches and
+serving gluten allergic children ﬁrst with rules r1, r2, r3 such
+that no closest subgoal state is unsolvable. The largest tuple
+is 1, implying that the sketch width is 1.
+Theorem 10 Sketch RΦ for Miconic is acyclic and has
+width 1.
+Proof: the feature g can only be increased because if a pas-
+senger is served, this remains true forever. The feature b can
+only be decreased once for every passenger after unboard-
+ing and serving it. Hence, the sketch is acyclic. Next, we
+show that the width is 1. We deﬁne the distance between
+ﬂoors fi and fj as d(fi, fj) = |i −j|. If there is an un-
+served passenger p waiting at ﬂoor fi, the elevator is at ﬂoor
+fj, and for all boarded passengers p′ with target ﬂoor f ′
+holds that d(fi, fj) ≤d(f ′, fj), then we have the admis-
+sible chain (lift-at(fi), . . . , lift-at(fj), boarded(p)) where
+r2 deﬁnes the subgoal boarded(p). If there is a boarded pas-
+senger p with target ﬂoor fj in the elevator at ﬂoor fi, and for
+all unserved and unboarded passengers p′ waiting at ﬂoor f ′
+holds that d(fj, fi) ≤d(f ′, fi), then we have the admissible
+chain (lift-at(fi), . . . , lift-at(fj), served(p)) where r1 de-
+ﬁnes the subgoal served(p). The largest tuple is 1, implying
+that the sketch width is 1.
+Additional Sketches with Proofs
+In this section, we provide details about domains and learned
+sketches about some additional domains.
+Visitall
+In the Visitall domain, there is a rectangular grid of places
+and a robot located at some random position in the grid. The
+objective is to visit each place at least once. The learned
+sketch RΦ for k = 1 has features Φ = {v}, where v is
+the number visited places, and the single rule
+r = {} 7→{v↑}
+which says that visiting another place is “good” (a subgoal).
+The feature v represents in this case a goal counter, and the
+sketch, a simple goal serialization. The following result im-
+plies that the sketch generalizes over the whole domain:
+Theorem 14 The sketch RΦ for Visitall is acyclic and has
+width 1.
+Proof: the sketch is acyclic because the feature that counts
+the number of visited places v is incremented but never
+decremented. Next, we show that the sketch width is
+1. For every non-goal state, the sketch deﬁnes the sub-
+goal of moving from the current position ci to the clos-
+est cell cj. In this case, we have the admissible chain
+(at-robot(ci), . . . , at-robot(cj)) where r deﬁnes the sub-
+goal at-robot(cj). The largest tuple is 1, implying that the
+sketch width is 1.
+Spanner
+In the Spanner domain, there is a one-way path of locations
+between a shed and a gate, spanners distributed over these
+locations, a set of loose nuts at the gate, and a man that is ini-
+tially in the shed. The man can move along the path towards
+the gate but not backwards, pick up spanners, and tighten a
+loose nut when he is at the gate and carrying a spanner. Each
+spanner can only be used once. The objective is to tighten all
+nuts. The learned sketch RΦ for k = 1 has features Φ = {a},
+where a is the number of unpicked spanners plus the number
+of loose nuts, and the single rule
+r = {} 7→{a↓}
+which encodes that picking up a spanner or tightening a nut
+is good.
+Theorem 15 The sketch RΦ for Spanner is acyclic and has
+width 1.
+
+
+Proof: the sketch is acyclic because feature a is decremented
+but never incremented. Next, we show that the sketch width
+is 1. If the man m is at some location li and there is a spanner
+p at location lj with i < j, then we have the admissible chain
+(at(m, li), . . . , at(m, lj), carrying(p)) where r deﬁnes the
+subgoal carrying(p). If the man m is at the location li and
+there is no spanner available at some other location but there
+is a loose nut at gate g = ln, then we have the admis-
+sible chain (at(m, li), . . . , at(m, ln), tightened(n)) where
+r deﬁnes the subgoal tightened(n). An unsolvable state
+is reached if leaving too many spanners behind. However,
+picking up spanner at the current location is the closest sub-
+goal with a distance of 1 and moving forward to tighten a
+nut has at least a distance of 2. Hence, all spanners will be
+picked up before moving forward. The largest tuple is 1, im-
+plying that the sketch width is 1.
+References
+Baader, F.; Calvanese, D.; McGuinness, D. L.; Nardi, D.;
+and Patel-Schneider, P. F., eds. 2003. The Description Logic
+Handbook: Theory, Implementation and Applications. Cam-
+bridge University Press.
+Bajpai, A.; Garg, S.; and Mausam. 2018. Transfer of Deep
+Reactive Policies for MDP Planning.
+In Proc. NeurIPS
+2018.
+Barto, A. G.; and Mahadevan, S. 2003. Recent Advances in
+Hierarchical Reinforcement Learning. Discrete Event Dy-
+namic Systems, 13: 41–77.
+Bercher, P.; Alford, R.; and H¨oller, D. 2019. A Survey on
+Hierarchical Planning – One Abstract Idea, Many Concrete
+Realizations. In Proc. IJCAI 2019, 6267–6275.
+Bonet, B.; Franc`es, G.; and Geffner, H. 2019.
+Learning
+Features and Abstract Actions for Computing Generalized
+Plans. In Proc. AAAI 2019, 2703–2710.
+Bonet, B.; and Geffner, H. 2018. Features, Projections, and
+Representation Change for Generalized Planning. In Proc.
+IJCAI 2018, 4667–4673.
+Bonet, B.; and Geffner, H. 2020. Qualitative Numeric Plan-
+ning: Reductions and Complexity. JAIR, 69: 923–961.
+Bonet, B.; and Geffner, H. 2021. General Policies, Repre-
+sentations, and Planning Width. In Proc. AAAI 2021, 11764–
+11773.
+Brewka, G.; Eiter, T.; and Truszczy´nski, M. 2011. Answer
+set programming at a glance. Communications of the ACM,
+54(12): 92–103.
+de Graaff, R.; Corrˆea, A. B.; and Pommerening, F. 2021.
+Concept Languages as Expert Input for Generalized Plan-
+ning: Preliminary Results.
+In ICAPS 2021 Workshop on
+Knowledge Engineering for Planning and Scheduling.
+Drexler, D.; Franc`es, G.; and Seipp, J. 2022. Description
+Logics State Features for Planning (DLPlan).
+https://doi.
+org/10.5281/zenodo.5826139.
+Drexler, D.; Seipp, J.; and Geffner, H. 2021.
+Expressing
+and Exploiting the Common Subgoal Structure of Classical
+Planning Domains Using Sketches. In Proc. KR 2021, 258–
+268.
+Drexler, D.; Seipp, J.; and Geffner, H. 2022. Proofs, Code,
+and Data for the ICAPS 2022 Paper “Learning Sketches
+for Decomposing Planning Problems into Subproblems of
+Bounded Width”. https://doi.org/10.5281/zenodo.6381592.
+Erol, K.; Hendler, J. A.; and Nau, D. S. 1994. HTN Plan-
+ning: Complexity and Expressivity.
+In Proc. AAAI 1994,
+1123–1128.
+Franc`es, G.; Bonet, B.; and Geffner, H. 2021. Learning Gen-
+eral Planning Policies from Small Examples Without Super-
+vision. In Proc. AAAI 2021, 11801–11808.
+Franc`es, G.; Corrˆea, A. B.; Geissmann, C.; and Pommeren-
+ing, F. 2019. Generalized Potential Heuristics for Classical
+Planning. In Proc. IJCAI 2019, 5554–5561.
+Gebser, M.; Janhunen, T.; and Rintanen, J. 2014. ASP En-
+codings of Acyclicity Properties. In Proc. KR 2014, 634–
+637.
+Gebser, M.; Kaminski, R.; Kaufmann, B.; and Schaub, T.
+2012. Answer Set Solving in Practice. Morgan & Claypool
+Publishers.
+Gebser, M.; Kaminski, R.; Kaufmann, B.; and Schaub, T.
+2019.
+Multi-shot ASP solving with Clingo.
+Theory and
+Practice of Logic Programming, 2019(19(1)): 27–82.
+Georgievski, I.; and Aiello, M. 2015. HTN Planning. AIJ,
+222: 124–156.
+Groshev, E.; Goldstein, M.; Tamar, A.; Srivastava, S.; and
+Abbeel, P. 2018.
+Learning Generalized Reactive Policies
+Using Deep Neural Networks. In Proc. ICAPS 2018, 408–
+416.
+Hogg, C.; Mu˜noz-Avila, H.; and Kuter, U. 2016. Learning
+Hierarchical Task Models from Input Traces. Computational
+Intelligence, 32(1): 3–48.
+Jonsson, A. 2009. The role of macros in tractable planning.
+JAIR, 36: 471–511.
+Karia, R.; and Srivastava, S. 2021. Learning Generalized Re-
+lational Heuristic Networks for Model-Agnostic Planning.
+In Proc. AAAI 2021, 8064–8073.
+Koehler, J.; and Schuster, K. 2000. Elevator Control as a
+Planning Problem. In Proc. AIPS 2000, 331–338.
+Kulkarni, T. D.; Narasimhan, K. R.; Saeedi, A.; and Tenen-
+baum, J. 2016. Hierarchical Deep Reinforcement Learning:
+Integrating Temporal Abstraction and Intrinsic Motivation.
+In Proc. NIPS 2016, 3675–3683.
+Lifschitz, V. 2019. Answer Set Programming. Springer.
+Lipovetzky, N. 2021. Width-Based Algorithms for Common
+Problems in Control, Planning and Reinforcement Learning.
+In Proc. IJCAI 2021, 4956–4960.
+Lipovetzky, N.; and Geffner, H. 2012. Width and Serializa-
+tion of Classical Planning Problems. In Proc. ECAI 2012,
+540–545.
+Lipovetzky, N.; and Geffner, H. 2017.
+Best-First Width
+Search: Exploration and Exploitation in Classical Planning.
+In Proc. AAAI 2017, 3590–3596.
+Mart´ın, M.; and Geffner, H. 2004.
+Learning General-
+ized Policies from Planning Examples Using Concept Lan-
+guages. Applied Intelligence, 20(1): 9–19.
+
+
+Richter, S.; and Westphal, M. 2010. The LAMA Planner:
+Guiding Cost-Based Anytime Planning with Landmarks.
+JAIR, 39: 127–177.
+Segovia, J.; Jim´enez, S.; and Jonsson, A. 2016. Generalized
+Planning with Procedural Domain Control Knowledge. In
+Proc. ICAPS 2016, 285–293.
+Seipp, J.; Torralba, ´A.; and Hoffmann, J. 2022. PDDL Gen-
+erators. https://doi.org/10.5281/zenodo.6382173.
+Shen, W.; Trevizan, F.; and Thi´ebaux, S. 2020. Learning
+Domain-Independent Planning Heuristics with Hypergraph
+Networks. In Proc. ICAPS 2020, 574–584.
+Silver, T.; Allen, K. R.; Lew, A. K.; Kaelbling, L.; and
+Tenenbaum, J. 2020. Few-Shot Bayesian Imitation Learn-
+ing with Logical Program Policies.
+In Proc. AAAI 2020,
+10251–10258.
+Singh, S. P.; Lewis, R. L.; Barto, A. G.; and Sorg, J. 2010. In-
+trinsically motivated reinforcement learning: An evolution-
+ary perspective. IEEE Transactions on Autonomous Mental
+Development, 2: 70–82.
+Srivastava, S.; Zilberstein, S.; Immerman, N.; and Geffner,
+H. 2011. Qualitative Numeric Planning. In Proc. AAAI 2011,
+1010–1016.
+St˚ahlberg, S.; Franc`es, G.; and Seipp, J. 2021.
+Learning
+Generalized Unsolvability Heuristics for Classical Planning.
+In Proc. IJCAI 2021, 4175–4181.
+Torralba, ´A.; Seipp, J.; and Sievers, S. 2021. Automatic In-
+stance Generation for Classical Planning. In Proc. ICAPS
+2021, 376–384.
+Toyer, S.; Thi´ebaux, S.; Trevizan, F.; and Xie, L. 2020. AS-
+Nets: Deep Learning for Generalised Planning. JAIR, 68:
+1–68.
+Vallati, M.; Chrpa, L.; and McCluskey, T. L. 2018. What you
+always wanted to know about the deterministic part of the
+International Planning Competition (IPC) 2014 (but were
+too afraid to ask). Knowledge Engineering Review, 33.
+Zheng, Z.; Oh, J.; Hessel, M.; Xu, Z.; Kroiss, M.; van Has-
+selt, H.; Silver, D.; and Singh, S. 2020. What Can Learned
+Intrinsic Rewards Capture? In Proc. ICML 2020, 11436–
+11446.
+Zhuo, H. H.; Mu˜noz-Avila, H.; and Yang, Q. 2014. Learning
+hierarchical task network domains from partially observed
+plan traces. AIJ, 212: 134–157.

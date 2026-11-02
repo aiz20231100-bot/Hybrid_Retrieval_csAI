@@ -1,0 +1,1224 @@
+Dynamic Tree Databases in Automated Planning
+Oliver Joergensen1, Dominik Drexler2, Jendrik Seipp3,
+Link¨oping University, Sweden
+1oliver.harold.joergensen@liu.se, 2dominik.drexler@liu.se, 3jendrik.seipp@liu.se,
+Abstract
+A central challenge in scaling up explicit state-space search
+for large tasks is compactly representing the set of generated
+states. Tree databases, a data structure from model checking,
+require constant space per generated state in the best case,
+but they need a large preallocation of memory. We propose
+a novel dynamic variant of tree databases for compressing
+state sets over propositional and numeric variables and prove
+that it maintains the desirable properties of the static counter-
+part. Our empirical evaluation of state compression techniques
+for grounded and lifted planning on classical and numeric
+planning tasks reveals compression ratios of several orders of
+magnitude, often with negligible runtime overhead.
+1
+Introduction
+Explicit state space search is a widely used technique for
+solving classical and numeric planning tasks (e.g., Hoffmann
+and Nebel 2001; Richter and Westphal 2010; Lipovetzky and
+Geffner 2012; Seipp, Keller, and Helmert 2020; Kuroiwa et al.
+2022; Scala et al. 2016). It iteratively expands states, starting
+from the initial state, to generate their successors, and is often
+guided by a goal-directed heuristic to reach a goal state. Even
+with strong heuristics, the set of generated states can be huge.
+As a result, compactly representing them is a fundamental
+challenge, as it enables the storage and exploration of more
+states within limited memory.
+One approach for compressing state sets is to use tree
+databases (Blom et al. 2008). They are a family of data struc-
+tures that originate from model checking and support efficient
+state insertion and lookup operations, which are essential for
+explicit search. A tree database is a forest of trees, each encod-
+ing a sequence over a finite alphabet. In automated planning,
+the alphabet consists of indices of propositional variables or
+values of numeric variables. Shared subtrees enable signifi-
+cant memory savings, and in the best case, the space required
+per state approaches the information-theoretical lower bound
+when successor states differ from the parent state on average
+in only a single variable (Laarman 2019). These properties
+make tree databases particularly interesting for automated
+planning, where each ground action typically changes only a
+few state variables.
+Copyright © 2026, Association for the Advancement of Artificial
+Intelligence (www.aaai.org). All rights reserved.
+Previous work on tree databases proposed implementing
+them as statically sized hash ID maps (e.g., Darragh, Cleary,
+and Witten 1993; Blom et al. 2008; Laarman, van de Pol, and
+Weber 2011) and compact hashing (Cleary 1984). A hash
+ID map is a hash table that maps keys to identifiers that are
+assigned by the data structure itself. The main drawback is
+that statically sized tree databases require manual memory
+management with potentially large preallocations, which are
+difficult to estimate in advance.
+In this paper, we propose a dynamic variation of tree
+databases that effectively addresses these drawbacks. We also
+conduct an extensive empirical evaluation on classical and
+numeric planning benchmarks, covering both grounded and
+lifted settings. Specifically, we evaluate our method on two
+representative state encodings: the finite-domain representa-
+tion used for grounded planning in Fast Downward (Helmert
+2006), and the sparse propositional and dense numeric repre-
+sentation used for lifted planning in Mimir (St˚ahlberg 2023).
+In terms of state expansion rates, both planners are state-
+of-the-art (Seipp, Keller, and Helmert 2020; Drexler 2025),
+making them ideal candidates for evaluating our dynamic tree
+databases, since they can generate a large number of states in
+a short time. Our empirical evaluation reveals significant re-
+ductions in overall memory usage during uninformed search
+for larger instances, resulting in a higher number of solved
+tasks for the lifted case, with negligible runtime overhead.
+Moreover, we observe compression ratios of up to three or-
+ders of magnitude, demonstrating that tree databases are a
+powerful technique for scaling explicit state space search in
+automated planning to larger tasks. While similar reductions
+can be observed in the grounded setting, since the existing
+data structures already exhibit high memory efficiency, only
+a limited subset of instances shows reduced memory usage.
+In summary, our key contributions are:
+1. We propose dynamically-sized tree databases for com-
+pressing sequences z of k elements over arbitrary finite
+alphabets with amortized Θ(k) insertion time.
+2. We apply our dynamic tree databases to compress plan-
+ning states that consist of both propositional and numeric
+state variables.
+3. We empirically demonstrate the effectiveness of dynamic
+tree databases on planning benchmark sets.
+arXiv:2511.12677v1  [cs.AI]  16 Nov 2025
+
+
+2
+Related Work
+In this section, we present several related works on compres-
+sion techniques for state space search. For this discussion,
+we assume a RAM model with w-bit words, and a set of n
+states, each consisting of k elements from a finite universe.
+Optimal Compression of Combinatorial State Spaces.
+Laarman (2019) analyzes the optimal compression ratio of
+combinatorial state spaces from an information-theoretical
+perspective. More precisely, they seek a lower bound on the
+number of bits required to encode a combinatorial state space.
+They assume that on average only a single variable changes,
+which is uniformly picked, resulting in a lower bound of a
+single w-bit word plus O(log2(k)) bits per state. This re-
+sult also applies to classical planning, where ground actions
+usually modify only a small number of state variables.
+Finite-Domain Representation (FDR).
+A set of proposi-
+tional state variables forms a mutex group, if at most one of
+them is true in every reachable state (Helmert 2009; Fiˇser
+2020). A mutex group g with m = |g| propositions can be
+represented compactly by introducing a single finite-domain
+variable with m values, encoded as a w-bit word. We call
+the representation that uses one w-bit word per finite-domain
+variable the unpacked FDR representation. As an additional
+compression, each value can be encoded in ⌈log2(m)⌉bits,
+rather than w bits. The packed FDR representation of a state s
+concatenates the binary representations of the values of every
+finite-domain variable in s. Its size scales polynomially in
+the number of variables, which can become a limiting factor.
+Binary Decision Diagrams (BDDs).
+Binary Decision Di-
+agrams (BDDs) are canonical graph-based representations
+of Boolean functions (Bryant 1985). BDDs are represented
+as directed acyclic graphs. In symbolic search (Burch et al.
+1992; Edelkamp and Kissmann 2008; Torralba et al. 2017),
+BDDs symbolically represent the successor function. Apply-
+ing the successor function yields sets of states that are also
+symbolically represented as BDDs. The size of a BDD de-
+pends on the ordering of its variables. In the best case, it can
+represent exponentially many states in space that is polyno-
+mial in the number of variables. Finding an optimal variable
+ordering that minimizes the size of a BDD is NP-complete
+(Bollig and Wegener 1996). In explicit search, any state needs
+to be uniquely indexable. BDDs represent a single state as a
+terminating path from the root note. As there may be multiple
+such paths, one cannot uniquely identify a state based on a
+node index, making BDDs inappropriate for explicit search.
+Level-Ordered Edge Sequences (LOES).
+Unlike BDDs,
+LOES avoids the use of pointers by encoding the binary
+decision tree as a flat edge sequence ordered by tree depth,
+leading to a more compact memory layout (Schmidt and
+Zhou 2011). Similar to BDDs, its compression efficiency is
+sensitive to the ordering of state variables. Efficient insertion
+into LOES requires batching, which amortizes the cost of
+updating the structure. For a set of n states of size k, LOES
+requires at most twice the size of the concatenated packed
+FDR representation in the worst case and as few as 2n bits in
+the best case when prefix sharing is maximal, when n > k.
+LOES, however, is unsuitable for tasks that incrementally add
+states, such as explicit search, because of overly expensive
+and frequent resizing operations.
+Decoupled Search.
+Decoupled search (Gnad and Hoff-
+mann 2018) exploits the task structure by partitioning the vari-
+ables into a central component and leaf components, wherein
+the leaf components depend solely on the central component.
+One aspect that makes decoupled search effective is its com-
+pact state representation, achieved by combining the state of
+the central component with a reachability function over the
+leaf states. These two jointly represent a set of states. The
+function is a mapping that indicates whether a leaf state is
+reachable from the initial state via the current central state,
+and is implemented practically as a set of unique IDs that
+map to leaf states. In the best case, the state size reduces to
+a polynomial in the number of leaf factors and central com-
+ponent variable. However, in the worst case, the reachable
+decoupled state space can be exponentially larger than the
+explicit state space.
+Tree Databases.
+Tree databases are forests of binary trees,
+each encoding an input sequence over an arbitrary finite
+alphabet (Blom et al. 2008). See Figure 2 for an example. In
+essence, tree databases subdivide each input sequence until
+the leaves contain pairs of elements, while inner nodes are
+pairs that point to their left and right children. The trees in the
+forest may share common subtrees, reducing memory usage.
+Tree databases can support parallelization (Blom et al. 2008)
+and variable-length input sequences (van der Berg 2021). The
+worst-case representation size for a state is 2kw−2w, and the
+optimal size approaches 2w, which is constant (Blom et al.
+2008). In the best case, the space usage of tree databases
+approaches the information-theoretical lower bound when
+only a single variable changes between parent and successor
+state (Laarman 2019). Tree databases are often implemented
+as hash ID maps (Darragh, Cleary, and Witten 1993) and
+combined with compact hashing (Cleary 1984) for space
+efficiency.
+3
+Background
+In this section, we present the background of classical and
+numeric planning, state set compression, and tree databases.
+3.1
+Classical and Numeric Planning
+A (numeric) planning task is typically specified in a compact,
+factored representation, such as a first-order description in the
+Planning Domain Definition Language (PDDL) (McDermott
+et al. 1998; Fox and Long 2003) or a grounded SAS+ en-
+coding (B¨ackstr¨om and Nebel 1995). If a task contains only
+propositional variables (i.e., no numeric state variables), it is
+called a classical planning task. Each planning task induces a
+(possibly infinite) state-space model that captures its seman-
+tics. In this work, we operate at this semantic level and do
+not rely on the internal syntactic structure of each action. A
+state space model is a tuple S = ⟨S, s0, SG, A, App, Succ⟩,
+where S is the set of states, in which each state is a value
+assignment to a set of propositional and numeric variables,
+s0 ∈S is the initial state, SG ⊆S is the set of goal states,
+A is a set of actions, App is a function that maps each state
+
+
+v0 = p1
+Bits 0..1
+v1 = none
+Bits 2..3
+v2 = p5
+Bit 4
+(a) Packed FDR representation of state s in which only propositions
+p1 and p5 hold. Assume that the task has mutex groups {p0, p1, p2},
+{p3, p4}, and {p5}, which give rise to the FDR variables v0,
+v1, and v2, with domains {p0, p1, p2, none}, {p3, p4, none}, and
+{p5, none}, respectively. (The none value indicates that none of the
+propositions in the mutex group holds.) It sequentially encodes the
+values of v0, v1, and v2 with 2, 2, and 1 bits, respectively, resulting
+in a total of 5 bits.
+bit width = 3
+Bits 0..7
+size = 2
+Bits 8..10
+p1
+Bits 11..13
+p5
+Bits 14..16
+(b) Sparse propositional representation of state s, in which only
+propositions p1 and p5 hold. The first field uses one byte to encode
+the maximum number of bits necessary to store the state length and
+atom indices (⌈log2(max(2, 1, 5))⌉= 3), followed by the number
+of propositions, and the indices of the two propositions, resulting
+in a total of 17 bits.
+n0 = 0.8
+Bits 0..63
+n1 = 5.7
+Bits 64..127
+(c) Dense numeric representation of n0 = 0.8 and n1 = 5.7. It
+sequentially encodes the values of every numeric variable using
+binary64 encoding, with 64 bits per variable, resulting in a total of
+128 bits.
+Figure 1: (Partial) state representations for a task with propo-
+sitions p0, . . . , p5 and numeric variables n0 and n1.
+s to a set of actions from A that are applicable in s, Succ
+is a function that maps each state s and action a in App(s)
+to the deterministic successor state s′ A state trajectory is
+a sequence s1, s2, . . . , sn such that for all i = 1, . . . , n −1
+there exists an action a ∈App(si) with Succ(si, a) = si+1.
+A state trajectory that starts in s0 and ends in a goal state is
+a plan. We can find a plan by running a search, i.e., starting
+from the initial state, we iteratively generate the applicable
+actions and their successors until reaching a goal state.
+We make the closed-world assumption, meaning that atoms
+that are not true in a state are implicitly assumed to be false.
+This leads to what we call the sparse propositional represen-
+tation, where a state is represented as the set of true atoms. In
+planning, we distinguish between two different search modes.
+First, in lifted planning, we compute the applicable actions
+App(s) from a given lifted first-order logic representation of
+the actions on the fly (Corrˆea et al. 2020; St˚ahlberg 2023).
+Second, in grounded planning, we translate the lifted repre-
+sentation into a grounded representation, where each atom
+corresponds to a Boolean state variable. In addition, we gen-
+erate mutex groups over these variables to form finite-domain
+variables, also known as FDR variables, where each repre-
+sents the Boolean variable in its corresponding mutex group
+compactly (Helmert 2009). Due to a lack of a practically
+reasonable default value for numeric variables, we assume a
+dense numeric representation, where each numeric variable
+uses 64 bits to represent its value. Figure 1 illustrates the
+different variable representations.
+3.2
+State Set Data Structure
+An explicit search algorithm requires a state set data struc-
+ture D for representing the set of currently generated states,
+along with an insert(s) operation that inserts a newly gen-
+erated state s into D and returns an index i, and a lookup(i)
+operation that returns the state with index i. We say an in-
+sert operation is efficient if it runs in amortized O(|s|) time,
+where |s| denotes the number of represented variables in s.
+Similarly, we call a lookup operation efficient if it runs in
+O(|s|) time.
+Beyond runtime efficiency, we are also interested in the
+space efficiency of a state set data structure. For a given set
+of states S′ ⊆S, a state set data structure D maps S′ via
+a representation function repD to a binary representation
+{0, 1}∗with size |repD(S′)|. The compression ratio for a
+state set S′ is the quotient between the size of the uncom-
+pressed (D) and the compressed (D′) representation, i.e.,
+|repD(S′)|/|repD′(S′)|.
+3.3
+Tree Databases
+Ground actions in planning tasks often change only a few
+state variables. Consequently, a state and its successor state
+often share many ground atoms and numeric variable value as-
+signments. Tree databases encode each state as a tree where
+each node recursively subdivides the sequence of ground
+atoms and numeric variable assignments. Moreover, tree
+databases store trees in a forest, allowing shared subtrees
+across states, which can result in significant space savings
+compared to representations that do not exploit shared struc-
+ture.
+A tree database over a finite alphabet Σ is a forest of binary
+trees. A tree in a tree database over Σ consists of nodes of the
+form v = ⟨l(v), r(v)⟩, where l(v) and r(v) are either child
+nodes or elements in Σ. The structure of a tree is defined by
+a function λ, which maps each node v to the number of leaf
+nodes in the subtree rooted at v. If λ(v) = 1, then v is a leaf
+node, and l(v) and r(v) are elements in Σ. If λ(v) > 1, then
+the tree is perfectly balanced iff λ(l(v)) = 2⌊log2(λ(v)−1)⌋,
+λ(r(v)) = λ(v) −λ(l(v)).1
+A tree database unambiguously encodes a sequence z =
+z0, z1, . . . , zk−1 consisting of k elements over Σ in a per-
+fectly balanced tree with root node v and λ(v) = ⌊(k+1)/2⌋
+leaf nodes such that the i-th leaf node is vi = ⟨z2i, z2i+1⟩
+with i = 0, . . . , λ(v) −1. If k is odd, zk−1 has no partner,
+and hence, we store zk−1 directly in r(v′) of its parent v′
+and remove the leaf vλ(v)−1. In a tree database, there are
+operations for inserting and looking up a sequence. Figure 2
+illustrates a sequence of insert operations into a tree database
+with perfectly balanced trees, initially empty.
+1Blom et al. (2008) originally defined trees as balanced iff the
+number of leaf nodes at the left subtree l(v) is λ(l(v)) = ⌈λ(v)/2⌉,
+which is appropriate for fixed-length sequences. The notion of per-
+fectly balanced is beneficial for allowing variable-length sequences,
+as it restricts left subtrees to have a total number of leaf nodes that
+is a power of two. Consequently, λ in perfectly balanced trees often
+creates structurally similar left subtrees, which is a prerequisite for
+effective node sharing among several trees consisting of varying
+numbers of nodes. (van der Berg 2021).
+
+
+∅
+0
+1
+v0
+2
+3
+v1
+1
+2
+v2
+4
+5
+v3
+3
+4
+v4
+5
+6
+vz0
+0
+1
+v0
+2
+3
+v1
+1
+2
+v2
+4
+5
+v3
+3
+4
+v4
+5
+6
+vz0
+5
+6
+v5
+6
+5
+vz1
+Initial
+After insert(z0)
+After insert(z1)
+insert(z0)
+insert(z1)
+Figure 2: A tree database of perfectly balanced trees after the insertion of two sequences: z0 = ⟨0, 1, 2, 3, 4, 5⟩and z1 =
+⟨1, 2, 4, 5, 6⟩with respective lengths kz0 = 6 and kz1 = 5. We depict each node vi with left and right children/values l(v) and
+r(v) at the top, and index i = f(l(v), r(v)) at the bottom. Moreover, we use boldface to denote (re-)inserted nodes. Next, we
+explain the tree with root node vz0 for z0. Since λ(vz0) = ⌊(kz0 + 1)/2⌋= 3, we have that λ(v2) = 2⌊log2(λ(vz0)−1)⌋= 2 and
+λ(v3) = λ(v2)−λ(vz0) = 1. Next, since λ(v2) = 2, we have that λ(v0) = 2⌊log2(λ(v2)−1)⌋= 1 and λ(v1) = λ(v2)−λ(v0) = 1.
+Hence, we know that v0, v1, and v3 are the leaf nodes containing the values in order from left to right. Finally, we explain the
+tree with root node vz1. First, observe that the tree for z1 shares nodes with the tree for z0. More precisely, the inner node v2
+(resp. inner node v4, leaf node v3) in the tree for z0 is a leaf node (resp. inner node, leaf node) in the tree for z1. Second, observe
+that the last integer element 6 in z1 is stored directly in the right entry of inner node v5, i.e., r(v5) = 6.
+Structure
+Worst case
+Best case
+Hash table
+kw
+kw
+Tree database
+2kw −2w
+2w + ϵw
+Table 1: Theoretical bounds by Laarman (2019) on the repre-
+sentation size of a sequence of size k over w-bit integers.
+Table 1 shows theoretical bounds by Laarman (2019) re-
+garding the space requirements of tree databases and conven-
+tional hash tables to represent a set of sequences of length
+k over w-bit integers. In the worst case, the tree database
+requires approximately twice as much space, while in the
+best case, the required space approaches that of two integers.
+Therefore, the best-case compression ratio is independent of
+the actual length k of a sequence.
+Implementation Details.
+A key component of tree
+database implementations is an indexed hash set represent-
+ing a bijective function f that maps keys to indices with
+operations to insert a key and look up a key given its index.
+An indexed hash set for node keys ⟨l(v), r(v)⟩promotes the
+reuse of existing nodes in different trees. A second indexed
+hash set with keys ⟨v, k⟩where v is a root node and k is the
+respective sequence length encodes the tree structure λ for
+lookup. A third indexed hash set with keys from Σ can dedu-
+plicate elements from Σ. We say that insertion and lookup of
+a sequence of length k into a forest of perfectly balanced trees
+is efficient if it requires amortized O(k) time. For a given key
+⟨v, k⟩, depth-first traversal using the tree structure induced
+by λ enables efficient lookup (Blom et al. 2008). Insertion
+follows the same approach, but requires further analysis when
+dynamically resizing an indexed hash set.
+4
+Dynamic Tree Databases
+We now describe our implementations of dynamic tree
+databases based on Google’s flat hash tables, also known
+as Swiss tables (Benzaquen et al. 2018).
+4.1
+Motivation
+Blom et al. (2008) proposed tree databases as statically sized
+hash ID maps, where the position of a node implicitly be-
+comes its identifier. Estimating a reasonable size in advance
+is challenging when other parts of the system additionally
+allocate memory. For example, a static capacity for 232 nodes
+of 8 bytes each already results in 32 GiB of memory usage.
+Therefore, we propose dynamic tree databases that overcome
+this limitation by dynamically resizing when the database
+reaches its maximum capacity. Our dynamic tree databases
+build upon modern flat hash tables for hash maps.
+4.2
+Flat Hash Tables
+Flat hash tables are open-addressing hash tables, meaning
+that they store keys compactly in a dynamic array of size c,
+with a maximum load factor of 7/8, and a hash function h.
+In addition to the keys, flat hash tables maintain a parallel
+array of control bytes, one per key, which store the upper 7
+bits of the hash value. Special control byte values (sentinels)
+are reserved to indicate empty or deleted slots. Hence, each
+table entry consists of a key and a control byte, resulting in
+an overhead of one byte per key.
+Another key innovation of flat hash tables is the use of
+control bytes to filter potential key matches. Each control
+byte act as a hash fingerprint, allowing the table to identify
+likely matches without accessing the actual keys. This over-
+approximation has a low false positive rate ( 1
+27 , less than
+
+
+1%) and enables the use of SIMD instructions to compare 16
+control bytes in parallel.
+When looking up a key k, the algorithm begins at index
+h(k) mod c and scans forward through the control bytes.
+Only if the control byte matches, the actual key is compared,
+significantly reducing the number of expensive key compar-
+isons and mitigating cache misses. To insert a key k, the
+algorithm probes forward from h(k) mod c to find the first
+empty control byte. It then stores k in the key array and its
+7-bit fingerprint in the control byte array at the same index.
+4.3
+Dynamic Stable Tree Databases (DTDB-S)
+Recall that a tree database consists of indexed hash sets that
+represent a bijective function f from keys to indices. For the
+backward mapping f −1, we use a dynamic array in which
+the i-th position stores the node i = ⟨l(i), r(i)⟩. For the
+forward mapping f, we use a flat hash table, which references
+nodes in the array using an integer position i. Inserting a
+new node appends it to the end of the array, if it does not
+already exist, with deduplication handled by the flat hash
+table. This indirection is cheap, as the probability of the
+control bytes falsely predicting matching keys is less than
+1 percent. Assuming a maximum load factor of 1.0 for the
+array and 7/8 for the flat has table, the dynamic nature of our
+implementation avoids excessive unused space. Each stored
+node requires one w-bit word and one byte of overhead in
+the flat hash table. When the dynamic array or the flat hash
+table reaches its maximum load, we increase its size by a
+constant factor δ > 1. Due to amortized O(1) insertion cost
+into dynamic arrays using a constant resize factor δ > 1,
+DTDB-S is efficient.
+Theorem 1. Inserting a sequence z of length k into DTDB-S
+runs in amortized Θ(k) time.
+Proof. A tree encoding a sequence z of length k contains
+2⌊k/2⌋−1 nodes, which is in Θ(k). Each node insertion into
+the dynamic array and the flat hash table takes amortized Θ(1)
+time, given the constant resize factor δ > 1. Hence, inserting
+all nodes of the tree requires amortized Θ(k) time.
+4.4
+Dynamic HashID Tree Databases (DTDB-H)
+In contrast to DTDB-S, DTDB-H does not use an additional
+flat hash table, but instead, uses the hash location of a node
+⟨l(i), r(i)⟩in the dynamic array as its corresponding index
+i. Therefore, node indices may change upon resizing the
+hash table, which is triggered when the load factor reaches its
+maximum of 7/8. We implemented resizing by rebuilding the
+trees in an array whose size increases by a constant factor δ >
+1. The procedure employs a depth-first traversal that relocates
+tries in hash ID maps (Kanda et al. 2019), which we adapted
+for use with perfectly balanced trees. More specifically, it
+traverses each tree using the structural function λ and rebuilds
+the trees. The traversal requires a DTDB-S to store the root
+node index and its tree size, allowing us to return a stable
+node index while updating the unstable root node index upon
+resizing.
+Theorem 2. Inserting a sequence z of length k into DTDB-H
+runs in amortized Θ(k) time.
+Proof. In the worst case, assume a sequence of insertions
+where no nodes are shared. Then, each of the n inserted
+sequences of length k introduces Θ(k) new nodes, for a total
+of Θ(nk) nodes. When the hash table resizes (e.g., when the
+load factor exceeds the load factor of 7/8), it must rehash
+and rebuild all existing trees, incurring a cost of Θ(nk) for
+the depth-first copy. However, since the table size grows
+geometrically (by a factor δ > 1), each resize accommodates
+Θ(n) additional sequences. Therefore, the amortized cost per
+inserted sequence remains Θ(k). Compression may delay
+resizes, and while a rehash could change compression, such
+worst-case effects do not affect the amortized bound. To
+illustrate, the node v3 in Figure 2 is a leaf for z1 but also an
+inner node for z0, which might not be after resizing, when
+node positions change.
+4.5
+Variable Ordering
+The number of nodes in a tree database depends on the order
+of elements from Σ in a sequence z, in our case, ground
+atoms, FDR, or numeric variables. Hence, finding a variable
+order that minimizes the number of nodes can further de-
+crease the memory footprint. Intuitively, this follows from
+Laarman (2019), who demonstrate that tree compression is
+optimal when successive states differ in only one variable.
+An ordering that localizes these state deltas to the smallest
+possible subtree guaranties that the truncated tree, ending at
+the deepest level where only one node is updated, is optimally
+compressed.
+We define eff (a) as the set of ground atoms, FDR, or
+numeric variables affected by an action. If the elements in
+eff (a) appear close together in the sequence, then the trees
+for a state s and its successor s′ share long common suffixes,
+yielding many shared nodes. Conversely, if the affected el-
+ements are far apart, more internal nodes differ, and fewer
+nodes are shared.
+A variable order is a function π : V →{0, . . . , |V| −1}
+that is also bijective. A reasonable state-independent objec-
+tive is to order the variables to minimize the number of leaf
+nodes affected by ground actions.
+min
+X
+a∈A
+|{⌊π(v)/2⌋| v ∈eff (a)}|
+In lifted planning, computing variable orders is more chal-
+lenging as all reachable ground atoms and actions are un-
+known in advance. Therefore, we focus on variable ordering
+in the FDR representation for grounded planning, where more
+than two variables fit into each node, with the exact number
+depending on the domains of the variables in that node. Es-
+sentially, this problem can be cast to the NP-complete bin
+packing problem with two competing objectives: 1) min-
+imizing the number of bins, and 2) minimizing the sum
+of bins affected by all operators, analogous to the objec-
+tive above. Therefore, we greedily address this problem by
+slightly changing the objective of the commonly used bin
+packing strategy used for the FDR representation that works
+as follows: Iteratively create a new bin B of capacity c if
+there are unpacked variables, followed by iteratively insert-
+ing unpacked variables into B with the largest domain size
+
+
+until no variable fits. Instead, we choose the variable that
+maximizes the gain, defined as follows:
+gain(v) =
+P
+v′∈V aff (v, v′)
+if B = ∅
+P
+v′∈B aff (v, v′)
+if B̸ = ∅
+where aff is the affinity for a pair of variables defined as
+aff (v, v′) = P
+a∈A 1{v ∈eff (a), v′ ∈eff (a)}. Intuitively
+speaking, aff captures how often two variables v, v′ appear
+together in the effect of any action. Moreover, gain captures
+the number of co-occurences of a variable v in the effect with
+those already inside the bin.
+5
+Experimental Setup
+We use Fast Downward (Helmert 2006) to evaluate the com-
+pression of the FDR state representation for grounded plan-
+ning, and Mimir (St˚ahlberg 2023) to evaluate the compression
+of the sparse state representation and numeric planning, with
+a focus on lifted planning.
+We incorporate FDR variables into tree databases by parti-
+tioning the FDR representation into w-bit words such that no
+finite-domain variable crosses a word boundary. Moreover,
+we encode numeric variables in the binary64 format, com-
+monly referred to as 8-byte double, and store such leaf nodes
+in a separate DTDB-S, while sharing inner nodes among
+propositional and numeric variables.
+For all planner runs, we use A∗search with the blind
+heuristic for ease of comparison, a resize factor δ = 2 for
+dynamic arrays, and a word size w equal to 32 bits. For Fast
+Downward, we also run with the saturated cost partitioning
+heuristic using a state-of-the-art configuration (Seipp, Keller,
+and Helmert 2020).
+We limit each planner run to 5 hours and 8 GiB of memory
+and conduct all experiments using the Lab toolkit (Seipp et al.
+2017) on a compute cluster equipped with Intel Xeon Gold
+6130 CPUs.
+The Fast Downward configurations are as follows:
+• Hashset-Unpacked uses the default Fast Downward hash-
+set with a 32-bit integer for each FDR variable.
+• Hashset-Packed uses the default Fast Downward hashset
+with the packed FDR state representation.
+• DTDB-S uses a DTDB-S and bit-packs multiple FDR
+variables into a 32-bit leaf node entry.
+• DTDB-H uses a DTDB-H instead.
+• Aff-DTDB-S is DTDB-S with variable ordering based on
+the affinity objective.
+• Aff-DTDB-H is DTDB-H with variable ordering based
+on the affinity objective.
+The Mimir configurations are as follows:
+• Grounded-Hashset uses a hashset and the sparse propo-
+sitional and dense numeric state representation.
+• Grounded-DTDB-S uses a DTDB-S with perfectly bal-
+anced trees and a separate indexed hash set to represent
+numeric variable assignments as 8-byte doubles.
+• Grounded-DTDB-H uses a DTDB-H instead.
+• Lifted-Hashset is like Grounded-Hashset but lifted.
+• Lifted-DTDB-S is like Grounded-DTDB-S but lifted.
+• Lifted-DTDB-H is like Grounded-DTDB-H but lifted.
+The supplementary material contains the code for our tree
+database implementations. We will make all our code avail-
+able upon publication.
+5.1
+Benchmarks
+We consider 6495 classical planning tasks from 166 domains.
+This benchmark set contains all 1847 STRIPS (Fikes and
+Nilsson 1971) and all 1011 ADL (Pednault 1989) tasks from
+the Optimal Tracks of the International Planning Competi-
+tion (IPC) from 1998 to 2023,2 the 900 STRIPS tasks from
+the learning track of the IPC 2023, the 992 tasks for trans-
+forming quantum circuits into CNOT-only layouts (Shaik
+and van de Pol 2024), the 269 tasks from the Airbus Beluga
+challenge in 2024,3 the 1058 hard-to-ground tasks (some
+of which use conditional effects),4 the 223 ADL tasks from
+the Pushworld domain which aim at representing reasoning
+tasks with differently shaped objects in a grid world,5 and
+the 195 object-centric ADL tasks from the Minecraft domain
+that result in millions of ground atoms (Hill et al. 2024).
+Furthermore, we consider 575 numeric planning tasks from
+36 domains. The benchmark set contains the 380 tasks with
+numeric variables from the Numeric Planning Track of the
+IPC 20236, and the 195 object-centric numeric tasks from the
+Minecraft domain (Hill et al. 2024).
+5.2
+Performance Metrics
+For a planner configuration, we aggregate the results across
+all benchmark tasks with the following metrics:
+• #C is coverage, i.e., the number of solved tasks.
+• #M is the number of tasks that run out of memory.
+• #T is the number of tasks that run out of time.
+• MS is the sum of memory scores.
+For a planner run, the memory score is 0 if the planner runs
+out of time or exceeds the 8 GiB memory limit. The memory
+score is 1 for planner runs that use at most 2 MiB. In be-
+tween those two extremes, we interpolate the memory score
+logarithmically: MS(m) = 1 −ln(m)/ln(U), where m is the
+memory usage of the state set and U is the overall memory
+limit (8 GiB). The memory score provides more granular
+insight into memory usage than #M.
+6
+Experimental Results for Fast Downward
+Table 2 shows that Hashset-Packed using SCP achieves the
+highest coverage of 2659 tasks, while the best tree database
+configuration Aff-DTDB-S achieves a lower coverage of
+2627. In the blind search configuration, DTDB-S achieves
+only a coverage increase of one compared to Hashset-Packed.
+Most importantly, Hashset-Packed achieves the best memory
+2https://github.com/aibasel/downward-benchmarks
+3https://github.com/TUPLES-Trustworthy-AI/Beluga-AI-
+Challenge
+4https://github.com/abcorrea/htg-domains
+5https://github.com/google-deepmind/pushworld
+6https://github.com/ipc2023-numeric/ipc2023-dataset
+
+
+100
+101
+102
+103
+104
+100
+101
+102
+103
+104
+uns.
+unsolved
+Hashset-Packed (lower for 1218 tasks)
+DTDB-S-Packed (lower for 385 tasks)
+Total Time
+100
+101
+102
+103
+104
+100
+101
+102
+103
+104
+uns.
+unsolved
+Hashset-Packed (lower for 719 tasks)
+DTDB-S-Packed (lower for 390 tasks)
+State Set Memory Usage
+100
+101
+102
+103
+104
+10−1
+100
+101
+102
+103
+Number of FDR state variables
+Compression Ratio (Above 1 for 361 tasks)
+State Set Compression Ratio
+Figure 3: Comparison of Hashset-Packed and DTDB-S (ours) showing the total time in seconds to solve a task (left), the
+memory usage for the state set in MiB (center) and the average number of state variables with the compression ratio between the
+configurations as described in Section 3.2 (right).
+Domain
+#C
+#M
+#T
+MS
+Blind
+Hashset-Unpacked
+1972
+3705
+0
+661
+Hashset-Packed
+2229
+3393
+25
+782
+DTDB-S
+2230
+3389
+27
+772
+DTDB-H
+2168
+3472
+17
+753
+Aff-DTDB-S
+2173
+3453
+24
+760
+Aff-DTDB-H
+2111
+3527
+10
+740
+SCP
+Hashset-Unpacked
+2455
+2708
+0
+904
+Hashset-Packed
+2659
+2504
+7
+980
+DTDB-S
+2620
+2535
+12
+964
+DTDB-H
+2575
+2604
+9
+951
+Aff-DTDB-S
+2627
+2524
+18
+964
+Aff-DTDB-H
+2581
+2575
+13
+951
+Table 2: Results for the Fast Downward configurations on the
+6495 classical planning tasks. We highlight the configuration
+with the highest coverage and memory score in boldface.
+Quantiles
+Min
+Q1
+Median
+Q3
+Max
+Bytes
+4
+4
+8
+24
+13828
+Table 3: Distribution of bytes required for the FDR state
+representation aggregated over all classical planning tasks.
+score in both search configurations, demonstrating its general
+effectiveness across benchmark sets.
+Table 3 shows the number of bytes required by the FDR
+packed representation to represent a single state. For our
+classical planning benchmarks, we observe a median of 8
+bytes, which fit into a single node. Trees with a single node
+result in no node sharing, but they add memory overhead per
+node, rendering tree databases redundant in this case.
+Figure 3 compares Hashset-Packed with the most promis-
+ing dynamic tree database DTDB-S regarding time, state set
+memory usage, and compression ratio. In the leftmost figure,
+we observe that tree databases incur a small but constant run-
+Domain
+#C
+#M
+#T
+MS
+Classical
+Grounded-Hashset
+1965
+4420
+96
+1080
+Grounded-DTDB-S
+2012
+3959
+510
+1101
+Grounded-DTDB-H
+2010
+3993
+478
+1124
+Lifted-Hashset
+2037
+4182
+262
+1146
+Lifted-DTDB-S
+2100
+3809
+572
+1164
+Lifted-DTDB-H
+2094
+3822
+565
+1188
+Numeric
+Grounded-Hashset
+216
+341
+18
+88
+Grounded-DTDB-S
+219
+350
+6
+87
+Grounded-DTDB-H
+219
+350
+6
+90
+Lifted-Hashset
+216
+337
+22
+89
+Lifted-DTDB-S
+218
+339
+18
+88
+Lifted-DTDB-H
+218
+340
+17
+90
+Table 4: Results for the Mimir configurations on the 6495
+classical and 380 numeric tasks.
+time overhead, with no outliers. The center figure shows that
+the memory usage of DTDB-S is significantly higher in 719
+tasks and lower in 390 tasks. This gap raises the question of
+whether there are cases where tree databases can outperform
+Hashset-Packed. The rightmost figure shows the state set
+compression ratio relative to the number of FDR state vari-
+ables. The compression ratio increases almost linearly with
+the number of FDR variables, demonstrating the strength of
+tree databases on ground tasks with many FDR variables. For
+example, if the number of FDR state variables exceeds 30,
+the compression ratio is higher across all tasks except two.
+We conclude that tree databases do not outperform Hashset-
+Packed in general. However, they can substantially reduce
+memory usage when the number of FDR state variables is
+large, a property that can be easily checked before running a
+search.
+
+
+100
+101
+102
+103
+104
+100
+101
+102
+103
+104
+uns.
+unsolved
+Lifted-Hashset (lower for 851 tasks)
+Lifted-DTDB-S (lower for 132 tasks)
+Total Time
+Classical
+Numeric
+100
+101
+102
+103
+104
+100
+101
+102
+103
+104
+uns.
+unsolved
+Lifted-Hashset (lower for 69 tasks)
+Lifted-DTDB-S (lower for 1232 tasks)
+State Set Memory Usage
+Classical
+Numeric
+100 101 102 103 104 105 106 107 108
+10−1
+100
+101
+102
+Average Number of State Variables
+Compression Ratio (Above 1 for 1232 tasks)
+State Set Compression Ratio
+Classical
+Numeric
+Figure 4: Comparison of Lifted-Hashset and Lifted-DTDB-S (ours) showing the total time in seconds to solve a task (left), the
+memory usage for the state set in MiB (center), and the average number of state variables with the compression ratio between the
+configurations as described in Section 3.2 (right).
+7
+Experimental Results for Mimir
+Table 4 shows results for the Mimir configurations. We ob-
+serve that all tree database configurations achieve strictly
+higher coverage than the hash set configurations. Further-
+more, this change drastically decreases the number of times
+we run out of memory. Lastly, there is no significant overhead
+for resizing a hash ID map tree database, as the number of
+out-of-memory and out-of-time errors is almost identical to
+that of the off-the-shelf Swiss table variation. In contrast to
+DTDB-S, our hash ID map implementation causes significant
+memory spikes upon resizing, and explains why DTDB-H
+does not achieve the highest coverage, despite achieving the
+best memory score of 1188.
+Figure 4 shows a more detailed comparison between Lifted-
+DTDB-S and Lifted-Hashset. The leftmost plot shows that
+tree databases come essentially for free, with negligible run-
+time overhead. The center plot reveals that memory usage
+rarely increases and often decreases significantly, i.e., lower
+memory usage for 2180 tasks and higher in only 84 tasks. The
+rightmost plot shows that the compression ratio approaches
+two orders of magnitude. For numeric planning, we often see
+reductions of at least one order of magnitude.
+8
+Future Work
+Compact Hashing.
+Compact hashing solves a restricted
+variant of the dictionary problem where keys are drawn
+from a universe U = {0, 1, . . . , u} and the hash function
+h is bijective (Cleary 1984). In a hash set with b buck-
+ets, e.g., with closed addressing (K¨oppl, Puglisi, and Ra-
+man 2022), rather than storing the entire key x in bucket
+i = h(x) mod b, compact hashing stores only the quotient
+q(x) = ⌊h(x)/b⌋. The original key can then be reconstructed
+as h−1(q(x)·b+i), leveraging the bijectivity of h. This repre-
+sentation approaches the information-theoretic lower bound
+B(u, m) = log2
+  u
+m
+
+= m log(u) −m log(m) + O(m) for
+storing a subset of m keys from U. Compact hashing operates
+at the bit level, imposing additional runtime costs for read-
+ing and writing data. In the context of tree databases, keys
+correspond to nodes, i.e., pairs of w-bit integers determined
+by the node capacity, interpreted as a single 2w-bit integer.
+Each node thus requires w bits plus O(1) bookkeeping bits
+for storage. Although compact hashing can reduce memory
+usage by roughly a factor of two compared to conventional
+methods, the associated bit-level access overhead makes it
+impractical for planning applications.
+Tree Structures.
+Early results indicate that the Unpacked-
+Tree becomes smaller when structuring the tree to minimize
+the number of potential entries. We achieved this with Huff-
+man minimum redundancy codes, which is an optimal greedy
+strategy for structuring a tree with weighted leaf nodes such
+that the average weighted path from the leaf to the root is
+minimized (Huffman 1952). The weight in this case is the
+number of potential entries, i.e., the size of the mutex groups
+in the FDR representation. This means that variables with
+larger groups, which contribute more to the total number of
+entries, can be placed closer to the root of the tree, thereby
+reducing the total representation size.
+9
+Conclusions
+We proposed dynamic variations of tree databases to encode
+sequences over an arbitrary finite alphabet. Our first varia-
+tion uses off-the-shelf flat hash table implementations for
+simplicity, while our second variation uses hash ID maps,
+which require less memory per node. We applied dynamic
+tree databases to classical and numeric planning benchmarks
+and empirically compared them against three standard state
+representations: FDR, sparse propositional, and dense nu-
+meric. We observe compression ratios of several orders of
+magnitude in the sparse and numeric setting, often with negli-
+gible runtime overhead. Particularly in numeric benchmarks,
+dynamic tree databases often use less memory and solve
+more tasks than traditional representations.
+
+
+Acknowledgements
+We would like to thank the anonymous reviewers and El-
+liot Gestrin for providing valuable feedback on an earlier
+draft of this work. This work was partially supported by the
+Wallenberg AI, Autonomous Systems and Software Program
+(WASP) funded by the Knut and Alice Wallenberg Founda-
+tion. The computations were enabled by resources provided
+by the National Academic Infrastructure for Supercomput-
+ing in Sweden (NAISS), partially funded by the Swedish
+Research Council through grant agreement no. 2022-06725.
+References
+B¨ackstr¨om, C.; and Nebel, B. 1995. Complexity Results for
+SAS+ Planning. Computational Intelligence, 11(4): 625–
+655.
+Benzaquen, S.; Evlogimenos, A.; Kulukundis, M.; and Pere-
+pelitsa, R. 2018. Swiss Tables and absl::Hash. Abseil Blog.
+Blom, S.; Lisser, B.; van de Pol, J.; and Weber, M. 2008. A
+Database Approach to Distributed State-Space Generation.
+Electronic Notes in Theoretical Computer Science, 198(1):
+17–32.
+Bollig, B.; and Wegener, I. 1996. Improving the Variable
+Ordering of OBDDs Is NP-Complete. IEEE Transactions on
+Computers, 45(9): 993–1002.
+Bryant, R. E. 1985. Symbolic Manipulation of Boolean
+Functions Using a Graphical Representation. In Ofek, H.;
+and O’Neill, L. A., eds., Proceedings of the 22nd ACM/IEEE
+Conference on Design Automation (DAC 1985), 688–694.
+Burch, J. R.; Clarke, E. M.; McMillan, K. L.; Dill, D. L.; and
+Hwang, L. J. 1992. Symbolic Model Checking: 1020 States
+and Beyond. Information and Computation, 98(2): 142–170.
+Cleary, J. G. 1984. Compact Hash Tables Using Bidirectional
+Linear Probing. IEEE Transactions on Computers, C-33(9):
+828–834.
+Corrˆea, A. B.; Pommerening, F.; Helmert, M.; and Franc`es, G.
+2020. Lifted Successor Generation using Query Optimization
+Techniques. In Beck, J. C.; Karpas, E.; and Sohrabi, S., eds.,
+Proceedings of the Thirtieth International Conference on
+Automated Planning and Scheduling (ICAPS 2020), 80–89.
+AAAI Press.
+Darragh, J. J.; Cleary, J. G.; and Witten, I. H. 1993. Bonsai:
+a compact representation of trees. Software: Practice and
+Experience, 23(3): 277–291.
+Drexler, D. 2025. Learning and Exploiting Subgoal Struc-
+tures in Classical Planning: Towards Reliable and Transpar-
+ent Intelligent Agents that Learn to Plan on Multiple Levels.
+Ph.D. thesis, Link¨oping University, Department of Computer
+and Information Science.
+Edelkamp, S.; and Kissmann, P. 2008. Limits and Possi-
+bilities of BDDs in State Space Search. In Proceedings of
+the Twenty-Third AAAI Conference on Artificial Intelligence
+(AAAI 2008), 1452–1453. AAAI Press.
+Fikes, R. E.; and Nilsson, N. J. 1971.
+STRIPS: A New
+Approach to the Application of Theorem Proving to Problem
+Solving. Artificial Intelligence, 2: 189–208.
+Fiˇser, D. 2020. Lifted Fact-Alternating Mutex Groups and
+Pruned Grounding of Classical Planning Problems.
+In
+Conitzer, V.; and Sha, F., eds., Proceedings of the Thirty-
+Fourth AAAI Conference on Artificial Intelligence (AAAI
+2020), 9835–9842. AAAI Press.
+Fox, M.; and Long, D. 2003. PDDL2.1: An Extension to
+PDDL for Expressing Temporal Planning Domains. Journal
+of Artificial Intelligence Research, 20: 61–124.
+Gnad, D.; and Hoffmann, J. 2018. Star-Topology Decoupled
+State Space Search. Artificial Intelligence, 257: 24–60.
+Helmert, M. 2006. The Fast Downward Planning System.
+Journal of Artificial Intelligence Research, 26: 191–246.
+Helmert, M. 2009. Concise Finite-Domain Representations
+for PDDL Planning Tasks. Artificial Intelligence, 173: 503–
+535.
+Hill, W.; Liu, I.; Koch, A. D. M.; Harvey, D.; Kumar, N.;
+Konidaris, G.; and James, S. 2024. MinePlanner: A Bench-
+mark for Long-Horizon Planning in Large Minecraft Worlds.
+In Bernardini, S.; and Muise, C., eds., Proceedings of the
+Thirty-Fourth International Conference on Automated Plan-
+ning and Scheduling (ICAPS 2024). AAAI Press.
+Hoffmann, J.; and Nebel, B. 2001. The FF Planning System:
+Fast Plan Generation Through Heuristic Search. Journal of
+Artificial Intelligence Research, 14: 253–302.
+Huffman, D. A. 1952. A Method for the Construction of
+Minimum-Redundancy Codes. Proceedings of the IRE, 40(9):
+1098–1101.
+Kanda, S.; K¨oppl, D.; Tabei, Y.; Morita, K.; and Fuketa, M.
+2019. Dynamic Path-decomposed Tries. ACM Journal of
+Experimental Algorithmics, 25: 1–28.
+K¨oppl, D.; Puglisi, S. J.; and Raman, R. 2022. Fast and
+simple compact hashing via bucketing. Algorithmica, 84(9):
+2735–2766.
+Kuroiwa, R.; Shleyfman, A.; Piacentini, C.; Castro, M. P.;
+and Beck, J. C. 2022. The LM-Cut Heuristic Family for
+Optimal Numeric Planning with Simple Conditions. Journal
+of Artificial Intelligence Research, 75: 1477–1548.
+Laarman, A. 2019. Optimal compression of combinatorial
+state spaces. Innovations in Systems and Software Engineer-
+ing, 15(3): 235–251.
+Laarman, A.; van de Pol, J.; and Weber, M. 2011. Parallel
+Recursive State Compression for Free. In Groce, A.; and
+Musuvathi, M., eds., Model Checking Software, volume 6823
+of Lecture Notes in Computer Science, 38–56. Springer.
+Lipovetzky, N.; and Geffner, H. 2012. Width and Serial-
+ization of Classical Planning Problems. In De Raedt, L.;
+Bessiere, C.; Dubois, D.; Doherty, P.; Frasconi, P.; Heintz,
+F.; and Lucas, P., eds., Proceedings of the 20th European
+Conference on Artificial Intelligence (ECAI 2012), 540–545.
+IOS Press.
+McDermott, D.; Ghallab, M.; Howe, A.; Knoblock, C.; Ram,
+A.; Veloso, M.; Weld, D.; and Wilkins, D. 1998. PDDL – The
+Planning Domain Definition Language – Version 1.2. Techni-
+cal Report CVC TR-98-003/DCS TR-1165, Yale Center for
+Computational Vision and Control, Yale University.
+
+
+Pednault, E. P. D. 1989. ADL: Exploring the Middle Ground
+between STRIPS and the Situation Calculus. In Brachman,
+R. J.; Levesque, H. J.; and Reiter, R., eds., Proceedings of the
+First International Conference on Principles of Knowledge
+Representation and Reasoning (KR 1989), 324–332. Morgan
+Kaufmann.
+Richter, S.; and Westphal, M. 2010.
+The LAMA Plan-
+ner: Guiding Cost-Based Anytime Planning with Landmarks.
+Journal of Artificial Intelligence Research, 39: 127–177.
+Scala, E.; Haslum, P.; Thiebaux, S.; and Ramirez, M. 2016.
+Interval-Based Relaxation for General Numeric Planning.
+In Kaminka, G. A.; Fox, M.; Bouquet, P.; H¨ullermeier, E.;
+Dignum, V.; Dignum, F.; and van Harmelen, F., eds., Pro-
+ceedings of the 22nd European Conference on Artificial In-
+telligence (ECAI 2016), 655–663. IOS Press.
+Schmidt, T.; and Zhou, R. 2011. Succinct Set-Encoding for
+State-Space Search. In Burgard, W.; and Roth, D., eds., Pro-
+ceedings of the Twenty-Fifth AAAI Conference on Artificial
+Intelligence (AAAI 2011), 87–92. AAAI Press.
+Seipp, J.; Keller, T.; and Helmert, M. 2020. Saturated Cost
+Partitioning for Optimal Classical Planning. Journal of Arti-
+ficial Intelligence Research, 67: 129–167.
+Seipp, J.; Pommerening, F.; Sievers, S.; and Helmert, M.
+2017.
+Downward Lab.
+https://doi.org/10.5281/zenodo.
+790461.
+Shaik, I.; and van de Pol, J. 2024. Optimal Layout-Aware
+CNOT Circuit Synthesis with Qubit Permutation. In Endriss,
+U.; and Melo, F. S., eds., Proceedings of the 27th European
+Conference on Artificial Intelligence (ECAI 2024), 4207–
+4215. IOS Press.
+St˚ahlberg, S. 2023. Lifted Successor Generation by Maxi-
+mum Clique Enumeration. In Gal, K.; Now´e, A.; Nalepa,
+G. J.; Fairstein, R.; and R˘adulescu, R., eds., Proceedings
+of the 26th European Conference on Artificial Intelligence
+(ECAI 2023), 2194–2201. IOS Press.
+Torralba, ´A.; Alc´azar, V.; Kissmann, P.; and Edelkamp, S.
+2017. Efficient Symbolic Search for Cost-optimal Planning.
+Artificial Intelligence, 242: 52–79.
+van der Berg, F. I. 2021. Recursive Variable-Length State
+Compression for Multi-core Software Model Checking. In
+Dutle, A.; Moscato, M. M.; Titolo, L.; Mu˜noz, C. A.; and
+Perez, I., eds., NASA Formal Methods - 13th International
+Symposium, NFM 2021, Virtual Event, May 24-28, 2021,
+Proceedings, volume 12673 of Lecture Notes in Computer
+Science, 340–357. Springer.

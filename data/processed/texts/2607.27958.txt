@@ -1,0 +1,2432 @@
+NANYANG TECHNOLOGICAL UNIVERSITY
+DECLARE LAB | RESEARCH PAPER | UNDER REVIEW
+NTU
+Σ-Mem: An Online Reliability Memory for
+LLM-based Multi-Agent Systems
+Peilin Feng1, Suorong Yang1, Soujanya Poria1
+1DeCLaRe Lab, Nanyang Technological University
+ABSTRACT
+Memory is central to long-horizon LLM agents, yet existing memory systems primarily preserve interaction
+content rather than modeling which agents can be trusted and under what conditions. This limitation is
+particularly important in multi-agent systems, where a central model may be unable to directly verify plausible or
+correlated peer responses. We introduce Σ-Mem, an online reliability memory that records historical competence
+evidence for individual peers and peer relationship evidence across the peer set. Both forms of evidence are
+maintained as real symmetric states and updated from post-decision correctness feedback. By Weyl’s inequality,
+the spectral change caused by each event-level update is bounded, enabling stable online adaptation without
+retraining the underlying models. Σ-Mem provides a general write-and-read interface: the same memory can be
+used for residual steering of a central model, response-free peer routing, or reliability-weighted voting. Across
+five Qwen-family models, Σ-Mem adapts to counterfactual reliability shifts and generalizes to unseen peers and
+task domains. Direct memory readouts also outperform majority voting and the best fixed peer over the full OOD
+evaluation set. Moreover, performance improves consistently as more correctness feedback becomes available,
+indicating that Σ-Mem progressively accumulates actionable reliability information. These results establish
+reliability memory as a reusable foundation for adaptive coordination in LLM-based multi-agent systems.
+CODE
+§ GitHub
+CORRESPONDENCE
+Suorong Yang
+(sryang@smail.nju.edu.cn),
+Soujanya Poria
+(soujanya.poria@ntu.edu.sg)
+DATE
+July 31, 2026
+1 Introduction
+Memory has become a pivotal component of LLM-based agents (Zhang et al., 2025b; Wu et al., 2025; Hu et al., 2025).
+As tasks grow longer and contexts become bloated, agents rely on external memory to preserve and retrieve relevant
+information from historical interactions (Packer et al., 2023; Lei et al., 2026). Existing memory systems mainly focus
+on content memory: they store, retrieve, and summarize what was said, observed, or attempted in historical interactions.
+This is useful in single-agent settings, where the main challenge is often preserving task-relevant information over
+long horizons. However, LLM-based multi-agent systems (MAS) introduce a different memory problem (Cemri et al.,
+2025). In MAS, a central model coordinates multiple peers (Zhao et al., 2025; Khan et al., 2024; Subramaniam et al.,
+2025; Choi et al., 2026). Many coordination decisions require judging not only what a peer said, but also whether that
+peer should be trusted for the current type of task. Content memory alone does not handle this question: replaying or
+summarizing past dialogs does not explicitly reveal which peer was correct, on which tasks, under which conditions, or
+which peers tend to succeed or fail together. For example, a peer that is reliable on mathematical reasoning may still fail
+in retrieval question answering, while another peer that is strong at factual retrieval may fail in multi-step reasoning.
+DECLARE LAB · NANYANG TECHNOLOGICAL UNIVERSITY · RESEARCH PAPER · UNDER REVIEW
+1
+arXiv:2607.27958v1  [cs.MA]  30 Jul 2026
+
+
+Declare Lab · NTU · Under review
+2
+Task
+Historical Performance
+Peer Relationship
+Support each other
+Oppose each other
+Berlin
+Central
+Model
+the historical record can supplement 
+reliable selection when the Central 
+Model cannot verify the answers 
+about the RAG task
+Central Model 
+Aggregation
+Golden 
+Peer
+aggregate
+According to the project report, which city 
+became the permanent location of Helios Lab 
+after it ended its temporary operations?
+Answer 1:
+Berlin
+Answer 2:
+Zurich
+Answer 3:
+Geneva
+Answer 4:
+Encode
+Peer 1 and Peer 2 
+provided the same 
+answer. But are 
+they reliable ?
+Figure 1: Motivation of Σ-Mem. We hide the supporting context from the RAG task so that the central model cannot directly verify
+the correctness of the candidate answers. It is insufficient to aggregate peers for the central model when multiple peers provide
+confident or correlated answers. Historical performance and peer relationship can provide complementary reliability evidence to
+steer the central model toward better aggregation decisions.
+Besides, agreement among multiple peers may reflect shared biases or correlated errors rather than independent evidence.
+This calls for reliability memory: a persistent, task-conditioned, peer-specific record of each agent’s trustworthiness,
+continuously updated from past interactions and their outcomes. While content memory answers “what happened,”
+reliability memory answers “who can be trusted, and when.”
+Reliability memory is fundamental to MAS because the central model can not always verify every peer response.
+Verification may be infeasible when supporting evidence is unavailable, and unreliable when judging an answer is as
+hard as producing it (Kenton et al., 2024; Krumdick et al., 2025). Figure 1 illustrates a typical case: in a RAG task
+where the supporting context is unavailable to the central model, multiple peers may provide confident and mutually
+consistent responses. Even a strong central model can remain uncertain when candidate answers are all plausible (Simhi
+et al., 2025; Lin et al., 2022) but difficult to verify (Zheng et al., 2023). In such cases, agreement among peers may
+indicate correlated errors rather than corroborating evidence (Gradient Institute, 2025; Zhou et al., 2026a; Sharma et al.,
+2024; Zhou et al., 2026b). Consequently, MAS failures often occur at trust decisions: for example, when a correct peer
+response is rejected while an incorrect one is accepted (Cemri et al., 2025; Pitre et al., 2025; Wynn et al., 2025). When
+direct verification is infeasible or expensive, the system’s performance depends on whether it assigns attention to the
+right peers. This is precisely the signal that reliability memory accumulates but content memory does not explicitly
+model.
+In this paper, we propose Σ-Mem, an online memory mechanism that models and accumulates reliability evidence for
+LLM-based multi-agent systems. Instead of recording only interaction content, Σ-Mem maintains two complementary
+forms of reliability evidence. The first is historical competence evidence, which records how trustworthy each peer has
+been under different task conditions over time. The second is peer relationship evidence, which models how peers relate
+to each other through their correctness patterns, such as whether they tend to succeed independently or fail together due
+to shared biases or correlated reasoning errors. These two forms of evidence play different but complementary roles:
+historical competence estimates whether an individual peer should be trusted, while peer relationship evidence helps
+determine whether agreement among peers reflects independent support or correlated failure.
+Based on these reliability states, Σ-Mem defines a general write-and-read interface for trust-aware MAS memory. The
+write interface uses external correctness feedback to update the historical competence states M𝑝and the peer relationship
+
+
+Declare Lab · NTU · Under review
+3
+state G. Once written, the same memory can be read in different ways for different coordination decisions, such as
+steering response evaluation, routing tasks to suitable peers, or weighting peer outputs. To make this memory adaptive
+over long horizons without allowing unstable feedback to distort the recorded reliability, we represent both {M𝑝}𝑃
+𝑝=1
+and G as real symmetric matrices and update them through a decayed historical state plus a bounded contribution from
+new responses (Gu et al., 2021). By Weyl’s inequality
+𝜆(M + E) −𝜆(M)
+ ≤∥E∥2 (Weyl, 1912; Bhatia, 1997), the
+change of each eigenvalue after an update is bounded by the spectral norm of the new evidence, preventing abrupt
+distortions of the memory state. This design allows repeated and consistent feedback to accumulate along stable spectral
+directions, while inconsistent or isolated signals are gradually attenuated. Through this mechanism, Σ-Mem enables
+long-horizon MAS (Zhang et al., 2026; Wu et al., 2026a; Nayak et al., 2024) to adapt their coordination behavior
+through online feedback without retraining the underlying models.
+We evaluate Σ-Mem across five Qwen-family central models (Yang et al., 2025; Team, 2026).
+On the mixed
+counterfactual benchmark, Σ-Mem substantially improves peer selection when the reliable peer changes; especially
+at CF@90, it raises Qwen3-0.6B from 46.22% to 71.10%. Although trained with only three peers, the system keeps
+improving when evaluated with four-peer and five-peer pools that contain unseen peer models. Beyond the training
+domains of math, RAG, and code, it improves the base models in 27 out of 30 cases, with clear gains on BBH. We
+then test whether the same memory supports decisions other than peer selection, as needed in agent swarms (Zhuge
+et al., 2024b; Zhang et al., 2025a; Team et al., 2026) and mixture-of-agents architectures (Wang et al., 2025). Read as
+routing scores, the states pick a peer before any response is generated. This uses no central model at decision time,
+yet it outperforms both majority voting and the best fixed peer over the entire dataset. More importantly, We further
+conduct feedback ratio ablations on Qwen3.5-4B and Qwen3.5-9B. Accuracy on the OOD datasets consistently improves
+as the feedback ratio increases. This trend indicates that the historical competence evidence maintained by Σ-Mem
+accumulates useful reliability information from observed events. These results further show that Σ-Mem is not tied to a
+specific aggregation procedure. Rather, it provides a reusable reliability memory that can support different selection
+mechanisms.
+To sum up, our main contributions are summarized as follows:
+• We propose Σ-Mem, an online reliability memory for MAS. It records historical competence evidence for each
+peer and peer relationship evidence across peers, both updated online from external correctness feedback.
+• We make the memory stable by design. Both states are real symmetric matrices with decayed, bounded updates.
+By Weyl’s inequality, no single event can dominate the recorded reliability, while consistent evidence accumulates
+in the spectrum.
+• Across five central models, Σ-Mem adapts to counterfactual reliability shifts, generalizes to unseen peers and
+unseen domains. More importantly, we show that this memory serves many decision mechanisms. The same
+frozen memory state supports steered peer selection, response-free peer routing, and reliability-weighted voting
+well, without extra training.
+2 Background and Preliminaries
+2.1 Weyl’s Inequality
+A real symmetric matrix is a square matrix M ∈R𝑟×𝑟satisfying M = M⊤. Weyl’s inequality characterizes the stability
+of eigenvalues under symmetric perturbations. Specifically, if a real symmetric matrix M is perturbed by another real
+symmetric matrix E, then each eigenvalue satisfies
+𝜆𝑖(M + E) −𝜆𝑖(M)
+ ≤∥E∥2, ∀𝑖= 1, 2, ..., 𝑟
+(1)
+where ∥E∥2 is the spectral norm of the perturbation. The perturbation norm of a single event is usually bounded. This
+means that a small symmetric perturbation cannot cause an arbitrarily large change in any eigenvalue of the spectrum.
+The proof of Weyl’s inequality is given in the appendix A.1. In our 𝚺-Mem, this property provides the basic spectral
+motivation for using the real symmetric memory matrix: each event-level update acts as a controlled perturbation, so
+the memory spectrum evolves stably while persistent aligned evidence can accumulate over time.
+
+
+Declare Lab · NTU · Under review
+4
+2.2 Transformer Attention and Residual Steering
+In a Transformer (Vaswani et al., 2017) for sequence modeling, let X denote the hidden sequence. A self-attention block
+computes the query, key, and value matrices from the residual stream:
+Q = W𝑄LN(X),
+K = W𝐾LN(X),
+V = W𝑉LN(X).
+(2)
+The attention output is then given by
+Attn(X) = softmax
+QK⊤
+√𝑑𝑘
+
+V.
+(3)
+Residual steering does not directly modify the attention parameters. Instead, it adds a peer-specific steer 𝜹𝑝(x) using
+the task input sequence x to the residual stream, thereby influencing the attention computation. Formally, we write
+eX𝑝= X + 𝜹𝑝(x).
+(4)
+The attention block then computes its query, key, and value matrices from the new residual stream:
+Q𝑝= W𝑄LN
+
+eX𝑝
+
+,
+K𝑝= W𝐾LN
+
+eX𝑝
+
+,
+V𝑝= W𝑉LN
+
+eX𝑝
+
+.
+(5)
+Thus, residual steering leaves the frozen attention weights unchanged, but changes the hidden states from which attention
+is computed.
+3 Σ-Mem Mechanism
+3.1 Event-Level Σ-Mem Record
+Σ-Mem records two complementary forms of online evidence. The first is historical competence evidence, which
+tracks how each individual peer performed on previous tasks close to the competence direction. The second is peer
+relationship evidence, which tracks the relationships between peers across correctness. The former is recorded in
+peer-specific symmetric matrices {M𝑝}𝑃
+𝑝=1, while the latter is recorded in a symmetric peer relationship graph matrix
+G ∈R𝑃×𝑃.
+As shown in Figure 2. For each peer 𝑝, Σ-Mem maintains a symmetric memory matrix M𝑝∈R𝑟×𝑟, initialized as
+M(0)
+𝑝
+= 0. Σ-Mem updates the state once per evaluated event. Given an input x𝑡, we compute a competence direction
+𝝓(x𝑡) ∈R𝑟with ∥𝝓(x𝑡)∥2 = 1 and obtain a ground truth correctness label 𝑐𝑝,𝑡∈{+1, −1} for peer 𝑝. The competence
+memory is updated as
+M(𝑡+1)
+𝑝
+= 𝛾M(𝑡)
+𝑝+ 𝜂𝑐𝑝,𝑡𝝓(x𝑡)𝝓(x𝑡)⊤,
+(6)
+where 𝛾∈(0, 1) is the decay factor and 𝜂> 0 is the update factor. The update term 𝝓(x𝑡)𝝓(x𝑡)⊤is a rank-one symmetric
+matrix. Therefore, starting from M(0)
+𝑝
+= 0, the update preserves M𝑝= M⊤
+𝑝at every step. Intuitively, persistent aligned
+evidence accumulates in the spectrum of M𝑝, while isolated or noisy evidence is bounded by Weyl’s inequality (Eq. (1))
+and gradually damped by the decay factor. This bounded single step perturbation translates into a favorable long-horizon
+trade-off: task-aligned, persistent competence evidence accumulates in the spectrum as 𝑇grows.
+Theorem 1 (Persistent evidence dominates noise in the spectrum). Fix a competence direction 𝝓★along which peer 𝑝
+has a persistent expected competence 𝜇𝑝∈[−1, 1], that is, 𝑐𝑝,𝑡= 𝜇𝑝+𝜉𝑡for independent, zero-mean noise 𝜉𝑡∈[−2, 2],
+whenever 𝝓(x𝑡) = 𝝓★. Then for every horizon 𝑇and every 𝛿∈(0, 1), with probability at least 1 −𝛿,
+𝜆max
+ M(𝑇)
+𝑝
+ ≥𝜂𝜇𝑝
+1 −𝛾𝑇
+1 −𝛾
+|        {z        }
+signal
+−
+𝜂
+√︄
+8 log(2/𝛿)
+1 −𝛾2
+|            {z            }
+noise, independent of 𝑇
+.
+(7)
+The noise term never grows with 𝑇, while the signal term saturates at 𝜂𝜇𝑝/(1−𝛾); the resulting stationary signal-to-noise
+ratio 𝜇𝑝
+√︁
+(1 + 𝛾)/(1 −𝛾) increases monotonically with the decay factor 𝛾.
+
+
+Declare Lab · NTU · Under review
+5
+Task:
+b) Peer Selection
+A farmer has 48 chickens. He sells one quarter of 
+them and then buys 7 more chickens. How many 
+chickens does he have now?
+One quarter of 48 is 12. After selling 12 
+chickens, the farmer has 48 - 12 = 36 
+chickens. He then buys 7 more, so he 
+has 36 + 7 = 43 chickens.
+The farmer sells 48 / 4 = 12 chickens. 
+He then buys 7 chickens, so he has 48 - 
+12 + 7 = 43 chickens.
+After selling one quarter of the 
+chickens, the farmer has 48 × 1/4 = 12 
+chickens. After buying 7 more, he has 
+12 + 7 = 19 chickens.
+Should the candidate be selected as the best 
+answer? Answer only Yes or No.
+[Candidate Under Review]
+Peer Answers:
+CM
+Encoder
+0.60
+0.20
+0.20
+0.45
+0.05
+0.05
+-0.10
+-0.10
+0.10
+0.10
+0.15
+-0.30
+-0.05
+-0.05
+0.00
+0.00
+0.08
+0.08
+. . .
+Instruction:
+CM
+Encoder
+Task
+Answers
+Instruction
+. . .
+. . .
+. . .
+. . .
+. . .
+. . .
+. . .
+. . .
+. . .
+Q
+K
+V
+Memory Metrix
+LayerNorm
+Attention
+MLP
+. . .
+LM Head
+G
+1.0
+0.6
+0.6
+1.0
+-0.1
+-0.1
+0.3
+0.3
+1.0
+p0
+p1
+p2
+p0
+p1
+p2
+G
+1.0
+0.6
+0.6
+1.0
+-0.1
+-0.1
+0.3
+0.3
+1.0
+p0
+p1
+p2
+p0
+p1
+p2
+Task
+a) Task Example
+. . .
+c)    -mem Update
+c)    -mem Update
+(+1)
+(-1)
+Memory Metrix
+Correctness labels
+Relationship Metrix
+G
+p0
+p1
+p2
+p0
+p1
+p2
+G
+p0
+p1
+p2
+p0
+p1
+p2
+=
+Old State Decay
+New evidence
+=
+Correctness
+Old State Decay
+New evidence
+Residual Stream  X
+Figure 2: Overview of Σ-Mem. Given a task and multiple peer answers: For each peer 𝑝, Σ-Mem reads the task-conditioned
+historical competence state M𝑝and converts it into a peer-specific residual steering signal, which influences the center model’s
+attention and produces a utility score. The utilities are then combined with the peer relationship G for final aggregation. After
+external correctness labels become available, Σ-Mem updates both the competence memories and peer relationship matrix.
+The proof of Theorem 1 is given in Appendix A.2, which shows that once 𝑇is large enough for the signal term to clear
+the noise floor, the leading eigenvalue of M𝑝reflects peer 𝑝’s true competence rather than event-level noise, with high
+probability. This ensures that judgment is grounded in a genuine competence signal rather than historical noise.
+In addition to the per-peer memory update, Σ-Mem records the relational structure among peers.
+Let c𝑡=
+[𝑐1,𝑡, . . . , 𝑐𝑃,𝑡]⊤denote the correctness vector for event 𝑡. We center this vector within the peer set:
+𝑞𝑝,𝑡= 𝑐𝑝,𝑡−1
+𝑃
+𝑃
+∑︁
+𝑗=1
+𝑐𝑗,𝑡.
+(8)
+The peer relationship matrix is then updated by
+G(𝑡+1) = 𝛾𝐺G(𝑡) + 𝜂𝐺q𝑡q⊤
+𝑡,
+diag(G(𝑡+1)) = 1,
+(9)
+where 𝛾𝐺∈(0, 1) and 𝜂𝐺> 0 are the topology decay and update factors. Intuitively, 𝐺𝑝,𝑞> 0 indicates that the
+correctness signals of peers 𝑝and 𝑞tend to support each other within the peer set, whereas 𝐺𝑝,𝑞< 0 indicates that their
+correctness signals tend to oppose each other.
+3.2 Memory Readout and Residual Steering
+At decision time for event 𝑡, Σ-Mem reads from the historical competence evidence M(𝑡)
+𝑝. For each peer 𝑝, we compute
+a peer-specific memory readout
+r𝑝,𝑡= M(𝑡)
+𝑝𝝓(x𝑡),
+(10)
+where r𝑝,𝑡∈R𝑟is a competence reliability direction. This readout is then projected to the hidden dimension of the
+center model:
+𝜹𝑝,𝑡(x𝑡) = 𝑔Pr𝑝,𝑡= 𝑔PM(𝑡)
+𝑝𝝓(x𝑡),
+(11)
+
+
+Declare Lab · NTU · Under review
+6
+where P ∈R𝑑×𝑟is a learned projection and 𝑔is a learned scalar gain. In order to preserve the center model’s ability to
+understand the input while allowing the memory to influence candidate evaluation, we inject the steering vector only
+into the upper decoder blocks. Specifically, for ℓ∈{⌊𝐿/2⌋, . . . , 𝐿−1}, the residual stream is shifted as
+eX(ℓ)
+𝑝
+= X(ℓ) + 𝜹𝑝,𝑡(x𝑡).
+(12)
+Following Eq. (5), each peer 𝑝induces its own shifted residual stream eX(ℓ)
+𝑝. Because 𝜹𝑝,𝑡(x𝑡) depends on the
+peer-specific memory state M(𝑡)
+𝑝, the same input can lead to different residual shifts for different peers. The subsequent
+attention computations are therefore peer-conditioned, enabling the center model to distinguish candidates not only by
+their current answers, but also by their historical reliability records.
+3.3 Utility Eval and Peer Selection
+Given a set of peer answers {𝑎𝑝,𝑡}𝑃
+𝑝=1 for event 𝑡, the center model evaluates each answer under its corresponding
+peer-specific steering vector 𝜹𝑝,𝑡(x𝑡). The center model serves as a utility evaluator: it is asked whether the answer
+from peer 𝑝should be trusted for the current task. We implement this utility as a Yes-versus-No likelihood contrast,
+𝑈𝑝,𝑡= log 𝑃CM
+ "Yes" | x𝑡, 𝑎𝑝,𝑡; 𝜹𝑝,𝑡(x𝑡) −log 𝑃CM
+ "No" | x𝑡, 𝑎𝑝,𝑡; 𝜹𝑝,𝑡(x𝑡) .
+(13)
+Here 𝑃CM(· | x𝑡, 𝑎𝑝,𝑡; 𝜹𝑝,𝑡) denotes the next-token distribution obtained by running the center model on the judging
+prompt formed from (x𝑡, 𝑎𝑝,𝑡), while applying the peer-specific residual shift 𝜹𝑝,𝑡(x𝑡) defined in Sec. 3.2.
+Since 𝑈𝑝,𝑡is computed under the residual steering induced by M(𝑡)
+𝑝, it already incorporates historical competence
+evidence. To further incorporate the peer relationship, we normalize the utilities within the peer set:
+𝑧𝑝,𝑡=
+𝑈𝑝,𝑡−1
+𝑃
+Í𝑃
+𝑞=1 𝑈𝑞,𝑡
+√︂
+1
+𝑃
+Í𝑃
+𝑞=1
+
+𝑈𝑞,𝑡−1
+𝑃
+Í𝑃
+𝑗=1 𝑈𝑗,𝑡
+2
++ 𝜖
+.
+(14)
+We then define a posterior over latent peer correctness states y𝑡∈{−1, +1}𝑃:
+𝑃(y𝑡| x𝑡, M(𝑡), G(𝑡)) ∝exp ©­
+«
+𝑤𝑢
+𝑃
+∑︁
+𝑝=1
+𝑧𝑝,𝑡𝑦𝑝,𝑡+ 𝑤𝑔
+2
+∑︁
+𝑝≠𝑞
+𝐺(𝑡)
+𝑝,𝑞𝑦𝑝,𝑡𝑦𝑞,𝑡ª®
+¬
+,
+(15)
+where 𝑤𝑢, 𝑤𝑔control the strengths of the competence utility evidence and the peer relationship evidence, respectively.
+The selected peer is the one with the largest posterior correctness expectation:
+ˆ𝑝𝑡= arg max
+𝑝E
+
+𝑦𝑝,𝑡| x𝑡, M(𝑡), G(𝑡)
+.
+(16)
+These expectations can be computed by exact enumeration over {−1, +1}𝑃. Importantly, 𝑈𝑝,𝑡is only a decision-time
+utility score and is not used as the memory update label. After the event is evaluated, Σ-Mem receives the external
+correctness signals {𝑐𝑝,𝑡}𝑃
+𝑝=1 from the benchmark or environment and updates both M𝑝and G according to Eq. (6) and
+Eq. (9). This separates selection from memory writing: peer selection is based on the center model’s current utility
+judgment, historical steering, and peer relationship, while memory updates are grounded in external feedback.
+3.4 Direct Readouts for Other Selection Mechanisms
+Broadly speaking, steered peer selection (Sec. 3.3) is one way to read the memory. The same states also support
+decisions that do not use the central model’s judgment. At event 𝑡, the frozen central model encodes only the current
+question x𝑡to obtain the competence direction 𝝓(x𝑡). We then compute the historical reliability score of peer 𝑝as
+𝑠𝑝,𝑡= 𝝓(x𝑡)⊤M(𝑡)
+𝑝𝝓(x𝑡).
+(17)
+This score depends only on the current question and the task-conditioned competence evidence accumulated from
+previous events. And the peer’s response is not used to compute 𝑠𝑝,𝑡. This direct readout supports two decision rules.
+
+
+Declare Lab · NTU · Under review
+7
+M routing.
+The first rule selects the peer with the largest memory readout:
+b𝑝M-route
+𝑡
+= arg max
+𝑝
+𝑠𝑝,𝑡.
+(18)
+The final prediction is the response produced by the selected peer. The routing function itself does not receive the peer
+responses as input. Its decision is determined entirely by the historical competence evidence stored in {M(𝑡)
+𝑝}𝑃
+𝑝=1.
+M-weighted voting.
+The second rule uses the direct memory readout as a peer-specific voting weight. For every
+canonical answer 𝑎, we aggregate the reliability scores of the peers that produce that answer:
+𝑉M
+𝑡(𝑎) =
+∑︁
+𝑝:canon(𝑎𝑝,𝑡)=𝑎
+𝑠𝑝,𝑡,
+b𝑎M-vote
+𝑡
+= arg max
+𝑎𝑉M
+𝑡(𝑎),
+(19)
+where canon(·) maps each response to its task-specific canonical answer. The reliability weights {𝑠𝑝,𝑡}𝑃
+𝑝=1 are computed
+before answer aggregation and do not depend on the content of the current responses. The response strings are used
+only to identify peers that provide the same canonical answer. They are not semantically encoded, verified, or judged by
+the central model.
+4 Experiments
+4.1 Experimental Setup
+We train Σ-Mem on a mixed supervised dataset of 2,963 task events constructed from three competence domains:
+mathematical reasoning, retrieval-augmented question answering, and code generation. Each event consists of a
+task input, a set of peer-generated answers, and external per-peer correctness labels. We evaluate Σ-Mem along four
+axes. First, a mixed counterfactual benchmark with four reliability splits (CF@0, CF@50, CF@70, and CF@90) tests
+whether the memory helps the center model adapt when the prior reliable peer changes; a higher CF level indicates a
+stronger counterfactual shift in peer reliability (Sec. 4.2). Second, we enlarge the peer pool at test time with unseen
+peer models (Sec. 4.3). Third, we test generalization beyond the training domains on six OOD benchmarks covering
+commonsense reasoning, knowledge understanding, science question answering, complex reasoning, and language
+understanding (Sec. 4.4). Finally, we test whether the same memory supports selection mechanisms beyond steered
+peer selection, including response-free M-route and reliability-weighted M-vote, together with a feedback-availability
+ablation (Sec. 4.5). The training and test sets are drawn from different data sources; their composition and construction
+are detailed in Appendix B.
+For the center model, we use open-source models from the widely studied Qwen family, covering multiple model sizes:
+Qwen3-0.6B, Qwen3-4B, Qwen3-8B, Qwen3.5-4B, and Qwen3.5-9B (Yang et al., 2025; Team, 2026). For peer answer
+generators, we use a heterogeneous set of models with complementary strengths: Gemma-3-4B-it (Team et al., 2025a)
+for mathematical reasoning, Phi-4-mini-instruct (Abouelenin et al., 2025) for retrieval-augmented question answering,
+and Qwen2.5-Coder-7B-Instruct (Yang et al., 2025) for code generation. This peer pool creates clear competence
+differences across domains, making it suitable for evaluating whether Σ-Mem can help center model select and adapt
+among peers.
+4.2 Counter Factual Attack Experiment
+As shown in Table 1, we compare Qwen3 and Qwen3.5 models with the same base models equipped with our proposed
+Σ-Mem on a mixed counterfactual benchmark with four reliability splits: CF@0, CF@50, CF@70, and CF@90. Σ w/o
+G denotes Σ-Mem recording only historical competence evidence, while Σ w/ G denotes Σ-Mem incorporating peer
+relationship evidence.
+Obs.1. For Qwen3-0.6B, the base model shows a strong bias toward peer 1 across all CF ratios, selecting peer 1 for more
+than 1,800 examples in each CF setting. As the counterfactual attack becomes more severe, this fixed peer preference
+becomes increasingly harmful, causing the accuracy to drop from 61.01% at CF@0 to 46.22% at CF@90. After
+applying Σ-Mem, the model consistently improves performance under all CF ratios. In particular, Σ w/ G increases
+accuracy from 46.22% to 71.10% at CF@90, showing that Σ-Mem enables the weak center model to adjust which
+peer it should actually trust, thereby improving selection accuracy.
+Obs.2. For Qwen3-4B, Qwen3-8B, Qwen3.5-4B, and Qwen3.5-9B, the base accuracy remains relatively stable as the
+counterfactual attack becomes more severe. After applying Σ-Mem, the models further improve at CF@0, CF@70, and
+
+
+Declare Lab · NTU · Under review
+8
+Table 1: Counter Factual (CF) Attack results under different CF@ratios. Acc denotes the task accuracy obtained by using the selected
+peer response, and p1(Gemma)/p2(Phi)/p3(Qwen-Coder) reports the center model’s selection counts for the three peer agents. We
+highlight the best performing result for each model.
+Model
+CF@0
+CF@50
+CF@70
+CF@90
+Acc
+p1/p2/p3
+Acc
+p1/p2/p3
+Acc
+p1/p2/p3
+Acc
+p1/p2/p3
+Qwen3-0.6B 61.01%
+1837/192/656
+52.89%
+1828/222/635
+50.50%
+1838/228/619
+46.22%
+1830/229/626
++ Σ w/o G
+64.17%
+1801/355/529
+55.38%
+617/511/1557
+61.19%
+261/714/1710
+68.64%
+82/968/1635
++ Σ w/ G
+63.87%
+1817/347/521
+56.42%
+614/396/1675
+62.72%
+286/518/1881
+71.10%
+81/611/1993
+Qwen3-4B
+61.71%
+930/339/1416
+65.55%
+930/429/1326
+65.77%
+944/460/1281
+67.86%
+955/482/1248
++ Σ w/o G
+63.35%
+1434/589/662
+61.15%
+451/390/1844
+66.41%
+238/363/2084
+72.74%
+129/351/2205
++ Σ w/ G
+64.51%
+1290/542/853
+63.61%
+447/344/1894
+67.64%
+265/300/2120
+73.30%
+143/287/2255
+Qwen3-8B
+66.89% 1068/572/1045 67.67% 1006/573/1106 66.26% 1008/566/1111 66.07%
+985/545/1155
++ Σ w/o G
+67.75%
+1392/624/669
+62.53%
+535/547/1603
+64.80%
+307/552/1826
+68.34%
+227/571/1887
++ Σ w/ G
+67.67%
+1384/558/743
+63.76%
+500/462/1723
+66.33%
+230/493/1962
+69.16%
+129/494/2062
+Qwen3.5-4B 67.15%
+1360/438/887
+66.15%
+1271/526/888
+64.69%
+1258/563/864
+63.87%
+1211/565/909
++ Σ w/o G
+70.99%
+1745/583/357
+60.89%
+463/385/1837
+66.89%
+179/457/2049
+73.15%
+70/696/1919
++ Σ w/ G
+72.77%
+1619/596/470
+63.17%
+451/331/1903
+68.60%
+182/314/2189
+75.46%
+71/288/2326
+Qwen3.5-9B 66.48% 1041/582/1062 68.94% 1144/528/1013 69.65%
+1196/495/994
+70.99% 1193/481/1011
++ Σ w/o G
+71.81%
+1771/514/400
+62.83%
+469/359/1857
+69.24%
+210/343/2132
+75.46%
+137/329/2219
++ Σ w/ G
+71.84%
+1629/498/558
+65.96%
+459/316/1910
+71.40%
+194/284/2207
+76.95%
+95/214/2376
+CF@90 settings, showing that Σ-Mem records peers’ historical competence and helps the center model adjust
+which peer it should actually trust under clear reliability patterns. The main exception is CF@50, where Σ-Mem
+decreases accuracy. This behavior is not a failure of the mechanism, but reflects the history-sensitive nature of Σ-Mem
+under an intentionally ambiguous data stream. In CF@50, half of the historical evidence supports the original peer
+preference, while the other half supports the counterfactual shift. As a result, the memory state accumulates misleading
+historical evidence from the CF@50 stream, which can steer the center model toward the wrong peer. We further verified
+this in Appendix C. We stress that this is a faithfulness property of the memory rather than an aggregation-specific
+defect: Σ-Mem accurately integrates whatever reliability evidence the stream provides, so a stream that is ambiguous by
+construction (CF@50, where half the history supports each preference) necessarily yields ambiguous memory. This
+motivates readouts that adaptively balance historical guidance against current-response evidence in future work.
+Obs.3. Σ w/ G generally outperforms Σ w/o G, indicating that the peer relationship evidence provides useful
+complementary information beyond individual peer histories. This suggests that peer selection for the central model
+benefits not only from knowing whether each peer has been reliable on similar tasks, but also from modeling how
+peers are related to each other through their correctness patterns. Therefore, in the following experiments, including
+Experiment 2 in Sec. 4.3 and Experiment 3 in Sec. 4.4, we utilize Σ w/ G as the default Σ-Mem configuration.
+4.3 Generalization to More Peers
+Since the trainable components in Σ-Mem are shared across peers, adding new peers only requires allocating new
+memory states, without modifying the learned parameters. To test whether the learned selection mechanism can
+generalize beyond the peers utilized during training. During testing, we expand the peer set by introducing additional
+unseen peers, including Peer 4 (Llama-3.2-3B-Instruct (Grattafiori et al., 2024)) and Peer 5 (BitCPM-CANN-3B (Team
+et al., 2025b)), and evaluate the system under larger peer pools.
+Consistent with Experiment 1(Sec 4.2), Σ-Mem shows the same overall behavior under expanded peer pools. At CF@0,
+CF@70, and CF@90, the recorded historical competence evidence and peer relationship evidence help the center
+model identify the appropriate peer, leading to improved accuracy over the base model. The main exception
+
+
+Declare Lab · NTU · Under review
+9
+Table 2: Peer-count generalization accuracy results on the counter facual benchmark. Σ-Mem is trained with three peers and
+evaluated with enlarged peer pools containing 4 or 5 peers by adding unseen peer models at test time. Arrows indicate whether
+Σ-Mem improves(↑) or degrades(↓) the corresponding base model.
+Center Model
+CF@0
+CF@50
+CF@70
+CF@90
+Base
+Σ-Mem
+Base
+Σ-Mem
+Base
+Σ-Mem
+Base
+Σ-Mem
+4 peers
+Qwen3-0.6B
+58.85% 62.05%↑49.83%
+51.43%↑46.59%
+56.69%↑43.24%
+63.09%↑
+Qwen3-4B
+60.48% 62.94%↑60.74%
+57.17%↓60.60%
+61.38%↑61.86%
+67.49%↑
+Qwen3-8B
+64.28% 66.29%↑61.94%
+57.09%↓60.56%
+60.11%↓60.11%
+62.98%↑
+Qwen3.5-4B
+63.50% 70.54%↑61.94%
+56.91%↓60.56%
+62.98%↑61.04%
+67.97%↑
+Qwen3.5-9B
+66.07% 71.66%↑65.33%
+59.59%↓65.18%
+65.10%↓64.32%
+71.21%↑
+5 peers
+Qwen3-0.6B
+62.79% 63.72%↑47.56%
+51.88%↑40.93%
+56.50%↑34.71%
+62.09%↑
+Qwen3-4B
+61.01% 62.98%↑59.66%
+58.47%↓59.18%
+61.68%↑59.18%
+64.54%↑
+Qwen3-8B
+64.28% 66.55%↑60.63%
+56.72%↓58.99%
+60.30%↑58.29%
+60.97%↑
+Qwen3.5-4B
+66.07% 70.61%↑63.65%
+58.21%↓62.53%
+63.17%↑61.86%
+68.19%↑
+Qwen3.5-9B
+67.15% 71.14%↑65.25%
+60.60%↓64.80%
+66.03%↑64.32%
+69.09%↑
+remains CF@50. In this split, the data stream provides misleading historical evidence, which Σ-Mem faithfully
+accumulates and steers the center model toward the wrong peer.
+4.4 Generalization Beyond Training Domains
+Although Σ-Mem is trained only on math, RAG, and code events, it can map an unseen task to the closest learned
+competence directions through 𝝓(x). To evaluate whether this ability supports generalization beyond the training
+domains, we test Σ-Mem on out-of-distribution(OOD) benchmarks covering physical commonsense reasoning
+(PIQA (Bisk et al., 2020)), broad knowledge understanding (MMLU (Hendrycks et al., 2020)), science question
+answering (OpenBookQA (Mihaylov et al., 2018) and SciQ (Welbl et al., 2017)), complex reasoning (BBH (Suzgun
+et al., 2023)), and language understanding (SuperGLUE (Wang et al., 2019)). The results are shown in Table 3.
+Table 3: Generalization results on out-of-distribution (OOD) domains. Σ-Mem is evaluated on unseen benchmarks covering
+commonsense reasoning, broad knowledge understanding, science question answering, complex reasoning, and language understanding.
+Arrows indicate whether Σ-Mem improves (↑) or degrades (↓) the corresponding base model.
+Center Model
+PIQA
+MMLU
+OpenBookQA
+SciQ
+BBH
+SuperGLUE
+Base
+Σ-Mem
+Base
+Σ-Mem
+Base
+Σ-Mem
+Base
+Σ-Mem
+Base
+Σ-Mem
+Base
+Σ-Mem
+Qwen3-0.6B
+80.69% 81.12%↑57.61% 61.20%↑74.00% 79.00%↑88.10% 88.50%↑25.25% 28.77%↑75.99% 80.38%↑
+Qwen3-4B
+81.77% 82.92%↑60.29% 62.51%↑76.20% 78.40%↑89.90% 91.00%↑20.38% 28.66%↑78.18% 81.14%↑
+Qwen3-8B
+82.92% 83.57%↑60.42% 62.90%↑79.60% 79.00%↓91.30% 91.70%↑19.29% 28.17%↑79.00% 81.07%↑
+Qwen3.5-4B
+83.19% 83.46%↑61.20% 62.90%↑79.60% 81.40%↑92.00% 92.80%↑27.46% 29.15%↑79.59% 80.76%↑
+Qwen3.5-9B
+84.55% 83.46%↓62.83% 64.27%↑79.80% 80.20%↑92.20% 92.10%↓26.80% 29.33%↑80.79% 81.67%↑
+Σ-Mem improves over the corresponding Qwen base model on most (27/30) OOD cases. The improvement is
+especially pronounced on BBH, where all center models benefit substantially from Σ-Mem. For example, Qwen3-4B
+improves from 20.38% to 28.66%, and Qwen3-8B improves from 19.29% to 28.17%. These results indicate that the
+learned competence directions and peer-reliability evidence provide transferable guidance for peer selection on unseen
+task distributions.
+4.5 Generalization Across MAS Selection Mechanisms
+In this section, we show that the proposed reliability memory generalizes across selection mechanisms, the different
+ways the MAS consumes reliability evidence, such as routing a task to a peer or weighted voting among peers.
+
+
+Declare Lab · NTU · Under review
+10
+We evaluate the direct readouts of Sec. 3.4 on the same OOD datasets and three fixed peers described in Sec. 4.4, using
+all five Qwen central models. As a memory-free control, we use majority voting, which assigns the same weight to
+every peer and selects the answer supported by the largest number of peers:
+b𝑎Maj
+𝑡
+= arg max
+𝑎
+∑︁
+𝑝:canon(𝑎𝑝,𝑡)=𝑎
+1
+𝑃.
+(20)
+Majority voting uses neither M𝑝nor a central model utility score. It only determines whether different peers produce
+the same canonical answer. For all methods, the correctness labels of the current event are accessed only after the
+predictions have been made. These labels are then used to update the memory for subsequent events. This comparison
+isolates whether the historical competence evidence stored in M𝑝provides reliable evidence beyond unweighted peer
+agreement. Table 4 reports overall accuracy; per-benchmark results are in Appendix E.
+Table 4: Overall accuracy of different selection mechanisms across five central models and six OOD benchmarks. M-Route directly
+selects the peer with the highest memory-derived reliability score, whereas M-Vote uses these scores to weight peer votes during
+answer aggregation. Both methods rely only on memory readouts and do not require the central model to evaluate peer responses at
+decision time. The lower block reports model-independent routing and voting baselines.
+Central Model
+Selection (responses)
+Routing
+Voting
+Base
+Σ w/ G
+M Route
+M Vote
+Qwen3-0.6B
+56.52%
+59.89%
+60.67%
+60.93%
+Qwen3-4B
+55.98%
+60.54%
+60.68%
+60.96%
+Qwen3-8B
+56.16%
+60.50%
+60.67%
+60.99%
+Qwen3.5-4B
+59.56%
+60.87%
+60.67%
+60.86%
+Qwen3.5-9B
+60.04%
+61.31%
+60.69%
+60.86%
+Random peer (expected; uniform selection)
+54.85%
+–
+Majority voting (Wang et al., 2022)
+–
+59.12%
+Best fixed peer (overall best peer; Cesa-Bianchi and Lugosi, 2006)
+57.52%
+–
+Oracle reputation (per-subtest best peer; cf. Dawid and Skene, 1979)
+60.79%
+–
+5 10
+20
+50
+80
+100
+Feedback availability (%)
+58.5
+59.0
+59.5
+60.0
+60.5
+61.0
+61.5
+OOD accuracy (%)
+Qwen3.5-4B
+59.12
+58.95
+60.22
+60.67
+59.08
+60.47
+60.86
+59.72
+60.71
+60.93
+5 10
+20
+50
+80
+100
+Feedback availability (%)
+Qwen3.5-9B
+59.12
+58.95
+60.19
+60.69
+59.09
+60.46
+60.86
+60.24
+61.23
+61.35
+Majority
+Σ w/ G
+M-route
+M-vote
+Figure 3: OOD accuracy under different feedback availability ratios, with Qwen3.5-4B and Qwen3.5-9B as the central models. We
+vary the fraction of events whose correctness feedback is revealed after prediction, from 5% to 100%. Unlabeled events still apply
+temporal decay, which makes low-feedback settings strictly harder. The blue curve denotes M-based routing, the red curve denotes
+Σ-Mem w/ G, and the gray dashed line denotes majority voting. Shaded regions indicate variation across three random feedback
+masks.
+As shown in Table 4, directly using the historical competence evidence for simple routing and weighted voting
+substantially improves OOD performance, outperforming both majority voting and the best fixed peer baselines over the
+entire dataset. This demonstrates that Σ-Mem is not tied to a particular aggregation procedure; rather, it provides a
+reusable reliability memory that can support different selection mechanisms. The comparison also reveals the
+complementary roles of memory and the central model. While M-Vote relies only on historical reliability, residual
+
+
+Declare Lab · NTU · Under review
+11
+steering combines this reliability information with the central model’s assessment of the current responses. For the
+Qwen3 models, M-Vote performs better, suggesting that direct memory readout is more effective when response-level
+assessment is limited. In contrast, with the stronger Qwen3.5 models, Σ w/G achieves the best overall accuracy,
+indicating that a more capable central model can better integrate current response evidence with historical reliability
+guidance. The counterfactual streams complete this picture (Appendix C). When the reliability pattern is stable, as in
+CF@0 and CF@90, M-route matches or exceeds Σ w/G for most central models. When history is ambiguous, as in
+CF@50, M-route degrades the most and the central model’s response-level judgment becomes essential.
+We further evaluate how memory performance changes as the availability of correctness feedback increases (Figure 3).
+During the OOD test stream, each method first makes its prediction using the current memory state. After prediction,
+ground-truth correctness labels are revealed only for a randomly selected subset of events, with feedback availability
+varied from 5% to 100%. Events without feedback do not write new correctness evidence into memory and only apply
+temporal decay to the existing state. For each feedback ratio, we repeat the experiment with three random seeds. The
+results show that both memory-based routing and Σ-Mem improve as more feedback becomes available, indicating that
+the memory state M records useful signals from the OOD stream that help peer selection. Moreover, for Qwen 3.5,
+Σ-Mem consistently outperforms M-route, suggesting that the central model’s content-based understanding provides
+complementary decision evidence beyond direct memory readout. This indicates that by leveraging this inherent
+judgment capability, Σ-Mem further improves overall accuracy.
+5 Related Work
+Computational Trust and Reputation in MAS. Maintaining per-agent trust from interaction outcomes has a long history
+in MAS. TRAVOS (Teacy et al., 2006) estimates probabilistic trust from interaction track records; and FIRE (Huynh
+et al., 2004) integrates multiple trust sources, including role-based and certified reputation; and REGRET (Sabater and
+Sierra, 2001) incorporates social and contextual dimensions of reputation. This line established trust as a first-class signal
+for agent coordination, primarily with statistical or rule-based representations over predefined interaction categories.
+LLM Routing and Ensembling. In the LLM era, competence estimates are used to select or combine models.
+RouteLLM (Hallgarten et al., 2025) and FrugalGPT (Chen et al., 2023) train routers that dispatch queries to models
+by predicted quality and cost. Zooter (Lu et al., 2024) distills reward signals into a query-level router. Moreover,
+LLM-Blender (Jiang et al., 2023) ranks and fuses candidate outputs. For multi-agent settings, ReConcile (Chen
+et al., 2024) performs confidence-weighted voting among heterogeneous LLM peers across discussion rounds, and
+GPTSwarm (Zhuge et al., 2024a) formulates agent collectives as graphs and optimizes inter-agent edge weights from
+utility feedback. Beyond mechanism design, recent studies examine trust dynamics in LLM-based MAS directly: LLM
+agents are prone to conformity, abandoning correct answers under peer pressure in social interactions (Song et al., 2025),
+and epistemic context learning (Zhou et al., 2026a) studies how agents should calibrate trust in peers from interaction
+context.
+Memory for LLM Agents. A parallel line equips agents with persistent memory. MemGPT (Packer et al., 2023)
+manages memory as a virtual context hierarchy; MemoryBank (Zhong et al., 2024) and Mem0 (Chhikara et al., 2025)
+maintain long-term records across sessions. Meanwhile, DeltaMem (Lei et al., 2026) and proactive memory agents (Wu
+et al., 2026b) decide what to retain and when remembered state should re-enter the context during long-horizon execution.
+These systems concern the persistence and reactivation of content.
+6 Conclusion
+We introduced Σ-Mem, an online reliability memory that records historical competence evidence for individual peers
+and peer relationship evidence across the peer set. Its symmetric state design supports stable online updates, while
+its general write-and-read interface allows the same reliability memory to guide residual steering, peer routing, and
+weighted voting without retraining the underlying models. Taken together, our results show that reliability memory is
+not merely an auxiliary signal for response aggregation but a reusable coordination state that transfers across peer sets,
+task distributions, and selection mechanisms. They also reveal an important boundary: when the observed reliability
+evidence is ambiguous, as in CF@50, persistent memory provides limited guidance. Developing adaptive readouts that
+determine how historical reliability should interact with current decision evidence is therefore a promising direction.
+Overall, Σ-Mem establishes reliability memory as a foundation for adaptive coordination in long-horizon multi-agent
+systems.
+
+
+Declare Lab · NTU · Under review
+12
+References
+Abdelrahman Abouelenin, Atabak Ashfaq, Adam Atkinson, Hany Awadalla, Nguyen Bach, Jianmin Bao, Alon Benhaim, Martin Cai,
+Vishrav Chaudhary, Congcong Chen, et al. Phi-4-mini technical report: Compact yet powerful multimodal language models via
+mixture-of-loras. arXiv preprint arXiv:2503.01743, 2025.
+Jacob Austin, Augustus Odena, Maxwell Nye, Maarten Bosma, Henryk Michalewski, David Dohan, Ellen Jiang, Carrie Cai, Michael
+Terry, Quoc Le, et al. Program synthesis with large language models. arXiv preprint arXiv:2108.07732, 2021.
+Rajendra Bhatia. Matrix Analysis, volume 169 of Graduate Texts in Mathematics. Springer, New York, 1997. .
+Yonatan Bisk, Rowan Zellers, Jianfeng Gao, Yejin Choi, et al. Piqa: Reasoning about physical commonsense in natural language. In
+Proceedings of the AAAI conference on artificial intelligence, volume 34, pages 7432–7439, 2020.
+M. Cemri, M. Z. Pan, S. Yang, L. A. Agrawal, B. Chopra, R. Tiwari, K. Keutzer, A. Parameswaran, D. Klein, K. Ramchandran,
+M. Zaharia, J. E. Gonzalez, and I. Stoica. Why do multi-agent LLM systems fail? In Advances in Neural Information Processing
+Systems Datasets and Benchmarks Track, 2025. arXiv:2503.13657.
+Nicolò Cesa-Bianchi and Gábor Lugosi. Prediction, Learning, and Games. Cambridge University Press, 2006.
+Justin Chih-Yao Chen, Swarnadeep Saha, and Mohit Bansal. ReConcile: Round-table conference improves reasoning via consensus
+among diverse LLMs. In Proceedings of the Annual Meeting of the Association for Computational Linguistics, 2024.
+Lingjiao Chen, Matei Zaharia, and James Zou. Frugalgpt: How to use large language models while reducing cost and improving
+performance. arXiv preprint arXiv:2305.05176, 2023.
+Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde De Oliveira Pinto, Jared Kaplan, Harri Edwards, Yuri Burda,
+Nicholas Joseph, Greg Brockman, et al. Evaluating large language models trained on code. arXiv preprint arXiv:2107.03374,
+2021.
+Prateek Chhikara, Dev Khant, Saket Aryan, Taranjeet Singh, and Deshraj Yadav. Mem0: Building production-ready ai agents with
+scalable long-term memory. arXiv preprint arXiv:2504.19413, 2025.
+Hyeong Kyu Choi, Jerry Zhu, and Sharon Li. Debate or vote: Which yields better decisions in multi-agent large language models?
+Advances in Neural Information Processing Systems, 38:101732–101764, 2026.
+Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek,
+Jacob Hilton, Reiichiro Nakano, et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168, 2021.
+Alexander Philip Dawid and Allan M Skene. Maximum likelihood estimation of observer error-rates using the em algorithm. Journal
+of the Royal Statistical Society: Series C (Applied Statistics), 28(1):20–28, 1979.
+Gradient Institute. Risk analysis techniques for governed LLM-based multi-agent systems. arXiv preprint arXiv:2508.05687, 2025.
+Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil
+Mathur, Alan Schelten, Alex Vaughan, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783, 2024.
+Albert Gu, Karan Goel, and Christopher Ré. Efficiently modeling long sequences with structured state spaces. arXiv preprint
+arXiv:2111.00396, 2021.
+Philipp Hallgarten, Verena Jasmin Hallitschke, Enkelejda Kasneci, Michael Beigl, and Tobias Grosse-Puppendahl. Routellm: A
+large language model with native route context understanding to enable context-aware reasoning. Proceedings of the ACM on
+Interactive, Mobile, Wearable and Ubiquitous Technologies, 9(3):1–34, 2025.
+Chaoqun He, Renjie Luo, Yuzhuo Bai, Shengding Hu, Zhen Thai, Junhao Shen, Jinyi Hu, Xu Han, Yujie Huang, Yuxiang Zhang,
+et al. Olympiadbench: A challenging benchmark for promoting agi with olympiad-level bilingual multimodal scientific problems.
+In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), pages
+3828–3850, 2024.
+Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and Jacob Steinhardt. Measuring massive
+multitask language understanding. arXiv preprint arXiv:2009.03300, 2020.
+Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring
+mathematical problem solving with the math dataset. arXiv preprint arXiv:2103.03874, 2021.
+Yuyang Hu, Shichun Liu, Yanwei Yue, Guibin Zhang, Boyang Liu, Fangyi Zhu, Jiahang Lin, Honglin Guo, Shihan Dou, Zhiheng Xi,
+et al. Memory in the age of ai agents. arXiv preprint arXiv:2512.13564, 2025.
+
+
+Declare Lab · NTU · Under review
+13
+Trung Dong Huynh, Nicholas R. Jennings, and Nigel Shadbolt. Fire: An integrated trust and reputation model for open multi-agent
+systems. In European Conference on Artificial Intelligence, 2004. URL https://api.semanticscholar.org/CorpusID:10678849.
+Naman Jain, Alex Gu, Wen-Ding Li, Fanjia Yan, Tianjun Zhang, Sida Wang, Armando Solar-Lezama, Koushik Sen, and Ion Stoica.
+Livecodebench: Holistic and contamination free evaluation of large language models for code. In International Conference on
+Learning Representations, volume 2025, pages 58791–58831, 2025.
+Dongfu Jiang, Xiang Ren, and Bill Yuchen Lin. Llm-blender: Ensembling large language models with pairwise ranking and
+generative fusion. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long
+Papers), pages 14165–14178, 2023.
+Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke Zettlemoyer. Triviaqa: A large scale distantly supervised challenge dataset for
+reading comprehension. In Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics (Volume 1:
+Long Papers), pages 1601–1611, 2017.
+Zachary Kenton, Noah Y Siegel, János Kramár, Jonah Brown-Cohen, Samuel Albanie, Jannis Bulian, Rishabh Agarwal, David
+Lindner, Yunhao Tang, Noah Goodman, et al. On scalable oversight with weak llms judging strong llms. Advances in Neural
+Information Processing Systems, 37:75229–75276, 2024.
+Akbir Khan, John Hughes, Dan Valentine, Laura Ruis, Kshitij Sachan, Ansh Radhakrishnan, Edward Grefenstette, Samuel R
+Bowman, Tim Rocktäschel, and Ethan Perez. Debating with more persuasive llms leads to more truthful answers. arXiv preprint
+arXiv:2402.06782, 2024.
+Michael Krumdick, Charles Lovering, Varshini Reddy, Seth Ebner, and Chris Tanner. No free labels: Limitations of llm-as-a-judge
+without human grounding. arXiv preprint arXiv:2503.05061, 2025.
+J. Lei, D. Zhang, J. Li, W. Wang, K. Fan, X. Liu, Q. Liu, X. Ma, B. Chen, and S. Poria. 𝛿-mem: Efficient online memory for large
+language models. arXiv preprint arXiv:2605.12357, 2026.
+Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harrison Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya
+Sutskever, and Karl Cobbe. Let’s verify step by step. In International Conference on Learning Representations, volume 2024,
+pages 39578–39601, 2024.
+Stephanie Lin, Jacob Hilton, and Owain Evans. Truthfulqa: Measuring how models mimic human falsehoods. In Proceedings of the
+60th annual meeting of the association for computational linguistics (volume 1: long papers), pages 3214–3252, 2022.
+Keming Lu, Hongyi Yuan, Runji Lin, Junyang Lin, Zheng Yuan, Chang Zhou, and Jingren Zhou. Routing to the expert: Efficient
+reward-guided ensemble of large language models. In Proceedings of the 2024 Conference of the North American Chapter of the
+Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers), pages 1964–1974, 2024.
+Todor Mihaylov, Peter Clark, Tushar Khot, and Ashish Sabharwal. Can a suit of armor conduct electricity? a new dataset for open
+book question answering. In Proceedings of the 2018 conference on empirical methods in natural language processing, pages
+2381–2391, 2018.
+Siddharth Nayak, Adelmo Morrison Orozco, Marina Ten Have, Vittal Thirumalai, Jackson Zhang, Darren Chen, Aditya Kapoor, Eric
+Robinson, Karthik Gopalakrishnan, James Harrison, et al. Llamar: Long-horizon planning for multi-agent robots in partially
+observable environments. arXiv preprint arXiv:2407.10031, 2024.
+Charles Packer, Vivian Fang, Shishir_G Patil, Kevin Lin, Sarah Wooders, and Joseph_E Gonzalez. Memgpt: towards llms as
+operating systems. 2023.
+Priya Pitre, Naren Ramakrishnan, and Xuan Wang. CONSENSAGENT: Towards efficient and effective consensus in multi-agent
+LLM interactions through sycophancy mitigation. In Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Mohammad Taher
+Pilehvar, editors, Findings of the Association for Computational Linguistics: ACL 2025, pages 22112–22133, Vienna, Austria,
+July 2025. Association for Computational Linguistics. ISBN 979-8-89176-256-5. . URL https://aclanthology.org/2025.find
+ings-acl.1141/.
+Pranav Rajpurkar, Jian Zhang, Konstantin Lopyrev, and Percy Liang. Squad: 100,000+ questions for machine comprehension of text.
+In Proceedings of the 2016 conference on empirical methods in natural language processing, pages 2383–2392, 2016.
+Jordi Sabater and Carles Sierra. Regret: reputation in gregarious societies. In Proceedings of the fifth international conference on
+Autonomous agents, pages 194–195, 2001.
+Mrinank Sharma, Meg Tong, Tomek Korbak, David Duvenaud, Amanda Askell, Sam Bowman, Esin Durmus, Zac Hatfield-Dodds,
+Scott Johnston, Shauna Kravec, et al. Towards understanding sycophancy in language models. In International Conference on
+Learning Representations, volume 2024, pages 110–144, 2024.
+
+
+Declare Lab · NTU · Under review
+14
+Adi Simhi, Itay Itzhak, Fazl Barez, Gabriel Stanovsky, and Yonatan Belinkov. Trust me, i’m wrong: Llms hallucinate with certainty
+despite knowing the answer. arXiv preprint arXiv:2502.12964, 2025.
+Maojia Song, Tej Deep Pala, Ruiwen Zhou, Weisheng Jin, Amir Zadeh, Chuan Li, Dorien Herremans, and Soujanya Poria. Llms
+can’t handle peer pressure: Crumbling under multi-agent social interactions, 2025. URL https://arxiv.org/abs/2508.18321.
+Vighnesh Subramaniam, Yilun Du, Joshua B Tenenbaum, Antonio Torralba, Shuang Li, and Igor Mordatch. Multiagent finetuning:
+Self improvement with diverse reasoning chains. In International Conference on Learning Representations, volume 2025, pages
+10840–10862, 2025.
+Mirac Suzgun, Nathan Scales, Nathanael Schärli, Sebastian Gehrmann, Yi Tay, Hyung Won Chung, Aakanksha Chowdhery, Quoc
+Le, Ed H Chi, Denny Zhou, et al. Challenging big-bench tasks and whether chain-of-thought can solve them. In Findings of the
+Association for Computational Linguistics: ACL 2023, pages 13003–13051, 2023.
+Zhengyang Tang, Xingxing Zhang, Benyou Wang, and Furu Wei. Mathscale: Scaling instruction tuning for mathematical reasoning.
+arXiv preprint arXiv:2403.02884, 2024.
+WT Luke Teacy, Jigar Patel, Nicholas R Jennings, and Michael Luck. Travos: Trust and reputation in the context of inaccurate
+information sources. Autonomous Agents and Multi-Agent Systems, 12(2):183–198, 2006.
+Gemma Team, Aishwarya Kamath, Johan Ferret, Shreya Pathak, Nino Vieillard, Ramona Merhej, Sarah Perrin, Tatiana Matejovicova,
+Alexandre Ramé, Morgane Rivière, Louis Rouillard, Thomas Mesnard, Geoffrey Cideron, Jean bastien Grill, Sabela Ramos,
+Edouard Yvinec, Michelle Casbon, Etienne Pot, Ivo Penchev, Gaël Liu, Francesco Visin, Kathleen Kenealy, Lucas Beyer, Xiaohai
+Zhai, Anton Tsitsulin, Robert Busa-Fekete, Alex Feng, Noveen Sachdeva, Benjamin Coleman, Yi Gao, Basil Mustafa, Iain Barr,
+Emilio Parisotto, David Tian, Matan Eyal, Colin Cherry, Jan-Thorsten Peter, Danila Sinopalnikov, Surya Bhupatiraju, Rishabh
+Agarwal, Mehran Kazemi, Dan Malkin, Ravin Kumar, David Vilar, Idan Brusilovsky, Jiaming Luo, Andreas Steiner, Abe Friesen,
+Abhanshu Sharma, Abheesht Sharma, Adi Mayrav Gilady, Adrian Goedeckemeyer, Alaa Saade, Alex Feng, Alexander Kolesnikov,
+Alexei Bendebury, Alvin Abdagic, Amit Vadi, András György, André Susano Pinto, Anil Das, Ankur Bapna, Antoine Miech,
+Antoine Yang, Antonia Paterson, Ashish Shenoy, Ayan Chakrabarti, Bilal Piot, Bo Wu, Bobak Shahriari, Bryce Petrini, Charlie
+Chen, Charline Le Lan, Christopher A. Choquette-Choo, CJ Carey, Cormac Brick, Daniel Deutsch, Danielle Eisenbud, Dee
+Cattle, Derek Cheng, Dimitris Paparas, Divyashree Shivakumar Sreepathihalli, Doug Reid, Dustin Tran, Dustin Zelle, Eric
+Noland, Erwin Huizenga, Eugene Kharitonov, Frederick Liu, Gagik Amirkhanyan, Glenn Cameron, Hadi Hashemi, Hanna
+Klimczak-Plucińska, Harman Singh, Harsh Mehta, Harshal Tushar Lehri, Hussein Hazimeh, Ian Ballantyne, Idan Szpektor,
+Ivan Nardini, Jean Pouget-Abadie, Jetha Chan, Joe Stanton, John Wieting, Jonathan Lai, Jordi Orbay, Joseph Fernandez, Josh
+Newlan, Ju yeong Ji, Jyotinder Singh, Kat Black, Kathy Yu, Kevin Hui, Kiran Vodrahalli, Klaus Greff, Linhai Qiu, Marcella
+Valentine, Marina Coelho, Marvin Ritter, Matt Hoffman, Matthew Watson, Mayank Chaturvedi, Michael Moynihan, Min Ma,
+Nabila Babar, Natasha Noy, Nathan Byrd, Nick Roy, Nikola Momchev, Nilay Chauhan, Noveen Sachdeva, Oskar Bunyan, Pankil
+Botarda, Paul Caron, Paul Kishan Rubenstein, Phil Culliton, Philipp Schmid, Pier Giuseppe Sessa, Pingmei Xu, Piotr Stanczyk,
+Pouya Tafti, Rakesh Shivanna, Renjie Wu, Renke Pan, Reza Rokni, Rob Willoughby, Rohith Vallu, Ryan Mullins, Sammy Jerome,
+Sara Smoot, Sertan Girgin, Shariq Iqbal, Shashir Reddy, Shruti Sheth, Siim Põder, Sijal Bhatnagar, Sindhu Raghuram Panyam,
+Sivan Eiger, Susan Zhang, Tianqi Liu, Trevor Yacovone, Tyler Liechty, Uday Kalra, Utku Evci, Vedant Misra, Vincent Roseberry,
+Vlad Feinberg, Vlad Kolesnikov, Woohyun Han, Woosuk Kwon, Xi Chen, Yinlam Chow, Yuvein Zhu, Zichuan Wei, Zoltan
+Egyed, Victor Cotruta, Minh Giang, Phoebe Kirk, Anand Rao, Kat Black, Nabila Babar, Jessica Lo, Erica Moreira, Luiz Gustavo
+Martins, Omar Sanseviero, Lucas Gonzalez, Zach Gleicher, Tris Warkentin, Vahab Mirrokni, Evan Senter, Eli Collins, Joelle
+Barral, Zoubin Ghahramani, Raia Hadsell, Yossi Matias, D. Sculley, Slav Petrov, Noah Fiedel, Noam Shazeer, Oriol Vinyals, Jeff
+Dean, Demis Hassabis, Koray Kavukcuoglu, Clement Farabet, Elena Buchatskaya, Jean-Baptiste Alayrac, Rohan Anil, Dmitry,
+Lepikhin, Sebastian Borgeaud, Olivier Bachem, Armand Joulin, Alek Andreev, Cassidy Hardin, Robert Dadashi, and Léonard
+Hussenot. Gemma 3 technical report, 2025a. URL https://arxiv.org/abs/2503.19786.
+Kimi Team, Tongtong Bai, Yifan Bai, Yiping Bao, SH Cai, Yuan Cao, Y Charles, HS Che, Cheng Chen, Guanduo Chen, et al. Kimi
+k2. 5: Visual agentic intelligence. arXiv preprint arXiv:2602.02276, 2026.
+MiniCPM Team, Chaojun Xiao, Yuxuan Li, Xu Han, Yuzhuo Bai, Jie Cai, Haotian Chen, Wentong Chen, Xin Cong, Ganqu Cui, et al.
+Minicpm4: Ultra-efficient llms on end devices. arXiv preprint arXiv:2506.07900, 2025b.
+Qwen Team. Qwen3. 5-omni technical report. arXiv preprint arXiv:2604.15804, 2026.
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin.
+Attention is all you need. Advances in neural information processing systems, 30, 2017.
+Alex Wang, Yada Pruksachatkun, Nikita Nangia, Amanpreet Singh, Julian Michael, Felix Hill, Omer Levy, and Samuel Bowman.
+Superglue: A stickier benchmark for general-purpose language understanding systems. Advances in neural information processing
+systems, 32, 2019.
+
+
+Declare Lab · NTU · Under review
+15
+Junlin Wang, Jue Wang, Ben Athiwaratkun, Ce Zhang, and James Y Zou. Mixture-of-agents enhances large language model
+capabilities. In International Conference on Learning Representations, volume 2025, pages 33944–33963, 2025.
+Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le, Ed Chi, Sharan Narang, Aakanksha Chowdhery, and Denny Zhou.
+Self-consistency improves chain of thought reasoning in language models. arXiv preprint arXiv:2203.11171, 2022.
+Johannes Welbl, Nelson F Liu, and Matt Gardner. Crowdsourcing multiple choice science questions. In Proceedings of the 3rd
+Workshop on Noisy User-generated Text, pages 94–106, 2017.
+Hermann Weyl. Das asymptotische verteilungsgesetz der eigenwerte linearer partieller differentialgleichungen (mit einer anwendung
+auf die theorie der hohlraumstrahlung). Mathematische Annalen, 71:441–479, 1912. .
+Shanglin Wu, Yuyang Luo, Yueqing Liang, Kaiwen Shi, Yanfang Ye, Ali Payani, and Kai Shu. Scaling teams or scaling time?
+memory enabled lifelong learning in llm multi-agent systems. arXiv preprint arXiv:2604.03295, 2026a.
+Yaxiong Wu, Sheng Liang, Chen Zhang, Yichao Wang, Yongyue Zhang, Huifeng Guo, Ruiming Tang, and Yong Liu. From human
+memory to ai memory: A survey on memory mechanisms in the era of llms. arXiv preprint arXiv:2504.15965, 2025.
+Yifan Wu, Lizhu Zhang, Yuhang Zhou, Mingyi Wang, Bo Peng, Serena Li, Xiangjun Fan, and Zhuokai Zhao. Remember when it
+matters: Proactive memory agent for long-horizon agents. arXiv preprint arXiv:2607.08716, 2026b.
+Andrea Wynn, Harsh Satija, and Gillian Hadfield. Talk isn’t always cheap: Understanding failure modes in multi-agent debate. arXiv
+preprint arXiv:2509.05396, 2025.
+An Yang, Beichen Zhang, Binyuan Hui, Bofei Gao, Bowen Yu, Chengpeng Li, Dayiheng Liu, Jianhong Tu, Jingren Zhou, Junyang Lin,
+et al. Qwen2. 5-math technical report: Toward mathematical expert model via self-improvement. arXiv preprint arXiv:2409.12122,
+2024.
+An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv,
+et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388, 2025.
+Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio, William Cohen, Ruslan Salakhutdinov, and Christopher D Manning.
+Hotpotqa: A dataset for diverse, explainable multi-hop question answering. In Proceedings of the 2018 conference on empirical
+methods in natural language processing, pages 2369–2380, 2018.
+Guibin Zhang, Muxin Fu, Kun Wang, Frank Wan, Miao Yu, and Shuicheng Yan. G-memory: Tracing hierarchical memory for
+multi-agent systems. Advances in Neural Information Processing Systems, 38:12988–13018, 2026.
+Yao Zhang, Chenyang Lin, Shijie Tang, Haokun Chen, Shijie Zhou, Yunpu Ma, and Volker Tresp. Swarmagentic: Towards fully
+automated agentic system generation via swarm intelligence. In Proceedings of the 2025 Conference on Empirical Methods in
+Natural Language Processing, pages 1778–1818, 2025a.
+Zeyu Zhang, Quanyu Dai, Xiaohe Bo, Chen Ma, Rui Li, Xu Chen, Jieming Zhu, Zhenhua Dong, and Ji-Rong Wen. A survey on the
+memory mechanism of large language model-based agents. ACM Transactions on Information Systems, 43(6):1–47, 2025b.
+Justin Zhao, Flor Miriam Plaza-del Arco, Benjamin Genchel, and Amanda Cercas Curry. Language model council: Democratically
+benchmarking foundation models on highly subjective tasks. In Proceedings of the 2025 Conference of the Nations of the Americas
+Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers), pages
+12395–12450, 2025.
+Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li,
+Eric Xing, et al. Judging llm-as-a-judge with mt-bench and chatbot arena. Advances in neural information processing systems, 36:
+46595–46623, 2023.
+Wanjun Zhong, Lianghong Guo, Qiqi Gao, He Ye, and Yanlin Wang. Memorybank: Enhancing large language models with long-term
+memory. In Proceedings of the AAAI conference on artificial intelligence, volume 38, pages 19724–19731, 2024.
+R. Zhou et al. Epistemic context learning: Building trust in LLM-based multi-agent systems. arXiv preprint arXiv:2601.21742,
+2026a.
+Ruiwen Zhou, Maojia Song, Xiaobao Wu, Sitao Cheng, Xunjian Yin, Yuxi Xie, Zhuoqun Hao, Wenyue Hua, Liangming Pan,
+Soujanya Poria, et al. Epistemic context learning: Building trust the right way in llm-based multi-agent systems. arXiv preprint
+arXiv:2601.21742, 2026b.
+Mingchen Zhuge, Wenyi Wang, Louis Kirsch, Francesco Faccio, Dmitrii Khizbullin, and Jürgen Schmidhuber. Gptswarm: Language
+agents as optimizable graphs. In Forty-first International Conference on Machine Learning, 2024a.
+
+
+Declare Lab · NTU · Under review
+16
+Mingchen Zhuge, Wenyi Wang, Louis Kirsch, Francesco Faccio, Dmitrii Khizbullin, and Jürgen Schmidhuber. Language agents as
+optimizable graphs. arXiv preprint arXiv:2402.16823, 2024b.
+
+
+Declare Lab · NTU · Under review
+17
+A Theoretical Analysis
+A.1 Proof of Weyl’s Inequality
+We provide a proof of the eigenvalue perturbation bound used in Eq. 1. Let M, E ∈R𝑟×𝑟be real symmetric matrices,
+and order the eigenvalues of any real symmetric matrix A as
+𝜆1(A) ≥𝜆2(A) ≥· · · ≥𝜆𝑟(A).
+According to the Courant–Fischer variational principle (Bhatia, 1997), the 𝑖-th eigenvalue of A satisfies
+𝜆𝑖(A) =
+min
+S⊆R𝑟
+dim(S)=𝑟−𝑖+1
+max
+v∈S
+∥v∥2=1
+v⊤Av.
+(21)
+For every unit vector v, the definition of the spectral norm gives
+v⊤Ev
+ ≤∥v∥2∥Ev∥2 ≤∥E∥2.
+(22)
+Therefore,
+𝜆𝑖(M + E) =
+min
+S⊆R𝑟
+dim(S)=𝑟−𝑖+1
+max
+v∈S
+∥v∥2=1
+v⊤(M + E)v
+≤
+min
+S⊆R𝑟
+dim(S)=𝑟−𝑖+1
+max
+v∈S
+∥v∥2=1
+ v⊤Mv + ∥E∥2
+
+= 𝜆𝑖(M) + ∥E∥2.
+(23)
+To obtain the reverse bound, we write M = (M + E) + (−E) and apply Eq. 23 again:
+𝜆𝑖(M) ≤𝜆𝑖(M + E) + ∥−E∥2
+= 𝜆𝑖(M + E) + ∥E∥2.
+(24)
+Hence,
+𝜆𝑖(M) −∥E∥2 ≤𝜆𝑖(M + E) ≤𝜆𝑖(M) + ∥E∥2.
+(25)
+Combining the two inequalities yields
+|𝜆𝑖(M + E) −𝜆𝑖(M)| ≤∥E∥2,
+𝑖= 1, . . . , 𝑟,
+(26)
+which proves Eq. (1).
+A.2 Proof of Theorem 1
+This subsection proves Theorem 1 from the main text. The proof proceeds in three steps: (1) a single-step spectral
+perturbation bound, (2) a general signal-noise decomposition of the projected memory under an arbitrary sequence of
+task directions, and (3) specializing this decomposition to persistent alignment with a fixed competence direction and
+combining it with the variational characterization of eigenvalues to conclude the proof.
+Step 1: Single-Step Spectral Perturbation Bound
+Proposition 1 (Bounded perturbation per event). For every peer 𝑝and step 𝑡, every eigenvalue of M(𝑡+1)
+𝑝
+satisfies
+𝜆𝑖
+ M(𝑡+1)
+𝑝
+ −𝛾𝜆𝑖
+ M(𝑡)
+𝑝
+ ≤𝜂.
+(27)
+Proof. Write M(𝑡+1)
+𝑝
+= 𝛾M(𝑡)
+𝑝+ E𝑡with E𝑡= 𝜂𝑐𝑝,𝑡𝝓(x𝑡)𝝓(x𝑡)⊤. Since ∥𝝓(x𝑡)∥2 = 1 and E𝑡is rank one, its only
+nonzero eigenvalue is 𝜂𝑐𝑝,𝑡∈{−𝜂, 𝜂}, so ∥E𝑡∥2 = 𝜂. Both 𝛾M(𝑡)
+𝑝and E𝑡are symmetric, so Weyl’s inequality (Eq. 1)
+applies directly with M = 𝛾M(𝑡)
+𝑝and E = E𝑡.
+□
+
+
+Declare Lab · NTU · Under review
+18
+This confirms that no single event, however extreme, can move any eigenvalue of the (decayed) memory by more than 𝜂.
+The remaining steps show what this buys us over a long horizon.
+Step 2: A General Signal-Noise Decomposition
+Assumption 1 (Task-conditional competence model). Fix a unit reference direction 𝝓★∈R𝑟(e.g., a task type of
+interest) and write 𝜓𝑡=  𝝓(x𝑡)⊤𝝓★2 ∈[0, 1] for the squared alignment of the event-𝑡task direction with 𝝓★. The
+correctness label decomposes as
+𝑐𝑝,𝑡= 𝜇𝑝(x𝑡) + 𝜉𝑡,
+(28)
+where 𝜇𝑝(x𝑡) ∈[−1, 1] is peer 𝑝’s (unknown, task-dependent) expected competence and 𝜉0, 𝜉1, . . . are independent,
+zero-mean noise terms with 𝜉𝑡∈[−2, 2] almost surely.
+This is the minimal model needed to separate “true, task-dependent competence” from “event-level noise” while keeping
+𝑐𝑝,𝑡∈{−1, 1} exactly, since 𝜉𝑡= 𝑐𝑝,𝑡−𝜇𝑝(x𝑡) automatically lies in [−2, 2].
+Definition 1 (Projected memory signal). For a fixed unit direction 𝝓★, define the scalar projection
+𝑠𝑇= 𝝓★⊤M(𝑇)
+𝑝𝝓★.
+(29)
+Lemma 1 (Signal accumulates, noise stays bounded). Under Assumption 1, with M(0)
+𝑝
+= 0, the projected memory
+signal decomposes as
+𝑠𝑇=
+𝜂
+𝑇−1
+∑︁
+𝑡=0
+𝛾𝑇−1−𝑡𝜓𝑡𝜇𝑝(x𝑡)
+|                        {z                        }
+𝑆𝑇(deterministic signal)
++ 𝜂
+𝑇−1
+∑︁
+𝑡=0
+𝛾𝑇−1−𝑡𝜓𝑡𝜉𝑡
+|                 {z                 }
+𝑁𝑇(noise)
+.
+(30)
+The noise term satisfies, for every 𝜀> 0,
+P |𝑁𝑇| ≥𝜀 ≤2 exp
+
+−𝜀2(1 −𝛾2)
+8𝜂2
+
+,
+(31)
+so that, with probability at least 1 −𝛿,
+|𝑁𝑇| ≤𝜂
+√︄
+8 log(2/𝛿)
+1 −𝛾2
+for every 𝑇,
+(32)
+uniformly in the horizon 𝑇.
+Proof. Unrolling the recursion of Eq. 6 from M(0)
+𝑝
+= 0 gives M(𝑇)
+𝑝
+= 𝜂Í𝑇−1
+𝑡=0 𝛾𝑇−1−𝑡𝑐𝑝,𝑡𝝓(x𝑡)𝝓(x𝑡)⊤. Projecting onto
+𝝓★and substituting 𝑐𝑝,𝑡= 𝜇𝑝(x𝑡) + 𝜉𝑡gives the stated decomposition, using  𝝓(x𝑡)⊤𝝓★2 = 𝜓𝑡.
+For the concentration bound, write 𝑁𝑇= Í𝑇−1
+𝑡=0 𝑌𝑡with 𝑌𝑡= 𝜂𝛾𝑇−1−𝑡𝜓𝑡𝜉𝑡. The 𝑌𝑡are independent (since the 𝜉𝑡are),
+each has mean zero, and 𝑌𝑡∈
+
+−2𝜂𝛾𝑇−1−𝑡𝜓𝑡, 2𝜂𝛾𝑇−1−𝑡𝜓𝑡
+
+, a bounded range of length 4𝜂𝛾𝑇−1−𝑡𝜓𝑡. Hoeffding’s
+inequality for sums of independent bounded random variables gives
+P(|𝑁𝑇| ≥𝜀) ≤2 exp
+ 
+−
+2𝜀2
+Í𝑇−1
+𝑡=0
+ 4𝜂𝛾𝑇−1−𝑡𝜓𝑡
+2
+!
+= 2 exp
+ 
+−
+𝜀2
+8𝜂2 Í𝑇−1
+𝑡=0 𝛾2(𝑇−1−𝑡)𝜓2
+𝑡
+!
+.
+(33)
+Since 𝜓𝑡∈[0, 1], Í𝑇−1
+𝑡=0 𝛾2(𝑇−1−𝑡)𝜓2
+𝑡≤Í𝑇−1
+𝑘=0 𝛾2𝑘≤
+1
+1−𝛾2 , which gives Eq. 31. Inverting the tail bound at level 𝛿gives
+Eq. 32.
+□
+Lemma 1 makes the qualitative claim in Section 3.1 precise: however long the memory runs, the noise contribution
+to any fixed direction is bounded by 𝑂 𝜂/
+√︁
+1 −𝛾2 with high probability, which does not grow with 𝑇. Whether M𝑝
+becomes a reliable competence signal along 𝝓★therefore depends entirely on whether the deterministic signal 𝑆𝑇grows
+to exceed this fixed noise floor, which is exactly what persistent alignment guarantees, as we show next.
+Step 3: Persistent Alignment and Proof of Theorem 1
+
+
+Declare Lab · NTU · Under review
+19
+Corollary 1 (Stationary signal-to-noise ratio under persistent alignment). Suppose the task direction is persistently
+aligned with 𝝓★(𝜓𝑡= 1 for all 𝑡) and peer 𝑝has a constant competence bias 𝜇𝑝(x𝑡) = 𝜇𝑝in this direction. Then the
+deterministic signal satisfies
+𝑆𝑇= 𝜂𝜇𝑝
+1 −𝛾𝑇
+1 −𝛾
+−−−−→
+𝑇→∞
+𝑆∞= 𝜂𝜇𝑝
+1 −𝛾,
+(34)
+while the noise bound of Eq. 32 stabilizes at 𝑂 𝜂/
+√︁
+1 −𝛾2. The resulting stationary signal-to-noise ratio is
+SNR(𝛾) =
+𝑆∞
+𝜂/
+√︁
+1 −𝛾2 = 𝜇𝑝
+√︄
+1 + 𝛾
+1 −𝛾,
+(35)
+which is strictly increasing in 𝛾and diverges as 𝛾→1−.
+Proof. Immediate from Lemma 1 with 𝜓𝑡≡1 and 𝜇𝑝(x𝑡) ≡𝜇𝑝: 𝑆𝑇is a geometric series summing to 𝜂𝜇𝑝(1−𝛾𝑇)/(1−𝛾),
+which tends to 𝜂𝜇𝑝/(1 −𝛾) as 𝑇→∞. The stationary noise scale follows by taking 𝑇→∞in Eq. 32, where the
+bound (up to the
+√︁
+log(2/𝛿) factor) is 𝜂/
+√︁
+1 −𝛾2. Dividing gives SNR(𝛾) = 𝜂𝜇𝑝/(1−𝛾)
+𝜂/√
+1−𝛾2
+= 𝜇𝑝
+√︁
+(1 −𝛾2)/(1 −𝛾) =
+𝜇𝑝
+√︁
+(1 + 𝛾)/(1 −𝛾), which is increasing in 𝛾on [0, 1) since (1 + 𝛾)/(1 −𝛾) is increasing, and tends to +∞as
+𝛾→1−.
+□
+Remark 1 (Memory-length/adaptivity trade-off). Corollary 1 shows that increasing 𝛾strictly improves the stationary
+signal-to-noise ratio under a constant competence bias 𝜇𝑝. This trade-off is one-sided in our model because Assumption 1
+treats 𝜇𝑝as time-invariant; if a peer’s competence drifts over time, a larger 𝛾also slows how quickly M𝑝forgets
+outdated evidence and adapts to the new competence level.
+It remains to connect the scalar projection 𝑠𝑇back to the spectrum of M(𝑇)
+𝑝
+itself, via the variational characterization of
+eigenvalues, which completes the proof of Theorem 1.
+Proof of Theorem 1. Since M(𝑇)
+𝑝
+is symmetric, the Rayleigh–Ritz theorem gives
+𝜆max
+ M(𝑇)
+𝑝
+ ≥𝝓★⊤M(𝑇)
+𝑝𝝓★= 𝑠𝑇
+(36)
+for the fixed unit vector 𝝓★. By Lemma 1 and Eq. 32, 𝑠𝑇= 𝑆𝑇+ 𝑁𝑇≥𝑆𝑇−𝜂
+√︁
+8 log(2/𝛿)/(1 −𝛾2) with probability at
+least 1 −𝛿. Substituting 𝑆𝑇from Corollary 1 gives
+𝜆max
+ M(𝑇)
+𝑝
+ ≥𝜂𝜇𝑝
+1 −𝛾𝑇
+1 −𝛾
+−𝜂
+√︄
+8 log(2/𝛿)
+1 −𝛾2
+(37)
+with probability at least 1 −𝛿, which is the bound stated in Theorem 1. The noise term is independent of 𝑇by
+construction, and the signal term saturates at 𝜂𝜇𝑝/(1 −𝛾) with stationary signal-to-noise ratio 𝜇𝑝
+√︁
+(1 + 𝛾)/(1 −𝛾),
+increasing in 𝛾, by Corollary 1. This proves all parts of the theorem.
+□
+Thus, once 𝑇is large enough that 𝜂𝜇𝑝(1 −𝛾𝑇)/(1 −𝛾) exceeds the noise floor 𝜂
+√︁
+8 log(2/𝛿)/(1 −𝛾2), equivalently,
+once SNR(𝛾)
+√︁
+1 −𝛾2𝑇exceeds
+√︁
+8 log(2/𝛿), the leading eigenvalue of M𝑝is, with high probability, bounded away
+from zero by an amount reflecting peer 𝑝’s true competence 𝜇𝑝in that direction, and not merely an artifact of event-level
+noise.
+B Dataset Construction
+B.1 Training Dataset
+We train Σ-Mem on a fixed offline dataset containing 2,963 task events from three competence domains: mathematics,
+retrieval-augmented question answering, and coding. Specifically, the dataset contains 1,000 examples from the
+GSM8K (Cobbe et al., 2021) training split, 1,000 examples from the SQuAD (Rajpurkar et al., 2016) training split,
+and 963 examples fromthe APPS (Hendrycks et al., 2021) training split. For each task, we independently generate one
+
+
+Declare Lab · NTU · Under review
+20
+response from each of three fixed peer models: Gemma-3-4B-it (Team et al., 2025a), Phi-4-mini-instruct (Abouelenin
+et al., 2025), and Qwen2.5-Coder-7B-Instruct (Yang et al., 2025). Each peer response is then evaluated to obtain a
+binary correctness label used for event-level memory updates. Table 5 summarizes the correctness of each peer on the
+training dataset.
+Table 5: Peer correctness on the training dataset. Each entry reports accuracy. The best performing peer on each dataset is highlighted
+in bold.
+Dataset
+N
+Gemma-3-4B-it
+Phi-4-mini
+Qwen2.5-Coder
+GSM8K (Cobbe et al., 2021)
+1,000
+81.00%
+61.90%
+71.00%
+SQuAD (Rajpurkar et al., 2016)
+1,000
+12.80%
+83.70%
+50.90%
+APPS (Hendrycks et al., 2021)
+963
+25.86%
+8.10%
+17.65%
+Overall
+2,963
+40.06%
+51.77%
+46.88%
+B.2 Counterfactual Attack Dataset
+We construct a counterfactual attack dataset from nine benchmarks covering mathematics, retrieval-augmented question
+answering (RAG), and coding. The mathematics subset is drawn from MATH-500 (Hendrycks et al., 2021; Lightman
+et al., 2024), AMC23 (Yang et al., 2024), OlympiadBench (He et al., 2024), and CollegeMath (Tang et al., 2024); the
+RAG subset is drawn from HotpotQA (Yang et al., 2018) and TriviaQA (Joshi et al., 2017); and the coding subset is
+drawn from HumanEval (Chen et al., 2021), MBPP (Austin et al., 2021), and LiveCodeBench (Jain et al., 2025). Each
+counterfactual split contains the same 2,685 tasks, including 1,216 mathematics tasks, 1,075 RAG tasks, and 394 coding
+tasks.
+For each constituent dataset, we first measure the clean accuracy of the three peers and designate the best-performing
+model as the strong peer. An event is eligible for counterfactual construction if the strong peer answers correctly and
+at least one of the remaining peers answers incorrectly. We then swap the complete response and correctness label
+of the strong peer with those of one incorrect weak peer, while keeping the peer identities and metadata unchanged.
+The attack ratio 𝑟denotes the proportion of eligible events that are swapped within each dataset. We evaluate
+𝑟∈{0%, 50%, 70%, 90%}, where CF@0 is the clean baseline. All four splits share the same underlying task events.
+Finally, we pool the nine datasets and apply a deterministic shuffle to form a single mixed-domain evaluation stream.
+Table 6: Peer accuracy under different counterfactual attack ratios. All splits contain the same 2,685 task events. The best performing
+peer in each split is highlighted in bold.
+CF Ratio
+N
+Gemma-3-4B-it
+Phi-4-mini
+Qwen2.5-Coder
+CF@0
+2,685
+55.68%
+46.93%
+48.42%
+CF@50
+2,685
+44.69%
+43.43%
+62.91%
+CF@70
+2,685
+40.30%
+41.08%
+69.65%
+CF@90
+2,685
+35.87%
+39.37%
+75.79%
+To evaluate generalization to larger peer sets, we extend the original three-peer evaluation stream with two unseen peer
+models, Llama-3.2-3B-Instruct (Grattafiori et al., 2024) and BitCPM-CANN-3B (Team et al., 2025b). We construct a
+four-peer setting by adding Llama-3.2-3B-Instruct and a five-peer setting by further adding BitCPM-CANN-3B, without
+modifying the learned parameters of Σ-Mem. Both settings use the same 2,685 task events, domain composition, and
+counterfactual attack ratios as the original three-peer evaluation. The peer accuracies for the two enlarged peer pools are
+reported in Tables 7 and 8.
+B.3 Generalization Beyond Training Domains
+Although Σ-Mem is trained only on mathematics, RAG, and coding events, it can map an unseen task into the
+learned competence-direction space through 𝝓(x). This allows historical reliability evidence from related training
+domains to be reused for new tasks. To evaluate this capability, we test the three fixed peers on out-of-distribution
+(OOD) benchmarks covering physical commonsense reasoning (PIQA (Bisk et al., 2020)), broad-domain knowledge
+understanding (MMLU (Hendrycks et al., 2020)), science question answering (OpenBookQA (Mihaylov et al., 2018)
+
+
+Declare Lab · NTU · Under review
+21
+Table 7: Peer accuracy under different counterfactual attack ratios in the four-peer setting. All splits contain the same 2,685 task
+events. The best-performing peer in each split is highlighted in bold.
+CF Ratio
+N
+Gemma-3-4B-it
+Phi-4-mini
+Qwen2.5-Coder
+Llama-3.2t
+CF@0
+2,685
+55.68%
+46.93%
+48.42%
+38.70%
+CF@50
+2,685
+40.45%
+37.02%
+57.06%
+55.20%
+CF@70
+2,685
+34.30%
+33.00%
+60.56%
+61.86%
+CF@90
+2,685
+28.27%
+29.01%
+63.95%
+68.49%
+Table 8: Peer accuracy under different counterfactual attack ratios in the five-peer setting. All splits contain the same 2,685 task
+events. The best-performing peer in each split is highlighted in bold.
+CF Ratio
+N
+Gemma-3-4B-it
+Phi-4-mini
+Qwen2.5-Coder
+Llama-3.2
+BitCPM-CANN-3B
+CF@0
+2,685
+55.68%
+46.93%
+48.42%
+38.70%
+46.78%
+CF@50
+2,685
+38.29%
+34.56%
+53.45%
+51.17%
+59.03%
+CF@70
+2,685
+31.36%
+29.53%
+55.53%
+56.09%
+63.99%
+CF@90
+2,685
+24.36%
+24.47%
+57.54%
+61.04%
+69.09%
+and SciQ (Welbl et al., 2017)), complex reasoning (BBH (Suzgun et al., 2023)), and natural-language understanding
+(SuperGLUE (Wang et al., 2019)). Table 9 summarizes peer accuracy across these unseen domains.
+Table 9: Peer accuracy on benchmarks beyond the training domains. The SuperGLUE result is computed by pooling its six evaluated
+subsets by instance count. The best-performing peer on each benchmark is highlighted in bold.
+Dataset
+N
+Gemma-3-4B-it
+Phi-4-mini
+Qwen2.5-Coder
+PIQA (Bisk et al., 2020)
+1,838
+76.99%
+80.14%
+84.44%
+MMLU (Hendrycks et al., 2020)
+1,531
+54.08%
+64.08%
+56.17%
+OpenBookQA (Mihaylov et al., 2018)
+500
+72.80%
+76.40%
+79.80%
+SciQ (Welbl et al., 2017)
+1,000
+87.10%
+90.10%
+92.10%
+BBH (Suzgun et al., 2023)
+6,511
+28.67%
+10.69%
+12.78%
+SuperGLUE (Wang et al., 2019)
+6,023
+77.47%
+79.15%
+80.67%
+C Direct Memory Readout under Counterfactual Streams
+To further illustrate how recorded historical competence evidence works for peer selection, we conduct a separation
+experiment on the CF streams. For each counterfactual ratio, we directly read out the peer-specific memory matrices and
+perform M-route: the current problem is encoded into a competence direction 𝝓(x𝑡), each peer receives a reliability
+score 𝑠𝑝,𝑡= 𝝓(x𝑡)⊤M(𝑡)
+𝑝𝝓(x𝑡), and the peer with the largest score is selected. This route does not use the peer responses
+during selection; the correctness labels are only used afterward to update the memory.
+We additionally compare against a conventional Bayesian Beta B1 reputation baseline. B1 maintains one global
+posterior Beta(𝛼𝑝, 𝛽𝑝) for each peer. Starting from Beta(1, 1), we first warm the posteriors on the same 2,963-event
+mixed training set used by Σ-Mem. For each CF ratio, we initialize B1 from this mixed-trained state, select the peer with
+the largest posterior mean 𝛼𝑝/(𝛼𝑝+ 𝛽𝑝), and then update all peers after the current correctness feedback is revealed:
+𝛼𝑝←𝛾𝛼𝑝+ 𝑟𝑝,
+𝛽𝑝←𝛾𝛽𝑝+ (1 −𝑟𝑝),
+(38)
+where 𝑟𝑝∈{0, 1} and 𝛾= 0.9. B1 is response-blind and model-independent: it receives neither the current question
+nor any peer response, and uses only accumulated correctness feedback. The results are shown in Table 10.
+The results reflect two factors: the judgment ability of the central model and the validity of the historical signal in the
+stream. For the Qwen3 center models, whose response-level judgment is weaker, M-route matches or exceeds Σ w/G in
+
+
+Declare Lab · NTU · Under review
+22
+Table 10: Counter Factual (CF) Attack results under different CF@ratios. Acc denotes the task accuracy obtained using the selected
+peer response, and p1(Gemma)/p2(Phi)/p3(Qwen-Coder) reports selection counts for the three peers. M-route directly selects peers
+from the question-derived memory readout without observing peer responses. Bayesian Beta B1 instead uses a mixed-trained global
+correctness posterior and is model-independent, so it is reported once in the final row. We highlight the best result within each
+center-model block and CF@ratio.
+Model
+CF@0
+CF@50
+CF@70
+CF@90
+Acc
+p1/p2/p3
+Acc
+p1/p2/p3
+Acc
+p1/p2/p3
+Acc
+p1/p2/p3
+Qwen3-0.6B
+61.01%
+1837/192/656
+52.89%
+1828/222/635
+50.50%
+1838/228/619
+46.22%
+1830/229/626
++ Σ w/o G
+64.17%
+1801/355/529
+55.38%
+617/511/1557
+61.19%
+261/714/1710
+68.64%
+82/968/1635
++ Σ w/ G
+63.87%
+1817/347/521
+56.42%
+614/396/1675
+62.72%
+286/518/1881
+71.10%
+81/611/1993
++ M-route
+65.51% 1102/1063/520 57.88%
+471/428/1786
+66.67%
+251/310/2124
+76.91%
+84/342/2259
+Qwen3-4B
+61.71%
+930/339/1416
+65.55%
+930/429/1326
+65.77%
+944/460/1281
+67.86%
+955/482/1248
++ Σ w/o G
+63.35%
+1434/589/662
+61.15%
+451/390/1844
+66.41%
+238/363/2084
+72.74%
+129/351/2205
++ Σ w/ G
+64.51%
+1290/542/853
+63.61%
+447/344/1894
+67.64%
+265/300/2120
+73.30%
+143/287/2255
++ M-route
+64.58% 1122/1036/527 56.69%
+470/411/1804
+65.40%
+241/301/2143
+75.42%
+82/335/2268
+Qwen3-8B
+66.89% 1068/572/1045 67.67% 1006/573/1106 66.26% 1008/566/1111 66.07%
+985/545/1155
++ Σ w/o G
+67.75%
+1392/624/669
+62.53%
+535/547/1603
+64.80%
+307/552/1826
+68.34%
+227/571/1887
++ Σ w/ G
+67.67%
+1384/558/743
+63.76%
+500/462/1723
+66.33%
+230/493/1962
+69.16%
+129/494/2062
++ M-route
+68.75% 1123/1050/512 57.91%
+451/409/1825
+66.52%
+258/269/2158
+75.72%
+100/261/2324
+Qwen3.5-4B
+67.15%
+1360/438/887
+66.15%
+1271/526/888
+64.69%
+1258/563/864
+63.87%
+1211/565/909
++ Σ w/o G
+70.99%
+1745/583/357
+60.89%
+463/385/1837
+66.89%
+179/457/2049
+73.15%
+70/696/1919
++ Σ w/ G
+72.77%
+1619/596/470
+63.17%
+451/331/1903
+68.60%
+182/314/2189
+75.46%
+71/288/2326
++ M-route
+71.99%
+1236/956/493
+57.39%
+435/390/1860
+67.49%
+225/246/2214
+76.72%
+84/218/2383
+Qwen3.5-9B
+66.48% 1041/582/1062 68.94% 1144/528/1013 69.65%
+1196/495/994
+70.99% 1193/481/1011
++ Σ w/o G
+71.81%
+1771/514/400
+62.83%
+469/359/1857
+69.24%
+210/343/2132
+75.46%
+137/329/2219
++ Σ w/ G
+71.84%
+1629/498/558
+65.96%
+459/316/1910
+71.40%
+194/284/2207
+76.95%
+95/214/2376
++ M-route
+77.36% 1266/1005/414 56.20%
+446/412/1827
+67.08%
+280/291/2114
+74.79%
+163/276/2246
+Bayesian Beta B1 51.43%
+1397/667/621
+58.18%
+328/282/2075
+67.26%
+96/130/2459
+75.23%
+31/28/2626
+9 of 12 settings, with margins up to 5.81 points (Qwen3-0.6B, CF@90) and 6.56 points (Qwen3-8B, CF@90). Σ-Mem
+must pass its reliability evidence through the central model’s judgment, while M-route does not, so a weak judge dilutes
+the benefit of the memory. For the stronger Qwen3.5 backbones, the comparison flips: Σ w/G surpasses M-route in 6 of
+8 settings, and where M-route remains ahead, the margin shrinks. For example, at CF@90 the M-route advantage is
+1.26 points for Qwen3.5-4B, compared with 2.12 and 6.56 points for Qwen3-4B and Qwen3-8B at the same split. A
+stronger central model therefore converts the same memory state into better decisions by adding reliable response-level
+judgment on top of it. The main exception across all central models is CF@50, where M-route falls to 56.20%–57.91%
+and lies below Σ w/G for every central model larger than 0.6B. This is not a failure of the memory mechanism but
+its faithful behavior: the CF@50 stream is ambiguous by construction, since half of the history supports the
+original peer preference while the other half supports the counterfactual shift, and a faithful memory cannot
+produce confident guidance from evidence that contains none. Therefore, using historical reliability evidence
+to guide peer selection can become misleading when the stream itself provides ambiguous reliability evidence.
+This reinforces our interpretation that Σ-Mem integrates the historical evidence it receives, and motivates decision
+rules that balance memory-based reliability with the center model’s current response-level judgment. Indeed, at
+CF@50 that response-level judgment is the only informative signal, which explains why Σ w/G retains a clear advantage
+over M-route for every central model above 0.6B.
+The Bayesian comparison provides a complementary control. Beta B1 obtains 51.43%, 58.18%, 67.26%, and 75.23%
+from CF@0 to CF@90. At CF@0, Σ w/G exceeds B1 by 12.44–21.34 points across all center models, showing the
+
+
+Declare Lab · NTU · Under review
+23
+limitation of representing heterogeneous mathematics, RAG, and coding reliability with only one global posterior per
+peer. At CF@50, Σ w/G also exceeds B1 for four of the five center models. As the counterfactual shift becomes
+dominant, B1 adapts by selecting Qwen-Coder 2,459 times at CF@70 and 2,626 times at CF@90, making it competitive
+with both M-route and Σ-Mem. Nevertheless, the Qwen3.5 variants with Σ w/G remain above B1 at both CF@70 and
+CF@90. These results show that a global Bayesian success-rate estimator is strong when one peer becomes globally
+dominant, while task-conditioned memory and current-response judgment are more effective when reliability varies
+across tasks or the global history is ambiguous.
+Overall, memory-only routing is preferable when the judge is weak or the reliability pattern in the stream is stable, while
+response-based judgment becomes essential when history is ambiguous, and its value grows with the strength of the
+central model. The Beta B1 comparison further shows that the gains of Σ-Mem cannot be reduced to conventional
+global Bayesian reputation tracking.
+D SuperGLUE breakdown
+The aggregate SuperGLUE result in Table 9 pools the six evaluated validation subsets according to their number of
+instances. Table 11 reports peer accuracy on each subset separately.
+Table 11: Peer accuracy on the six evaluated SuperGLUE subsets. The best-performing peer on each subset is highlighted in bold.
+SuperGLUE Subset
+N
+Gemma-3-4B-it
+Phi-4-mini
+Qwen2.5-Coder
+WiC
+638
+54.70%
+62.70%
+59.56%
+RTE
+277
+54.15%
+30.32%
+88.81%
+CB
+56
+48.21%
+5.36%
+82.14%
+COPA
+100
+93.00%
+93.00%
+97.00%
+WSC
+104
+37.50%
+43.27%
+47.12%
+MultiRC
+4,848
+82.67%
+85.44%
+83.35%
+Qwen3-0.6B
+Qwen3-4B
+Qwen3-8B
+Qwen3.5-4B
+Qwen3.5-9B
+SuperGLUE_WiC
+SuperGLUE_RTE
+SuperGLUE_CB
+SuperGLUE_COPA
+SuperGLUE_WSC
+SuperGLUE_MultiRC
+Base accuracy
+Gain w/ Σ-Mem
+Degradation w/ Σ-Mem
+Oracle (at least 1 correct peer)
+83.4
+94.6
+89.3
+99.0
+51.9
+93.7
+54.2
++7.4
+50.9
++37.2
+44.6
++37.5
+95.0
++1.0
+36.5
++4.8
+81.1
++3.4
+54.9
++6.4
+45.9
++40.4
+48.2
++33.9
+96.0
++0.0
+36.5
++5.8
+84.0
++0.0
+59.2
++2.4
+60.6
++27.4
+35.7
++44.6
+96.0
+-4.0
+36.5
++4.8
+83.7
++1.1
+55.3
++6.4
+87.4
++0.0
+67.9
++14.3
+96.0
+-4.0
+36.5
++6.7
+83.1
++1.2
+58.3
++3.0
+86.3
+-0.4
+73.2
++8.9
+96.0
+-3.0
+39.4
++3.9
+84.1
++1.1
+Figure 4: SuperGLUE dataset breakdown across six subtasks. Each horizontal bar decomposes performance into the base model
+accuracy and the change introduced by Σ-Mem: positive gains are shown in red, while degradations are shown in blue. The orange
+dashed line denotes the oracle accuracy obtained when at least one peer provides a correct answer, which is the upper bound of
+accuracy.
+As shown in Figure 4, Σ-Mem improves aggregation accuracy in most cases. The gains are particularly large for the
+Qwen3 models on SuperGLUE-RTE and SuperGLUE-CB, where the base center models fail to identify the correct
+peer, while historical competence and peer-relationship evidence substantially improve selection. A small degradation
+appears in a few cases where the base model is already highly accurate, as historical steering can slightly alter an
+otherwise correct judgment. Nevertheless, after applying Σ-Mem, performance across nearly all cases moves closer to
+the oracle upper bound, demonstrating its overall effectiveness for more reliable peer aggregation.
+E Validation of Historical Competence in M
+This section reports the per-benchmark results for the direct-readout experiments of Sec. 4.5. The decision rules are
+defined in Sec. 3.4.
+
+
+Declare Lab · NTU · Under review
+24
+We evaluate this diagnostic on the same OOD datasets and three fixed peers described in Sec. B.3 using Qwen3-0.6B,
+Qwen3-4B, Qwen3-8B, Qwen3.5-4B, and Qwen3.5-9B as central models. These comparisons isolate the contribution of
+task-conditioned historical competence evidence itself provides reliable signals. The experimental results are as follows.
+Table 12: Qwen 3- 0.6B: Diagnostic results of directly reading historical competence evidence from M𝑝. The best-performing
+result on each benchmark is highlighted in bold.
+OOD Group
+N
+Base
+Σ w/ G
+Majority
+M Route
+M Vote
+PIQA
+1,838
+80.69%
+81.12%
+83.73%
+82.64%
+83.73%
+MMLU
+1,531
+57.61%
+61.20%
+62.12%
+60.42%
+61.01%
+OpenBookQA
+500
+74.00%
+79.00%
+81.00%
+78.60%
+81.20%
+SciQ
+1,000
+88.10%
+88.50%
+92.50%
+90.60%
+92.60%
+BBH
+6,511
+25.25%
+28.77%
+22.78%
+28.54%
+27.54%
+SuperGLUE
+6,023
+75.99%
+80.38%
+82.78%
+82.30%
+83.10%
+Overall
+17,403
+56.52%
+59.89%
+59.12%
+60.67%
+60.93%
+Table 13: Qwen3-4B: Diagnostic results of directly reading historical competence evidence from M𝑝. The best-performing result
+on each benchmark is highlighted in bold.
+OOD Group
+N
+Base
+Σ w/ G
+Majority
+M Route
+M Vote
+PIQA
+1,838
+81.77%
+82.92%
+83.73%
+82.64%
+83.73%
+MMLU
+1,531
+60.29%
+62.51%
+62.12%
+60.55%
+61.20%
+OpenBookQA
+500
+76.20%
+78.40%
+81.00%
+78.40%
+81.20%
+SciQ
+1,000
+89.90%
+91.00%
+92.50%
+90.60%
+92.60%
+BBH
+6,511
+20.38%
+28.66%
+22.78%
+28.52%
+27.65%
+SuperGLUE
+6,023
+78.18%
+81.14%
+82.78%
+82.35%
+83.03%
+Overall
+17,403
+55.98%
+60.54%
+59.12%
+60.68%
+60.96%
+Table 14: Qwen3-8B: Diagnostic results of directly reading historical competence evidence from M𝑝. The best-performing result
+on each benchmark is highlighted in bold.
+OOD Group
+N
+Base
+Σ w/ G
+Majority
+M Route
+M Vote
+PIQA
+1,838
+82.92%
+83.57%
+83.73%
+82.59%
+83.84%
+MMLU
+1,531
+60.42%
+62.90%
+62.12%
+60.61%
+61.33%
+OpenBookQA
+500
+79.60%
+79.00%
+81.00%
+78.40%
+81.20%
+SciQ
+1,000
+91.30%
+91.70%
+92.50%
+90.50%
+92.50%
+BBH
+6,511
+19.29%
+28.17%
+22.78%
+28.54%
+27.66%
+SuperGLUE
+6,023
+79.00%
+81.07%
+82.78%
+82.32%
+83.05%
+Overall
+17,403
+56.16%
+60.50%
+59.12%
+60.67%
+60.99%
+
+
+Declare Lab · NTU · Under review
+25
+Table 15: Qwen3.5-4B: Diagnostic results of directly reading historical competence evidence from M𝑝. The best-performing result
+on each benchmark is highlighted in bold.
+OOD Group
+N
+Base
+Σ w/ G
+Majority
+M Route
+M Vote
+PIQA
+1,838
+83.19%
+83.46%
+83.73%
+82.70%
+83.79%
+MMLU
+1,531
+61.20%
+62.90%
+62.12%
+60.61%
+60.94%
+OpenBookQA
+500
+79.60%
+81.40%
+81.00%
+78.20%
+81.40%
+SciQ
+1,000
+92.00%
+92.80%
+92.50%
+90.50%
+92.50%
+BBH
+6,511
+27.46%
+29.15%
+22.78%
+28.44%
+27.32%
+SuperGLUE
+6,023
+79.59%
+80.76%
+82.78%
+82.38%
+83.13%
+Overall
+17,403
+59.56%
+60.87%
+59.12%
+60.67%
+60.86%
+Table 16: Qwen3.5-9B: Diagnostic results of directly reading historical competence evidence from M𝑝. The best-performing result
+on each benchmark is highlighted in bold.
+OOD Group
+N
+Base
+Σ w/ G
+Majority
+M Route
+M Vote
+PIQA
+1,838
+84.55%
+83.46%
+83.73%
+82.75%
+83.79%
+MMLU
+1,531
+62.83%
+64.27%
+62.12%
+60.94%
+61.14%
+OpenBookQA
+500
+79.80%
+80.20%
+81.00%
+78.00%
+81.00%
+SciQ
+1,000
+92.20%
+92.10%
+92.50%
+90.40%
+92.40%
+BBH
+6,511
+26.80%
+29.33%
+22.78%
+28.46%
+27.34%
+SuperGLUE
+6,023
+80.79%
+81.67%
+82.78%
+82.37%
+83.13%
+Overall
+17,403
+60.04%
+61.31%
+59.12%
+60.69%
+60.86%

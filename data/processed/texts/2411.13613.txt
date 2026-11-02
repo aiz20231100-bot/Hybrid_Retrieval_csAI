@@ -1,0 +1,737 @@
+SuPLE: Robot Learning with Lyapunov Rewards
+Phu Nguyen1, Daniel Polani2, Stas Tiomkin3
+Abstract— The reward function is an essential component
+in robot learning. Reward directly affects the sample and
+computational complexity of learning, and the quality of a
+solution. The design of informative rewards requires domain
+knowledge, which is not always available. We use the prop-
+erties of the dynamics to produce system-appropriate reward
+without adding external assumptions. Specifically, we explore
+an approach to utilize the Lyapunov exponents of the system dy-
+namics to generate a system-immanent reward. We demonstrate
+that the Sum of the Positive Lyapunov Exponents (SuPLE) is a
+strong candidate for the design of such a reward. We develop
+a computational framework for the derivation of this reward,
+and demonstrate its effectiveness on classical benchmarks for
+sample-based stabilization of various dynamical systems. It
+eliminates the need to start the training trajectories at arbitrary
+states, also known as auxiliary exploration. While the latter is a
+common practice in simulated robot learning, it is unpractical
+to consider to use it in real robotic systems, since they typically
+start from natural rest states such as a pendulum at the bottom,
+a robot on the ground, etc. and can not be easily initialized
+at arbitrary states. Comparing the performance of SuPLE to
+commonly-used reward functions, we observe that the latter
+fail to find a solution without auxiliary exploration, even for
+the task of swinging up the double pendulum and keeping it
+stable at the upright position, a prototypical scenario for multi-
+linked robots. SuPLE-induced rewards for robot learning offer
+a novel route for effective robot learning in typical as opposed to
+highly specialized or fine-tuned scenarios. Our code is publicly
+available for reproducibility and further research.
+I. INTRODUCTION
+The stabilization of dynamical systems is a central task
+in many applications, including robotic control. The design
+of appropriate control rules can require quite substantial
+domain knowledge [1]–[3]. It is indeed one of the major
+contributions of modern AI methodologies, such as Rein-
+forcement Learning (RL), to reduce the required explicit
+injection of such knowledge [4]–[6]. However, even there,
+the performance of an effective learner is usually boosted
+by a well-designed reward model. For this purpose, one
+uses reward shaping [5]–[8], but that itself requires domain
+knowledge. Where this is not the case, the learner runs
+the risk to be inefficient. This is due to the slow process
+of needing the minimally specified reward structure to be
+propagated throughout the configuration space through the
+learning algorithm. A frequently used remedy for ineffective
+reward in robot learning is to randomly reset the agent to
+arbitrary states in state space. This boosts the exploration of
+1Computer Engineering Dept., Davidson College of Engineering, San
+Jose State University, CA 95192, USA; phu.c.nguyen@sjsu.edu
+2 Department of Computer Science, University of Hertfordshire, AL10
+9AB, UK; d.polani@herts.ac.uk
+3 Department of Computer Science, Texas Tech University, TX 79409,
+USA; stas.tiomkin@ttu.edu; corresponding author
+the state space artificially, and allows one to train even with
+sparse rewards, where the agent receives a positive reward
+on task completion only (and zero reward elsewhere).
+Such auxiliary exploration is possible in simulation, but
+it is impractical for training real robotic systems, because it
+requires the, say, multi-linked robotic system to be regularly
+physically reset to random states to learn the task of self-
+righting and stabilization at the upright position, one of the
+most important tasks for robot learning.
+Here, we propose an alternative route to achieve stabiliza-
+tion which requires only minimal external domain knowledge
+beyond the dynamical system itself. Concretely, we use
+truncated Lyapunov exponents to reward the controller, who
+learns to direct the system towards maximally sensitive
+states. This turns out to be surprisingly effective in identify-
+ing states of interest and providing a natural reward function
+which, except for the specification of the free parameter
+determining the depth of the time horizon, only requires
+the system dynamics itself. In particular, it does not need
+a human to introduce detailed prior understanding about a
+reward function.
+Amongst the models of interest are classic benchmarks
+such as variations of differing complexity of the pendulum
+swing-up task. While, for the single pendulum, many work-
+ing solutions are known, the design of stabilizing controllers
+for more complex scenarios, such as the double pendulum, is
+more intricate and any learning of the controller is substan-
+tially more difficult; highly elaborate and optimized methods
+such as PILCO [9] can be used for this.
+Ideally, to be effective, a reward structure should be both
+dense (it is better to receive informative rewards throughout
+the run rather than, say, only at the target region) and
+informative (it should ideally help to directly specify what
+actions to select rather than extracting that information
+piecemeal). A well set-up RL system will, after convergence,
+ultimately build a suitable value or Q-function from the
+rewards, but if the rewards themselves can be imbued with
+domain knowledge, this process can be sped up drastically.
+However, especially in larger search spaces, it is not
+obvious how to set up an appropriate reward. Easy-to-specify
+rewards in such systems will typically be quite sparse, e.g. by
+mostly distinguishing target from non-target regions. Other
+rewards might be based on naive reduction of distance to
+the target region. Thus, for effective control, this reward will
+first have to be propagated back throughout the whole system
+with a suitable RL algorithm to become informative and
+useful for the controller. An effective reward function would
+thus ideally already encapsulate important information about
+the structure of the control task.
+arXiv:2411.13613v1  [cs.RO]  20 Nov 2024
+
+
+In the present paper, we will show that the truncated
+Lyapunov exponent is a prime candidate for such a reward
+function. Utilizing it as reward signal, we will show that
+a resulting controller is able, for instance, to execute both
+swing-up as well as the stabilization in a pendulum scenario.
+While this Lyapunov exponent can be typically computed
+from models, in principle, it can also be estimated from
+samples [10]. Trained with the truncated Lyapunov exponents
+as reward, our controller guides the system to its most sen-
+sitive state, the upright positions. Crucially, we observe that
+above exponents induce larger basins of attraction around
+the topmost sensitive states, thus the controller can follow
+the trajectory to these states even from far away.
+We use truncated (i.e., local) Lyapunov exponent spectra
+as surrogate reward signal replacing any externally specified
+one. This reward signal then drives an efficient and scalable
+algorithm to carry out the “natural” control task of stabiliza-
+tion. We demonstrate the advantages of the proposed method
+over the standard data-driven control methods in a number
+of scenarios. Specifically, the results will show that our data-
+driven method is capable to efficiently construct optimal
+controllers without manual engineering of the payoff/reward
+function. Finally, we will discuss reasons why this method
+works, and its erstwhile limitations at the present stage.
+All the experiments and results can be reproduced by
+our code repository, which we make publicly available at
+https://github.com/phunguyen1195/TruncLE
+II. PRIOR WORK
+Information-theoretic methods to generate intrinsic moti-
+vations to control various scenarios have been used for a
+number of years [11]–[23]. One insight is that the maximal
+potential mutual information between actions and observa-
+tions acts as a meaningful signal for learning nontrivial be-
+haviour. One disadvantage is the lack of their interpretability
+in intrinsic terms of the system’s dynamics, such as the
+Lyapunov exponents. However, such links clearly exist, for
+instancehe following fundamental result connecting mutual
+information in Markov processes with discrete state space
+and their Lyapunov exponents [24], [25].
+More recently, a connection was established between
+Lyapunov exponents and information-theoretic methods for
+intrinsic motivation [26] such as empowerment [14], [16],
+[21], causal entropic forcing [27], variational intrinsic control
+[28], and other. In this work, we exploit this connection for
+the generation of informative reward in robot learning.
+Specifically, we focus on finding and stabilizing the unsta-
+ble equilibria in dynamics, crucial for up-right locomotion,
+self-righting and related tasks.
+III. PRELIMINARIES
+In this section, we review the necessary background for
+our method, consisting of the truncated Lyapunov spectra
+and RL.
+A. Lyapunov Spectra of Dynamical Systems
+To estimate Lyapunov Exponents, (LE), for a known
+dynamics, f, with n-dimensional state s ∈S:
+st+1 = f(st),
+(1)
+we
+consider
+the
+evolution
+of
+the
+principal
+axes,
+(p1(0), p2(0),..., pn(0)),
+of
+the
+n-dimensional
+sphere
+at t = 0 in the dynamics state space, S. The i-th LE, λi, is
+defined by [10], [29]–[31]
+∀i : λi = lim
+t→∞
+1
+t log2
+ pi(t)
+pi(0)
+
+,
+(the i-th exponent)
+(2)
+Λ = (λ1,λ2,...,λn)
+(Lyapunov Spectra)
+(3)
+where λi ≥λi+1
+and pi(t) is the norm of the i-th axis at time t. We will denote
+the i-th positive LE by λ +
+i , thus the maximal LE is λ +
+1 , and
+the sum of positive LE is:
+SuPLE .= ∑
+i
+λ +
+i .
+(4)
+The positive LEs are related to the expansion of the state
+space volume, while the negative ones are related to its
+contraction [10]. Thus, the sum of positive LE, SuPLE,
+reflects the total volume expansion. In practice, the direc-
+tion, p1, associated with the largest positive LE, λ1, often
+dominates the other directions pi, which collapse on p1,
+hampering the estimation of their corresponding exponents,
+λi. The remedy to this collapse is to orthogonalize the set
+(p1(0), p2(0),..., pn(0)) by the Gram-Schmidt orthogonal-
+ization process at a pre-defined number of time steps.
+The Lyapunov spectra, Λ, defined in Eq. (2) do not depend
+on the initial state for t →∞. State dependent spectra,
+Λ(s), however, are calculated with a finite time, and are
+denoted by the truncated LE [32]. Both Λ and Λ(s) can be
+efficiently estimated from data [10], which we utilize in this
+work. To formulate informative dense reward for sensitivity-
+guided stabilization, we hypothesize that truncated-in-time
+Lyapunov exponents provide useful state-dependent infor-
+mation for the derivation of stabilizing controllers by data-
+driven methods. The truncated LE is calculated for a finite
+number of steps, which is in contrast to the global LE derived
+for t′ →∞.
+To evaluate the effectiveness of SuPLE, we couple it with
+SOTA methods in RL, whose basics we briefly overview in
+the next section.
+B. Reinforcement Learning (RL)
+The RL setting is modeled as a Markov Decision Process
+(MDP) defined by: the state space S, the action space A, the
+transition probabilities p(s′ | s,a), the initial state distribution
+p0(s), the reward function r(s,a) ∈R, which is typically
+manually designed for a particular task, and the discount
+factor γ. The goal of RL is to find an optimal control policy
+π(a | s) that maximizes the expected return, defined by [4],
+
+
+[33]
+max
+π
+Es0∼p0,a∼π,s′∼p ∑
+t=1
+γt−1r(st,at).
+(5)
+C. Soft Actor-Critic
+In more complicated environments, especially, where en-
+hanced exploration is required, the Soft-Actor Critic [33]
+(SAC) is a more appropriate method. The SAC algorithms
+augment reward with the entropy of policy, which explicitly
+encourages exploration:
+max
+π∈P Es0∼p0,a∼π,s′∼p ∑
+t=1
+γt−1 r(st,at)−logπ(at | st)
+
+,
+(6)
+The essential component in any RL objective is reward,
+which is usually designed manually, rather than based on
+the important properties of dynamics, as in the present work.
+Here, we show that the truncated LEs provide the agent with
+informative and dense reward without reward engineering
+and/or shaping.
+The commonly used rewards functions are ‘i’, the sparse
+reward, which provides the learner with reward ‘1’ in the
+target state, and with reward ‘0’ elsewhere, and ‘ii’, the error
+between the current state and the target state, measured by
+a particular norm.
+Usually, the training involves auxiliary exploration, where
+a simulated robot is repeatedly initialized in arbitrary states,
+which is impractical when training real robotic systems.
+Auxiliary exploration is crucial for the commonly-used re-
+wards even in such powerful algorithms in RL as SAC and
+PPO [34]. To demonstrate the strengths of the proposed
+reward, SuPLE, we plug it into the RL algorithms in our
+experiments, and show that SuPLE is informative enough to
+solve complicated tasks without auxiliary exploration, while
+the commonly used above-mentioned rewards (‘i’ and ‘ii’)
+can not solve these tasks.
+IV. PROPOSED METHOD
+Given a nonlinear dynamics f(s) and its Jacobian J(s) we
+estimate the truncated LE at the state s by propagating an
+orthonormal frame V = {v1,v2,...,vn} for T time steps [10]
+as summarized in Algorithm ‘1’ and explained below.
+As mentioned in Section II A, each vector in the evolved
+frame, V, tends to fall along the local direction of most rapid
+growth, which corresponds to v1. To prevent this collapse to
+the dominant direction, we re-orthogonalize the frame, V,
+by the Gram-Schmidt orthogonalization process. This way
+log2
+ ||vi||2
+
+represents the change of the state space volume
+in the i-th direction in a single propagation step by J(s) with
+(small) stepsize dt. These changes are accumulated over time
+to yield the total change of the i-th axis over the time interval
+t = Tdt, denoted by pi(t) in Eq. (2).
+Here, Gram-Schmidt re-orthogonalization process replaces
+the evolved frame V to a corresponding orthogonal set of
+vectors. Grand-Schmidt process re-orthogonalizes the axes
+while keeping the direction of the fastest growing vector in
+the system. The accumulated λi is divided by t = Tdt.
+In Algorithm 1 below, we combine truncated LE with
+the formalism of RL. The data on line 3 in Algorithm 1 is
+collected with the current policy, π. In line 4, Λπ is estimated
+by Algorithm 2 at the states visited by π. That can be done
+either by model-based LE estimation as in the current work,
+or by the existing efficient sample-based methods [10], [29],
+[35]. The notation on line 6 of Algorithm 1 is the policy
+improvement induced by the SuPLE reward, using Soft-Actor
+Critic, Eq. (6).
+Algorithm 1. Sensitivity-Guided Stabilization Control
+1: initialize the policy, π : S →A
+2: repeat
+3:
+τπ .= {st,at}T
+t=1 ←collect data with π
+4:
+
+Λπ	T
+t=1 ←EstimateTruncatedLE(τπ)
+5:
+
+SuPLE
+	T
+t=1 ←
+
+Λπ	T
+t=1
+{Eq. (4)}
+6:
+π ←improve π with {st,at,SuPLEt}T
+t=1 by SAC
+7: until convergence
+8: return π∗, stabilizing at the states with the maximal LE
+Via this scheme, we use the LEs of dynamical systems to
+determine rewards instead of relying on human knowledge
+or reward engineering.
+Algorithm 2. Estimate Truncated Lyapunov Exponents
+Require: s-state, f(s)-dynamics, J(s)-Jacobian, T-horizon.
+1: init:
+2:
+V = (v1,v2,...,vn)
+{an orthonormal frame at s}
+3:
+∀i : λi = 0
+4: for t ∈[1,...,T] do
+5:
+∀i : vi = J(s)vi
+{propagate V vector by vector}
+6:
+s = f(s)
+{propagate state s}
+7:
+V = GramSchmidt(V)
+{re-orthogonalization}
+8:
+∀i : λi = λi +log2
+ ||vi||2
+
+{accumulation of LE}
+9: end for
+10: return
+ λi
+Tdt
+	n
+i=1
+{Truncated Lyapunov Exponents}
+V. NUMERICAL SIMULATIONS
+The numerical experiments address the following questions:
+1. Does SuPLE in Eq. (4) solve the task of stabilization from
+samples without auxiliary exploration? 2. Does just MaxLE
+already solve these tasks? 3. Is there a performance gap
+between traditional rewards such as Quadratic and Sparse
+vs. the SuPLE reward?
+For this, we chose three dynamical systems of differ-
+ent complexity: ‘Single Pendulum’:a simple dynamics, fre-
+quently used in evaluation of new methods; ‘Cart-Pole’:
+a more complicated system, a prototype of the ‘Segway’
+robotic system; ‘Double Pendulum’: a complicated chaotic
+dynamics with an extremely challenging exploration of the
+
+
+state space. It is a prototype for self-righting multi-linked
+robotic systems.
+All systems start at their stable equilibrium (e.g., the
+bottom position for the pendulum links) in both training and
+testing. Importantly, auxiliary exploration is used neither in
+training nor in testing. All the systems are trained with the
+same parameters except for the following reward functions:
+• ‘SuPLE’: sum of all positive LE given by Eq. (4)
+• ‘MaxLE’: only the maximum of the positive LE
+• ‘Quadratic’: weighted error between the current state, s,
+and the target state, sg: r = −∑n
+i=1 αi(sg
+i −si)2.
+• ‘Sparse’: r =
+(
+1
+if ∑n
+i=1(sg
+i −si)2 < ε
+0
+otherwise
+.
+In training we use the standard Soft-Actor Critic [36] and
+the standard model parameters [26]. The dynamics models
+are provided in Appendix. All the results are averaged over
+ten models per system in training, and over five trajectories,
+in turn, per model in testing. Thus, mean and variance are
+calculated with 50 trajectories for each reward.
+A. Key Observations
+SuPLE and MaxLE do not require the specification of
+a target state, but instead guide the agent towards unstable
+equilibria, and then stabilize the agent there. The experiment
+designer does not need to know where these unstable equilib-
+ria occur; the agent will find them by itself. SuPLE allows
+for the derivation of a single policy for both self-righting
+(swinging up) and staying stable at the up-right position.
+In contrast, Quadratic and Sparse rewards do require an
+explicit specification of the target states, e.g., the upright
+position for self-righting robotic systems. In general, to
+specify unstable equilibria requires one to carry out a sen-
+sitivity analysis [30]. Thus, in order to manually design
+effective reward, one needs a) to understand the properties
+of dynamics, and b) to explicitly calculate/specify the target
+states. In contrast, SuPLE reward does require neither ‘a)’
+nor ‘b)’ in stabilization tasks.
+The experiments show that in the simple environments
+(Single Pendulum, Cart Pole) the task is solved by all the
+above-mentioned reward functions without auxiliary explo-
+ration. However, in the Double Pendulum, exploration is
+challenging, and neither Sparse nor Error-based rewards
+succeed to solve the task, while SuPLE succeeds. Swinging
+up and stabilizing the Double Pendulum are prototypical
+primitives for self-righting multi-linked robots, making Su-
+PLE a promising candidate for such in real robotic systems,
+where auxiliary exploration is unpractical.
+Below, we show the SuPLE landscape SuPLE and the test
+error between the current state and the unstable equilibrium.
+The task is to learn, using samples, a controller for self-
+righting from the bottom with different rewards: externally-
+provided (Sparse and Quadratic) and intrinsically-calculated
+(SuPLE and MaxLE).
+B. Experiments
+1) Simple Pendulum: This simple prototypical model for
+uprighting is the minmum benchmark test for new methods.
+It is a 2D system with its state at time t given by s(t) = [θ, ˙θ],
+θ being the pendulum angle with θ = π rad at the top. The
+agent controls the systems by applying torque, |a(t)| < 1
+N/m, directly to the angular acceleration. Figure 1 shows the
+SuPLElandscape, providing the agent with a dense reward
+with the maximum at the top. For this simple system, all four
+rewards allow the agent to successfully learn a stabilizing
+policy without auxiliary exploration (resetting at arbitrary
+states) Figure 2a.
+Fig. 1: Landscape of SuPLE in Single Pendulum. x-axis:
+angle, y-axis: angular velocity
+2) Cart Pole: This system is more complicated due to
+the indirect control of the angular pole by the agent’s action
+(force) applied to the cart. This system is prototypical for
+‘Segway’-style locomotion. Usually the standard RL meth-
+ods [36] train the swinging-up phase and the stabilization
+phase separately with two different rewards resulting in two
+different controllers, respectively. Here, to demonstrate the
+robustness and generality of SuPLE, we train the agent with
+the same reward function without manually separating it into
+two phases.
+The SuPLE landscape for the angular coordinates is qual-
+itatively similar to that of the ‘Single Pendulum’. The test
+error at Figure 2b shows that the non-informative sparse
+reward does not allow the agent to solve the task without
+resetting ‘Cart Pole’ at random arbitrary states in training,
+which is unpractical with a real system. Additionally, the
+agent achieves the upright position more slowly in com-
+parison to the ‘Simple Pendulum’, when trained with the
+externally provided Quadratic reward.
+3) Double Pendulum: This is a complicated system with
+chaotic dynamics and a hard-to-explore state space. It is a
+prototypical system for multi-linked systems with the task
+of self-righting. This experiment is to validate that SuPLE is
+able to solve this task in realistic training conditions, when
+one resets to fixed rather than arbitrary states in multi-linked,
+
+
+(a) Single Pendulum.
+(b) Cart Pole.
+(c) Double Pendulum.
+Fig. 2: Test error to the upright position for different rewards without random position resetting in training. In more
+complicated systems (left-to-right), Sparse and Error-Based (Quadratic) rewards fail, SuPLE succeeds in all systems.
+(a) SuPLE Landscape.
+(b) MaxLE Landscape.
+Fig. 3: Pair-wise representation of the 4D landscape. θ1, ˙θ1, θ2, and ˙θ2 are the angle of the first pole, its angular velocity,
+and analogously for the second pole. When both poles are aligned at the top position θ1 = π
+2 rad and θ2 = 0 rad.
+e.g. humanoid, robots. As shown at Figure 2c amongst all
+rewards, only SuPLE is able to solve the task.
+The landscape of SuPLE and MaxLE in Figure 3, shows a
+marked difference between the two choices in the θ2 vs. ˙θ2
+plane. Only SuPLE captures the volume expansion and has
+a markedly pronounced ridge along the upright-preferring
+states, whereas the MaxLE maxima are far more intricately
+distributed.
+Finally, Figure 4 shows that, with auxiliary exploration,
+the agent can solve the task with any of the rewards.
+VI. DISCUSSION
+The truncated Lyapunov exponents as a reward signal do
+not only stabilize the system near its balancing points, but
+produce the full swing-up process. This method is superior to
+traditional RL, which requires hand-crafted reward functions.
+In the latter, often much effort needs to be invested into
+designing appropriate reward functions which reach satisfac-
+tory results efficiently. In problematic scenarios, either much
+domain knowledge needs to be incorporated into the reward
+(the whole field of reward shaping [7] ); or else, one needs
+
+
+Fig. 4: Double pendulum test error with random position
+resetting in training.
+a suitably chosen RL algorithm that propagates the reward
+signal swiftly throughout the policy domain.
+All this is not required with the Lyapunov-based method.
+It uses inherent properties of the dynamics of the system to
+“ride the crest of sensitivity” towards the points of maximum
+instability. It is plausible that this approach works in the
+neighbourhood of the unstable points of the system: mov-
+ing towards greater Lyapunov exponents indicates a more
+unstable dynamics which, if bounded, ultimately reaches a
+state of locally maximal instability. Such states are often
+desired targets of a controller. A less obvious property of
+the SupLE method is, though, that the “crests” of sensitivity
+reach deeply into the state space. Thus, it is often possible
+to reach such a crest from larger parts of the state space
+and then proceed to ride it all the way towards the state of
+maximum sensitivity. In other words, the basins of attraction
+for a controller based on Lyapunov exponents are remarkably
+large. As for now, there is no closed theory for the size of
+these basins.
+Creating
+essentially
+domain
+knowledge-free
+rewards
+through SuPLE, however, comes at a price. In a traditional
+RL formalism, the designer can make specific states desir-
+able or undesirable, independently of the properties of the
+dynamics, for instance, tuning the rewards towards particular
+goal areas that have nothing to do with particularly unstable
+or otherwise distinguished points of the dynamics.
+Lyapunov exponents can obviously not be used to induce
+such arbitrarily imposed behaviours. However, in by far
+most typical use cases, rewards are designed to achieve
+particular distinguished states in the domain space, which
+the Lyapunov exponents seem particularly suited to detect.
+Presently, this observation is made on a purely empirical
+basis, but we highlight the links between SuPLE and the
+notion of empowerment [12], [14], [20]. The latter has been
+shown to be effective in a surprisingly wide range of control
+scenarios [23].
+We conjecture a further link. In a linear time-invariant
+control system, the Lyapunov exponents are linked to the the
+lower bound on the number of bits per time the controller
+needs to receive in order to stabilize the dynamics [37].
+Thus, by maximizing the SuPLE reward, one might be find
+states where one can “pry open” the channel through which
+a system could be stabilized.
+In conclusion, we found that the Lyapunov Exponents
+provide “natural” rewards directly from system properties.
+In particular, no hand-designed reward-shaping is necessary,
+as long as the desired tasks bear a relation to “interesting”
+(unstable) points of the dynamics. Stable points are not
+particularly interesting for control, since little to no control is
+required to reach them. One other striking insight is that the
+crests leading to the summit points of this Lyapunov-induced
+reward landscape often reach far into the state space and thus
+provide highly structured, informative and thus easy to learn
+value functions throughout the state space
+ACKNOWLEDGMENT
+PN was supported in part by the RSCA scholarship at
+SJSU; DP was supported in part by Pazy grant (195-2020);
+ST was supported in part by NSF Award (2246221) and Pazy
+grant (195-2020).
+REFERENCES
+[1] T. Henmi, M. Deng, and A. Inoue, “Swing-up control of a serial double
+inverted pendulum,” in Proceedings of the 2004 American Control
+Conference, vol. 5, 2004, pp. 3992–3997 vol.5.
+[2] K.
+˚Astr¨om
+and
+K.
+Furuta,
+“Swinging
+up
+a
+pendulum
+by
+energy control,” Automatica, vol. 36, no. 2, pp. 287–295, 2000.
+[Online]. Available: https://www.sciencedirect.com/science/article/pii/
+S0005109899001405
+[3] S. A. Bortoff, “Robust swing-up control for a rotational double
+pendulum,”
+IFAC
+Proceedings
+Volumes,
+vol.
+29,
+no.
+1,
+pp.
+2810–2815,
+1996,
+13th
+World
+Congress
+of
+IFAC,
+1996,
+San
+Francisco USA, 30 June - 5 July. [Online]. Available: https:
+//www.sciencedirect.com/science/article/pii/S1474667017581021
+[4] R. S. Sutton and A. G. Barto, Reinforcement learning: An introduction.
+MIT press, 2018.
+[5] Y. Chao, L. Yongxin, and W. Linglin, “Design of reinforcement
+learning algorathm for single inverted pendulum swing control,” in
+2018 Chinese Automation Congress (CAC), 2018, pp. 1558–1562.
+[6] G. Eaglin, T. Poche, and J. Vaughan, “Controlling a double-pendulum
+crane by combining reinforcement learning and conventional control,”
+in 2023 American Control Conference (ACC), 2023, pp. 788–793.
+[7] A. Y. Ng, D. Harada, and S. Russell, “Policy invariance under
+reward transformations: Theory and application to reward shaping,”
+in Proceedings of the 16th International Conference on Machine
+Learning, vol. 99, 1999, pp. 278–287.
+[8] Z. Deng, X. Huo, Q. Du, and Q. Liu, “Reinforcement learning-based
+data-driven control design for motion control systems,” in 2024 36th
+Chinese Control and Decision Conference (CCDC), 2024, pp. 5745–
+5749.
+[9] M. Deisenroth and C. E. Rasmussen, “Pilco: A model-based and
+data-efficient approach to policy search,” Proceedings of the 28th
+International Conference on machine learning (ICML-11), pp. 465–
+472, 2011.
+[10] A. Wolf, J. B. Swift, H. L. Swinney, and J. A. Vastano, “Determin-
+ing lyapunov exponents from a time series,” Physica D: nonlinear
+phenomena, vol. 16, no. 3, pp. 285–317, 1985.
+[11] S. Dai, W. Xu, A. Hofmann, and B. Williams, “An empowerment-
+based solution to robotic manipulation tasks with sparse rewards,”
+Autonomous Robots, vol. 47, no. 5, pp. 617–633, 2023.
+
+
+[12] A. H. Qureshi, B. Boots, and M. C. Yip, “Adversarial imitation via
+variational inverse reinforcement learning,” International Conference
+Learning Representation, ICLR2019, 2019.
+[13] T. Kwon, “Variational intrinsic control revisited,” in International
+Conference on Learning Representations, 2021. [Online]. Available:
+https://openreview.net/forum?id=P0p33rgyoE
+[14] R. Zhao, P. Abbeel, and S. Tiomkin, “Efficient empowerment estima-
+tion for unsupervised stabilization,” International Conference Learning
+Representations, 2020.
+[15] X. Zhao, N. Gr¨abner, and U. von Wagner, “Avoiding creep groan:
+Investigation on active suppression of stick-slip limit cycle vibrations
+in an automotive disk brake via piezoceramic actuators,” Journal of
+Sound and Vibration, vol. 441, pp. 174–186, 2019.
+[16] C. Salge and D. Polani, “Empowerment as replacement for the three
+laws of robotics,” Frontiers in Robotics and AI, vol. 4, p. 25, 2017.
+[17] S. Mohamed and D. J. Rezende, “Variational information maximisa-
+tion for intrinsically motivated reinforcement learning,” Advances in
+neural information processing systems, pp. 2125–2133, 2015.
+[18] A. Sharma, S. Gu, S. Levine, V. Kumar, and K. Hausman, “Dynamics-
+aware unsupervised discovery of skills,” International Conference on
+Learning Representations, (ICLR), 2021, 2019.
+[19] B. Eysenbach, A. Gupta, J. Ibarz, and S. Levine, “Diversity is all
+you need: Learning skills without a reward function,” International
+Conference on Learning Representations, (ICLR), 2019, 2018.
+[20] C. Salge, C. Glackin, and D. Polani, “Empowerment–an introduction,”
+Guided Self-Organization: Inception, pp. 67–114, 2014.
+[21] A. S. Klyubin, D. Polani, and C. L. Nehaniv, “Empowerment: A
+universal agent-centric measure of control,” IEEE Congress on Evo-
+lutionary Computation, 2005, vol. 1, pp. 128–135, 2005.
+[22] T. Jung, D. Polani, and P. Stone, “Empowerment for continuous
+agent—environment systems,” Adaptive Behavior, vol. 19, no. 1, pp.
+16–39, 2011.
+[23] A. S. Klyubin, D. Polani, and C. L. Nehaniv, “Keep your options
+open:
+An
+information-based
+driving
+principle
+for
+sensorimotor
+systems,” PLoS ONE, vol. 3, no. 12, p. e4018, Dec 2008. [Online].
+Available: http://dx.doi.org/10.1371/journal.pone.0004018
+[24] T. Holliday, A. Goldsmith, and P. Glynn, “Entropy and mutual infor-
+mation for markov channels with general inputs,” in Proceedings of the
+annual Allerton conference on communication control and computing,
+vol. 40, no. 2.
+The University; 1998, 2002, pp. 824–833.
+[25] T. Holliday, P. Glynn, and A. Goldsmith, “Shannon meets lyapunov:
+connections between information theory and dynamical systems,” in
+Proceedings of the 44th IEEE Conference on Decision and Control.
+IEEE, 2005, pp. 1756–1763.
+[26] S. Tiomkin, I. Nemenman, D. Polani, and N. Tishby, “Intrinsic
+motivation in dynamical control systems,” PRX Life, vol. 2, no. 3,
+p. 033009, 2024.
+[27] A. D. Wissner-Gross and C. E. Freer, “Causal entropic forces,”
+Physical review letters, vol. 110, no. 16, p. 168702, 2013.
+[28] K. Gregor, D. J. Rezende, and D. Wierstra, “Variational intrinsic
+control,” arXiv preprint arXiv:1611.07507, 2016.
+[29] M. Sandri, “Numerical calculation of lyapunov exponents,” Mathe-
+matica Journal, vol. 6, no. 3, pp. 78–84, 1996.
+[30] S. H. Strogatz, “Nonlinear dynamics and chaos: with applications to
+physics, biology, chemistry, and engineering,” 2018.
+[31] R. Shaw, “Strange attractors, chaotic behavior, and information flow,”
+Zeitschrift f¨ur Naturforschung A, vol. 36, no. 1, pp. 80–112, 1981.
+[32] L. Dieci, R. D. Russell, and E. S. Van Vleck, “On the computation of
+Lyapunov exponents for continuous dynamical systems,” SIAM journal
+on numerical analysis, vol. 34, no. 1, pp. 402–423, 1997.
+[33] T. Haarnoja, A. Zhou, P. Abbeel, and S. Levine, “Soft actor-critic: Off-
+policy maximum entropy deep reinforcement learning with a stochastic
+actor,” International conference on machine learning, pp. 1861–1870,
+2018.
+[34] J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov,
+“Proximal
+policy
+optimization
+algorithms,”
+arXiv
+preprint
+arXiv:1707.06347, 2017.
+[35] L. Dieci, R. D. Russell, and E. S. Van Vleck, “On the compuation of
+lyapunov exponents for continuous dynamical systems,” SIAM journal
+on numerical analysis, vol. 34, no. 1, pp. 402–423, 1997.
+[36] G. Brockman, V. Cheung, L. Pettersson, J. Schneider, J. Schul-
+man, J. Tang, and W. Zaremba, “Openai gym,” arXiv preprint
+arXiv:1606.01540, 2016.
+[37] S. Tatikonda and S. Mitter, “Control under communication con-
+straints,” IEEE Transactions on automatic control, vol. 49, no. 7, pp.
+1056–1068, 2004.

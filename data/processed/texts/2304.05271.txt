@@ -1,0 +1,1186 @@
+Automaton-Guided Curriculum Generation for Reinforcement Learning Agents
+Yash Shukla1, Abhishek Kulkarni2, Robert Wright3, Alvaro Velasquez4, Jivko Sinapov1
+1Tufts University
+2University of Florida
+3Georgia Tech Research Institute
+4University of Colorado Boulder
+{yash.shukla, jivko.sinapov}@tufts.edu, a.kulkarni2@uﬂ.edu, robert.wright@gtri.gatech.edu, alvaro.velasquez@colorado.edu
+Abstract
+Despite advances in Reinforcement Learning, many sequen-
+tial decision making tasks remain prohibitively expensive
+and impractical to learn. Recently, approaches that automat-
+ically generate reward functions from logical task speciﬁ-
+cations have been proposed to mitigate this issue; however,
+they scale poorly on long-horizon tasks (i.e., tasks where the
+agent needs to perform a series of correct actions to reach
+the goal state, considering future transitions while choosing
+an action). Employing a curriculum (a sequence of increas-
+ingly complex tasks) further improves the learning speed of
+the agent by sequencing intermediate tasks suited to the learn-
+ing capacity of the agent. However, generating curricula from
+the logical speciﬁcation still remains an unsolved problem.
+To this end, we propose AGCL, Automaton-guided Curricu-
+lum Learning, a novel method for automatically generating
+curricula for the target task in the form of Directed Acyclic
+Graphs (DAGs). AGCL encodes the speciﬁcation in the form
+of a deterministic ﬁnite automaton (DFA), and then uses
+the DFA along with the Object-Oriented MDP (OOMDP)
+representation to generate a curriculum as a DAG, where
+the vertices correspond to tasks, and edges correspond to
+the direction of knowledge transfer. Experiments in grid-
+world and physics-based simulated robotics domains show
+that the curricula produced by AGCL achieve improved time-
+to-threshold performance on a complex sequential decision-
+making problem relative to state-of-the-art curriculum learn-
+ing (e.g, teacher-student, self-play) and automaton-guided re-
+inforcement learning baselines (e.g, Q-Learning for Reward
+Machines). Further, we demonstrate that AGCL performs well
+even in the presence of noise in the task’s OOMDP descrip-
+tion, and also when distractor objects are present that are not
+modeled in the logical speciﬁcation of the tasks’ objectives.
+1
+Introduction
+Deep reinforcement learning utilizes neural networks to
+solve complex tasks ranging from Atari games to robot ma-
+nipulation (Gao and Wu 2021; Karpathy and Van De Panne
+2012). Despite these advances, many tasks remain pro-
+hibitively expensive to learn from scratch, requiring large
+number of interactions. This problem worsens in long-
+horizon tasks where sparse reward settings and poor goal
+representations make the task difﬁcult to solve. In many
+Copyright © 2023, Association for the Advancement of Artiﬁcial
+Intelligence (www.aaai.org). All rights reserved.
+practical scenarios, the objective for a task is known be-
+fore commencing learning the task, and thus it can be cap-
+tured using high-level speciﬁcations that have an equivalent
+automaton representation (Velasquez et al. 2021; Jothimu-
+rugan et al. 2021). This formulation allows decomposing
+the task into sub-goals, where each sub-goal can be learned
+by a Reinforcement Learning (RL) agent. This approach of
+automaton-guided RL is beneﬁcial in scenarios where the
+high-level task objective is known beforehand and can be
+expressed using an automaton, but the low-level transition
+dynamics are unavailable and hence motion and symbolic
+planners cannot be reliably used. Recently, many approaches
+have made use of richer language representations (such as
+ﬁnite-trace Linear Temporal Logic (LTLf) (De Giacomo
+and Vardi 2013)) to incorporate history in the task Marko-
+vian Decision Processes (MDPs). This technique helps the
+RL agent to shape reward effectively to achieve the goal
+in sparse reward settings, eliminating the need to rely on
+human guidance for shaping the reward function (Cama-
+cho et al. 2018; Icarte et al. 2018; Velasquez et al. 2021).
+However, reward shaping falls short in complex sequential-
+decision making tasks as it does not generate simpler sub-
+tasks suited to the current knowledge of the agent, and in-
+centivizes policies to reach local optima. In this work, we
+extend automaton-guided RL beyond reward shaping, by
+deriving a curriculum for the target objective. Curriculum
+Learning (CL) intends to optimize the order in which an
+agent attempts tasks, increasing the expected return while
+reducing training time for complex tasks (Narvekar et al.
+2020; Foglino, Christakou, and Leonetti 2019). Neverthe-
+less, automaton-guided curriculum generation still remains
+an unsolved problem in literature.
+We explore representing the high-level task objective
+using ﬁnite-trace Linear Temporal Logic (LTLf) formu-
+las (De Giacomo and Vardi 2013) which can be equivalently
+represented using Deterministic Finite Automaton (DFA).
+Using the structure of the DFA, we generate a curriculum
+for the target objective. While the DFA provides a graph-
+ical representation of the sequence in which the sub-goals
+must be achieved, it does not specify the individual sub-
+tasks of the curriculum. Thus, generating a curriculum is
+non-trivial as it requires the agent to reason over multi-
+ple potential curriculum environment conﬁgurations for the
+same sub-goal objective. Given a high-level task objective in
+arXiv:2304.05271v1  [cs.AI]  11 Apr 2023
+
+
+T
+R
+Sequence-based Curriculum
+Graph-based Curriculum
+High Level
+Environment Description
+Corresponding Automaton Representation
+Figure 1: Overview of the automaton-guided curriculum
+generation procedure. Given the high-level task description,
+we use the equivalent automaton representation to come up
+with a sequence-based and a graph-based curriculum.
+the form of a DFA, we propose AGCL, Automaton-guided
+Curriculum Learning (Fig. 1), that generates two types of
+curricula: 1) A sequence of sub-tasks that increase in or-
+der of difﬁculty for the agent, and 2) A directed acyclic
+graph (DAG), where agents can transfer knowledge con-
+currently learned in multiple source tasks to learn a com-
+mon target task1. Unlike previous graph-based curriculum
+approaches (Svetlik et al. 2017; Silva and Costa 2018), ours
+does not require access to all possible state conﬁgurations
+of the environment. Further, generating the curriculum does
+not require additional interactions with the environment, and
+learning through the curriculum yields quicker convergence
+to a desired performance compared to learning from scratch,
+automaton-guided reward shaping baselines - GSRS (Cama-
+cho et al. 2018), QRM (Icarte et al. 2018), and curriculum
+learning baselines - Teacher-Student (Matiisen et al. 2020)
+and self-play (Sukhbaatar et al. 2018).
+We further perform an extensive evaluation on a set of
+challenging robotic navigation and manipulation tasks and
+demonstrate that AGCL reduces the number of interac-
+tions with the target environment by orders-of-magnitude
+when compared to state-of-the-art curriculum learning and
+automaton-guided reinforcement learning baselines.
+2
+Related Work
+Curriculum Learning (CL) in RL has been studied for
+games (Gao and Wu 2021), robotic tasks (Karpathy and Van
+De Panne 2012), and self-driving cars (Qiao et al. 2018).
+A survey on CL (Narvekar et al. 2020) summarizes the
+three main elements of CL as task generation, task sequenc-
+ing, and knowledge transfer. Task generation builds a set of
+source tasks given the target task (Kurkcu, Campolo, and
+Tee 2020). Task sequencing optimizes the task sequence to
+enhance learning in the target task (Narvekar, Sinapov, and
+1An in-depth analysis of Fig. 1 is provided in Section 3
+Stone 2017; Matiisen et al. 2020), and knowledge transfer
+determines what information must be transferred from the
+source to the target to promote effective learning (Da Silva
+and Costa 2019; Taylor and Stone 2009). Existing graph-
+based CL methods (Svetlik et al. 2017; Silva and Costa
+2018) assume knowledge of the set of states in the task, and
+thus cannot be used for complex tasks that require function
+approximation. Metaheuristic search methods serve as a tool
+to evaluate the CL frameworks (Foglino, Christakou, and
+Leonetti 2019). In most methods, optimizing a curriculum is
+still computationally expensive and sometimes takes more
+interactions compared to learning from scratch. Our pro-
+posed framework addresses this concern by utilizing high-
+level logical speciﬁcation to derive an optimized graphical
+representation of a curriculum, eliminating the sunk cost of
+interactions required to optimize the curriculum.
+Automaton-guided RL approaches specify tasks us-
+ing temporal logic-based high-level language speciﬁca-
+tions (Toro Icarte et al. 2018; Velasquez et al. 2021; Jiang
+et al. 2021). Most approaches generate a dense reward func-
+tion to speed up learning. Learning separate policies for sub-
+goals of a task helps abstract knowledge which can be used
+in new tasks (Icarte et al. 2018). Another technique is to
+shape the reward inversely proportional to the distance from
+the accepting node in the automaton (Camacho et al. 2018)
+however, it leads to inefﬁcient reward settings. Augment-
+ing the reward function with a dynamic Monte Carlo Tree
+Search helps mitigate this problem (Velasquez et al. 2021).
+DIRL interleaves high-level planning with RL to learn a
+policy for each edge, overcoming challenges introduced by
+poor representations (Jothimurugan et al. 2021). However,
+this approach becomes inefﬁcient when there are multiple
+paths to the target in the graph, and other reward shaping
+techniques prove inefﬁcient compared to curriculum learn-
+ing (Pocius et al. 2018). In this work, we use the underlying
+DFA to develop a graphical representation of the curricu-
+lum, and implement a transfer learning mechanism compat-
+ible with a function-approximator, outperforming state-of-
+the-art baselines.
+3
+Theoretical Framework
+3.1
+Markov Decision Processes
+An episodic Markov Decision Process (MDP) M is deﬁned
+as a tuple (S,A,P,R, S0, Sf, γ, L), where S is the set of
+states, A is the set of actions,P(s′|s, a)is the transition func-
+tion, R : S ×A× S →R is the reward function, S0 and
+Sf are the sets of starting and ﬁnal states respectively, and
+γ ∈[0, 1] is the discount factor. At each timestep t, the agent
+observes a state s and performs an action a given by its pol-
+icy function πθ(a|s), with parameters θ. The agent’s goal is
+to learn an optimal policy π∗, maximizing its discounted re-
+turn G0 = PK
+k=0γkr(s′
+k, ak, sk) until the end of the episode
+at timestep K. The labeling function L : S →2AP maps
+a state in the MDP to a set of atomic propositions that hold
+true for that state. For example, in Fig. 1 the set of atomic
+propositions, AP = {tree, rock}.
+
+
+T
+T
+R
+T
+T
+R
+R
+(a) Sequence-based curriculum
+(b) Graph-based curriculum
+Figure 2: Examples of sequence-based (left) and graph-based (right) curricula.
+3.2
+Curriculum
+Let
+M
+be
+a
+set
+of
+tasks,
+where
+Mi
+=
+(Si, Ai, Pi, Ri, S0,i, Sf,i, γi, Li) is a task in M. Let
+DMi be the set of samples associated with task Mi
+:
+DMi ={(s, a, r, s′)|s ∈Si, a ∈Ai, s′ ∼Pi(·|s, a), r ←
+Ri(s, a, s′)}. A curriculum T
+= (V, E, g, M) is a di-
+rected acyclic graph, where V is the set of vertices,
+E ⊆{(x, y)|(x, y) ∈V × V ∧x̸ = y} is the set of directed
+edges, and g : V →{DMi|Mi ∈M} is a function that
+associates vertices to samples of a single task in M. A
+directed edge (vj, vk) indicates that samples associated with
+vj ∈V should be trained on before samples associated with
+vk ∈V. All paths terminate on a single sink node vt ∈V2.
+A graph-based curriculum is a general case of a curricu-
+lum, where the indegree and outdegree of each vertex v ∈V
+can be greater than one, and there can be multiple source
+nodes but only one sink node. A sequence-based curriculum
+is a special case of a curriculum, where the indegree and out-
+degree of each vertex v ∈V is at most 1, and there is only
+one source node and one sink node as shown in Fig. 1. Ex-
+amples of a sequence-based curriculum and a graph-based
+curriculum are shown in Fig. 2(a) Fig. 2(b) respectively.
+3.3
+Object Oriented MDP
+The Object-Oriented MDP (OOMDP) representation ab-
+stracts the task description, as to intuitively generalize the
+elements in the environment and their properties (Diuk, Co-
+hen, and Littman 2008). In OOMDPs, the task space is ab-
+stracted by a set of classes C where each class Ci ∈C has a
+parameter set Par(Ci) = {Ci.p1,. . . ,Ci.p|p|}. Each param-
+eter Ci.pi has a range of values, given by Range(Ci.pi).
+At any given time, an environment consists of a set of ob-
+jects O = {o1,. . . ,o|o|}, where each object oi is an instance
+of a class Ci and is deﬁned by the parameters for that class
+oi = Par(Ci(oi)). For a task, the OOMDP state soo is given
+by the union of all object states soo=∪oi∈OState(oi), where
+each object state is the value of the parameters of that ob-
+ject: State(oi)={oi.p1, . . . , oi.p|p|}. Since the OOMDP rep-
+resentation is a high-level abstraction of the task space, we
+2We ﬁnd curriculum for single target task. Curriculum design
+for multiple target tasks is beyond the scope of this paper.
+assume a many-to-one mapping between a subset of MDP
+states (Ssub) and the OOMDP state (soo); w : Ssub →soo.
+For the task in Fig. 1, the OOMDP description consists
+of classes C = {world size, trees, rocks}, with the pa-
+rameters: C(world size) = {width, height} (width and
+height of the grid), C(trees) = {treesenv, treesinv} (num-
+ber of trees in the environment and inventory of the agent),
+and similarly, C(rocks) = {rocksenv, rocksinv}. In a task,
+classes have objects whose parameters are assigned val-
+ues within a range. Example: Par(world size[height])) =
+[5, 10] denotes that the height of the grid can have any value
+within the range [5, 10]. The MDP transition s
+a−→s′ and the
+OOMDP transition soo
+a−→s′
+oo occur synchronously.
+3.4
+Linear Temporal Logic and Deterministic
+Finite Automata (DFA)
+We deﬁne the high-level speciﬁcation of our task using
+ﬁnite-trace Linear Temporal Logic (LTLf) formulas (De Gi-
+acomo and Vardi 2013). LTLf allows us to succinctly ex-
+press complex temporal tasks such as reachability, safety, re-
+currence, persistence or a combination of these. Most impor-
+tantly, the language of any LTLf formula can equivalently be
+represented as a Deterministic Finite Automaton (DFA).
+Given a set of atomic propositions, AP, a formula
+in LTLf is constructed inductively using the operations
+p, ¬φ, φ1∨φ2, Xφ, Gφ, Fφ,φ1Uφ2 where p ∈AP and φ, φ1
+and φ2 are LTLf formulas. The operator ¬ denotes negation,
+∨denotes disjunction, and the operators X, G, F, U denote
+Next, Always, Eventually, and Until respectively. An LTLf
+formula can be translated into a DFA U = {Ω, ω0, Σ, δ, F},
+where Ωis the set of nodes with initial node ω0 ∈Ω,
+Σ = 2AP is an alphabet deﬁned over a set of atomic propo-
+sitions AP, δ : Ω×Σ →Ωis a deterministic transition func-
+tion, and F ⊆Ωis the set of accepting nodes. Given any
+two states ω, ω′ ∈Ωand a symbol σ ∈Σ, we denote the
+transition ω′ = δ(ω, σ) as ω
+σ−→ω′. A path ζ = ω0ω1 . . . ωn
+is a ﬁnite-length sequence of states such that, for any i =
+0 . . . n −1, we have ωi+1 = δ(ωi, σi). The occurrence op-
+erator, Occ(ζ), deﬁned as {ω ∈Ω|ω appears in ζ}, returns
+the set of nodes in the path ζ.
+The set of atomic propositions in AP is shared within the
+
+
+MDP and the DFA. The labeled MDP and the automaton
+(DFA) operate synchronously. Speciﬁcally, a transition s
+a−→
+s′ in the labeled MDP triggers a transition ω
+L(s′)
+−−−→ω′ in
+the DFA. Therefore, the high-level speciﬁcation is achieved
+in the labeled MDP if and only if a ﬁnal state is reached
+in the DFA. We deﬁne a one-to-many relationship using the
+function P : Ω→M, that given a node ω ∈Ωin the
+DFA, returns the set of tasks that can reach the node ω from
+the start node ω03. The equivalent DFA representation of the
+LTLf objective F(tree)∧F(rock) is shown in Fig. 1.
+3.5
+Running Example
+Consider the environment description shown in Fig. 1. We
+start with the target task MDP Mtarget and its OOMDP de-
+scription (described in Sec. 3.3) along with the LTLf for-
+mula for the task (F(tree)∧F(rock)) which corresponds to
+the automaton shown in Fig. 1. When the agent follows a
+policy π that collects a tree followed by a rock, it satisﬁes
+the path ζ : ω0
+tree
+−−→ω1
+rock
+−−−→ω3. Since ω3 is in the set
+of accepting nodes F, the policy produces a trajectory in the
+MDP that satisﬁes the LTLf objective. Generating curricu-
+lum given the DFA involves reasoning over the trace paths
+as well as the set of MDPs that can generate trajectories to
+reach a node in the DFA. For example, to have a trajectory
+(of length > 0) that reaches the node ω1, the agent must have
+a tree in its inventory by the end of the episode. To achieve
+this, at least one tree must be present in the environment
+when the episode starts for the agent to collect. Using this
+information, a potential source task of the curriculum is gen-
+erated by varying the parameter values for the objects within
+the range speciﬁed in the OOMDP representation. Thus, a
+query to the function P(ω1) will generate the set of MDPs
+M1 that have at least 1 tree in the initial task conﬁguration,
+while varying other object parameters. The set of initial and
+ﬁnal OOMDP states for M1 will be given by w(P(ω1)(S0))
+and w(P(ω1)(Sf)) respectively as the function w maps the
+MDP state to an OOMDP state. An example of a sequence-
+based curriculum for the path ζ : ω0
+tree
+−−→ω1
+rock
+−−−→ω3 is
+shown in Fig. 2, where in the ﬁrst task M0, the agent learns
+to collect a tree in a smaller environment, while transferring
+the knowledge to the ﬁnal task. For the graph-based curricu-
+lum in Fig. 2, two agents simultaneously learn to collect a
+tree and a rock separately, and transfer their knowledge to
+learn the target task. The curriculum for the agent that learns
+to collect a tree in M0 is derived from the set of MDPs pro-
+duced using the path ζ : ω0
+tree
+−−→ω1
+rock
+−−−→ω3, whereas
+the curriculum for the agent that learns to collect a rock in
+M1 is derived using the path ζ : ω0
+rock
+−−−→ω2
+tree
+−−→ω3.
+The agent’s trajectory in the ﬁnal target task Mtarget can
+follow any of the paths in the DFA. The knowledge from the
+source tasks in the curriculum guides the agent in the ﬁnal
+target task to make decisions based on its prior experiences.
+In the following sections, we discuss our automaton-guided
+curriculum generation approach.
+3Details on function P in Appendix Section A.
+https://github.com/tufts-ai-robotics-group/Automaton-guided-CL
+3.6
+Problem Formulation
+CL aims to generate a curriculum, such that the agent’s
+convergence or its time-to-threshold performance on the ﬁ-
+nal target task (Mtarget) improves relative to learning from
+scratch. Time-to-threshold (∆) metric computes how much
+faster an agent can learn a policy that achieves expected re-
+turn G ≥δ on the target task if it learns through a curricu-
+lum, as opposed to learning from another approach (Foglino,
+Christakou, and Leonetti 2019). Here δ is desired perfor-
+mance threshold, in success rate or episodic reward. An opti-
+mal curriculum would converge to the expected return value
+in the target task the quickest. Formally:
+T ∗:= argmin
+T ∈T
+[aMtarget
+δ
++
+X
+Mi∈T
+aMi]
+where T is the set of all curricula, aMtarget
+δ
+is the number of
+actions the agent took in the target task Mtarget to achieve
+threshold performance δ, and aMi is the number of actions
+the agent took in the source task Mi of the curriculum.
+Our objective is to ﬁnd a curriculum T = {V, E, g, M}
+that improves an agent’s time-to-threshold performance on
+the target task, given the LTLf representation and the
+OOMDP and MDP description of the target task.
+4
+Methodology
+The high-level curriculum generation algorithm is given in
+Algorithm 1. To begin, we assume the following:
+1. We have access to a high-level target task (Mtar) objec-
+tive which is expressed using LTLf formulas, and can be
+equivalently represented using a DFA U.
+2. We have access to the OOMDP description of the target
+task. The OOMDP description contains the set of classes
+C of the environment, and for each class, the set of pa-
+rameters for that class, along with the range of accept-
+able values for the parameters. Varying these parameters
+give us different tasks of the curriculum. We also have
+the initial and goal OOMDP states of the ﬁnal task of the
+environment.
+3. We have access to the functions P that given a node in
+the DFA, return the set of MDPs that can reach the node,
+and access to function w that performs mapping between
+MDP states and OOMDP states.
+Given the DFA, we ﬁrst generate a key-value pair dictio-
+nary K, where each key is a node of the automaton, and
+the value is the set of MDPs that can reach the node, with
+each MDP augmented with the initial and ﬁnal OOMDP
+state conﬁguration of the MDP, resulting in the MDP-
+OOMDP tuple (M, s0,oo, sf,oo), lines 1-2. The function
+Get Trace Paths returns the set of all paths (Z) that
+start from the initial node ω0 and reach an accepting node
+ωf ∈F. We consider only acyclic DFAs, ignoring paths
+that contain a cycle. A curriculum designed with this consid-
+eration will prune curriculum candidates that intend to learn
+the same task repeatedly, ensuring progress in the curricu-
+lum. Then, for each path ζ ∈Z, the List Candidates
+function generates an ordered-list of sequence-based cur-
+riculum candidates by choosing a MDP-OOMDP tuple from
+
+
+each node of the path, and sequencing it according to the se-
+quence of nodes in the path ζ. We repeat this until we attain
+a set of all possible combinations of MDP-OOMDP tuple
+sequences (lines 4-7). This yields an exhaustive set Ψ where
+each element in the set is an ordered list of MDP-OOMDP
+tuples, and the length of the list is equal to the number of
+transitions in the trace path. Thus, each list corresponds to
+a curriculum candidate T where the vertices of the graph
+are the MDPs in the list, and the edges are deﬁned by the
+sequence of the MDPs in the list. Once we have a set of
+sequence-based curricula candidates, we choose an effec-
+tive curriculum from this set. We introduce the jump score,
+where we assign a score for each pair of consecutive source
+tasks in the curriculum (lines 10-16).
+Jump score: Inspired by the difﬁculty scores for super-
+vised learning (Weinshall, Cohen, and Amir 2018), we as-
+sign a jump score J : (Mi, Mj) →R ∈[0, 1] for each pair
+of consecutive source tasks Mi and Mj:
+JMi→Mj = 1/2 ∗(simt(Mj, Mtar) −simt(Mi, Mtar)
++ simg(Mj, Mtar) −simg(Mi, Mtar))
+(1)
+where, simt(Mi, Mtar) is the task conﬁguration similarity
+between the task Mi and the ﬁnal target task Mtar4, while
+simg(Mi, Mtar) is the goal state similarity. The jump score
+JMi→Mj calculates how dissimilar two consecutive source
+tasks in the curriculum are by calculating the difference of
+the similarity of the task and goal conﬁgurations of each of
+the two consecutive tasks with the ﬁnal target task.
+Since we have the OOMDP initial state conﬁguration
+s0,oo of each pair of consecutive source tasks of the cur-
+riculum (Mi, Mj) and the ﬁnal target task Mtar, the task
+conﬁguration similarity between a task and the ﬁnal target
+task is measured as the parameter value overlap between the
+initial OOMDP state values of the two tasks.
+simt(Mi, Mtar) =
+1
+P
+o∈OMtar |o.p0|
+X
+o∈OMtar
+X
+o.p∈o
+o.p0
+Mi
+o.p0
+Mtar
+(2)
+where o.p0
+Mi is the value of the parameter of the object o
+in the OOMDP state s0,oo of task Mi. Likewise, we also
+have the OOMDP goal state sf,oo of each pair of consecu-
+tive source tasks and the ﬁnal target task. We calculate the
+OOMDP goal state similarity of a task with respect to the
+ﬁnal target task using:
+simg(Mi, Mtar) =
+1
+P
+o∈OMtar |o.pf|
+X
+o∈OMtar
+X
+o.p∈o
+o.pf
+Mi
+o.pf
+Mtar
+(3)
+where o.pf
+Mi is the value of the parameter of the object o in
+the OOMDP state sf,oo of task Mi.
+A lower jump score corresponds to a pair of tasks that
+have similar initial OOMDP task conﬁgurations as well as
+similar OOMDP goal state conﬁgurations. Along any path
+ζ, the sum of the jump scores among all consecutive task
+pairs will always be equal to 1. The set of OOMDP states
+the agent visits in an episode can be potentially large, and
+4More on MDP similarity: (Vis´us, Garc´ıa, and Fern´andez 2021)
+do not yield much information that might help in choos-
+ing a suitable curriculum candidiate. Additionally, access to
+the set of OOMDP states that the agent might visit in an
+episode before the agent even attempts the episode requires
+knowledge of the transition dynamics, which is unavailable.
+Hence, only the initial and ﬁnal states are used while calcu-
+lating the jump score.
+Next, we calculate the average jump score of each cur-
+riculum candidate ψ ∈Ψ and store it in a Curriculum - Jump
+Score dictionary J (line 16). For sequence-based curricula,
+the curriculum is determined by the candidate that yields the
+lowest average jump score (lines 17-18).
+T = argmin
+ψ∈Ψ
+J (Jψ)
+(4)
+Intuitively, the curriculum T is an ordered list of MDP-
+OOMDP tuples that have the lowest cumulative average
+jump among any two consecutive source tasks, i.e. the cur-
+riculum has the lowest task and goal state dissimilarity be-
+tween any two consecutive tasks. A lower dissimilarity will
+result in a stronger knowledge transfer.
+The graph-based curriculum is determined by the set of
+elements in Ψ that yield the cumulative average jump score
+lower than a predetermined threshold value η (lines 19-21).
+T ′ = {ψ ∈Ψ ∋J (Jψ) ≤η}
+(5)
+Thus, T ′ is a set where each element is an ordered list of
+MDPs (each element is a sequence-based curriculum). A
+graph is generated by considering equivalent MDPs in T ′
+as common nodes, and the edges are given by the sequence
+of MDPs in each element in T ′ (line 22). The weights on the
+edges denote the proportion of knowledge contribution of a
+source task and is discussed further below. The worst case
+time-complexity of the algorithm is O(|V|3|E||C|2|p|2) and
+where |V| and |E| are the number of vertices and edges in
+the DFA’s DAG and |C| and |p| are the number of classes
+and maximum number of class parameters in the OOMDP.
+Knowledge Transfer in curriculum learning involves
+leveraging learned knowledge from a source task and trans-
+ferring relevant knowledge to the next task in the curricu-
+lum. In our curriculum setting, each individual source task
+is learned using DQN (Mnih et al. 2015), and hence we per-
+form value function transfer, where the weights of the neural
+network of the learned value function of a source task are
+initialized as the weights of the value function of the next
+task, i.e. V i
+Mj ←V ∗
+Mi. Thus, instead of commencing the next
+task Mj with random V (s) values, the learned value func-
+tion of the source task biases action selection in the next task
+according to the experience already collected in the source
+task. In scenarios where the action spaces are continuous,
+the RL algorithm needs to be adapted to suit the needs of the
+domain. DDPG (Lillicrap et al. 2016) and PPO (Schulman
+et al. 2017) allow continuous action spaces and can replace
+the DQN as the base RL algorithm. In case of a sequence-
+based curriculum, where we transfer knowledge from only
+one source task Mi to the next task Mj in the curriculum, the
+value function of Mj is initialized to be the learned value
+function of Mi. This process is continued until we reach
+the end of curriculum, culminating in the ﬁnal target task
+
+
+Algorithm 1: AGCG(U, Mtar, w, P, η, CL-Type)
+Output: Curriculum: T
+Placeholder Initialization: Set of all acyclic trace paths Z ←∅
+Node-MDP Dictionary K ←∅
+Curriculum - Jump Score dictionary J ←∅
+Set of curriculum candidates Ψ ←∅
+Algorithm:
+1: for ω ∈Ωdo
+2:
+K ←K ∪{ω : (P(ω), w(P(ω)(S0)), w(P(ω)(Sf))}
+3: end for
+4: Z ←Get Trace Paths(U)
+5: for ζ ∈Z do
+6:
+for ωi ∈Occ(ζ) do
+7:
+Ψ ←Ψ ∪{[List Candidates(K(ωi))]}
+8:
+end for
+9: end for
+10: for ψ ∈Ψ do
+11:
+jump sum ←0
+12:
+for i = 1 to |ψ| −1 do
+13:
+jump sum ←jump sum + JMi→Mi+1
+14:
+end for
+15:
+Jψ ←jump sum/|ψ|
+16:
+J ←J ∪{ψ : Jψ}
+17: end for
+18: if CL-Type == Sequence-based then
+19:
+T = argminψ∈J J (Jψ)
+20: else if CL-Type == Graph-Based then
+21:
+T ′ = {ψ ∈Ψ ∋J (Jψ) ≤η}
+22:
+T ←Graph(T ′)
+23: end if
+24: return T
+Mtar. In case of a graph-based curriculum, where we trans-
+fer knowledge from multiple source tasks (Mi, Mi+1, . . .) to
+the next task in the curriculum (Mj), the value function of
+the next task (Mj) is initialized to be a weighted sum of the
+value functions of its source tasks, i.e.
+V i
+j = β0 · V ∗
+i + β1 · V ∗
+i+1 + . . . + βl · V ∗
+i+l
+(6)
+where V i
+j is the initial value function of the target task Mj,
+V ∗
+i is the learned value function of the source task Mi, l
+is the number of source tasks, and β is a scalar weighting
+factor. To calculate β, we use the following:
+βi ∝
+1
+JMi→Mj
+and
+k=l
+X
+k=0
+βi+k = 1
+(7)
+i.e., the lower the jump score between tasks Mi and Mj, the
+higher the similarity between their OOMDP task and goal
+conﬁgurations, thus, higher the weightage of the learned
+value function of the task Mi, and vice versa. A higher sim-
+ilarity will correspond to a stronger positive transfer. In case
+of a graph-based curriculum, we learn the tasks that corre-
+spond to the leaf nodes initially, transferring knowledge us-
+ing Equations 6 and 7, culminating in the ﬁnal target task5.
+5Link to source code and appendix:
+https://github.com/tufts-ai-robotics-group/Automaton-guided-CL
+5
+Experimental Results
+We aim to answer the following questions: (1) Does AGCL
+yield sample efﬁcient learning? (2) How does it perform in
+environments that have distractor objects that are not mod-
+eled in the LTLf speciﬁcation? (3) How does it perform
+when the exact OOMDP description is unknown? (4) Does it
+yield sample efﬁcient learning when the OOMDP parameter
+space is continuous? (5) How does it perform when generat-
+ing all potential curricula candidates is intractable?
+5.1
+AGCL - Gridworld Results
+To answer our ﬁrst question, we evaluated AGCL on a grid-
+world domain with the LTLf objective:
+G((t →¬r ∧¬p) ∧(r →¬t ∧¬p) ∧(p →¬r ∧¬t))
+∧(¬pU(t ∧X(¬pUt))) ∧(¬pUr) ∧Fp
+(8)
+where
+t, r, p
+correspond
+to
+the
+atomic
+propositions
+tree, rock and pogo-stick respectively. Essentially, the
+agent needs to collect 2 trees and 1 rock (by navigating
+to the objects and breaking them) before approach-
+ing the crafting table to craft a pogo-stick. This is a
+complex sequential decision making task and requires
+∼108 interactions to reach convergence (Shukla et al.
+2022). The OOMDP description is given by: C
+=
+{world size, trees, rocks, crafting table},
+where
+the
+class parameters are: C(world size) = {width, height};
+C(x)
+=
+{xenv, xinv|x
+∈
+{trees, rocks}}
+and
+C(crafting table)
+=
+{crafting tableenv}. The pa-
+rameters width and height can assume values in the range
+[6, 12] and the number of trees, rocks and crafting table
+in the environment can assume a value in the ranges of
+[0, 4], [0, 2] and [0, 1] respectively. In this environment, the
+agent can move 1 cell forward if the cell ahead is clear
+or rotate π/2 left or right. In the target task, the agent
+receives a reward of 103 upon crafting a pogo-stick, and
+−1 reward for all other steps. The agent’s sensor emits a
+beam at incremental angles of π/4 to determine the closest
+object in the angle of the beam (i.e., the agent receives
+a local-view of its environment). Two additional sensors
+provide information on the amount of trees and rocks in the
+agent’s inventory (More details in Appendix B).
+The learning curves in Fig. 3 depict the perfor-
+mance of our proposed sequence and graph-based AGCL
+method against ﬁve baseline approaches namely learning
+from scratch, automaton-guided reward shaping baslines:
+GSRS (Camacho et al. 2018), QRM (Icarte et al. 2018),
+and curriculum learning baselines: Teacher-Student (Mati-
+isen et al. 2020) and self-play (Sukhbaatar et al. 2018), all
+implemented using the same RL algorithm DQN (Mnih et al.
+2015). The automaton-guided reward shaping baselines do
+not employ a curriculum and build upon naive reward shap-
+ing by modifying the reward inversely proportional to the
+distance from the DFA goal state and by learning policies
+for each DFA state transition. The curriculum learning base-
+line approaches do not utilize a reward machine, and rely on
+optimizing the task sequence through agent’s experience6,.
+6Baseline implementation details in Appendix Section C
+
+
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Timesteps
+1e7
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Success Rate
+(a) Gridworld domain
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Timesteps
+1e7
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Success Rate
+(b) Distractor objects
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Timesteps
+1e7
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Success Rate
+(c) Imperfect OOMDP
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Timesteps
+1e7
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Success Rate
+(d) Subset candidates
+(e) Crafter-Turtlebot domain
+0
+1
+2
+3
+4
+Timesteps
+1e7
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Success Rate
+Powered by TCPDF (www.tcpdf.org)
+Timesteps
+1e7
+0
+1
+2
+3
+4
+1.0
+0.0
+0.2
+0.6
+0.4
+0.8
+Powered by TCPDF (www.tcpdf.org)
+(f) Crafter-Turtlebot
+(g) Panda-pick-and-place
+0
+10000
+20000
+30000
+40000
+50000
+60000
+Timesteps
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Success Rate
+Powered by TCPDF (www.tcpdf.org)
+1
+2
+3
+6
+4
+5
+Timesteps (e5)
+0.0
+0.2
+0.6
+1.0
+0.8
+0.4
+SR
+0
+Powered by TCPDF (www.tcpdf.org)
+(h) Panda-pick-and-place
+Figure 3: Learning curves (Averaged over 10 trials): (a) Gridworld domain; (b) Gridworld - with distractor objects in the
+environment; (c) Gridworld - with imperfect OOMDP description of the environment; (d) Gridworld - with subset of curriculum
+candidates. Figs.(e) and (g) show the two robotic environments and their learning curves in (f) and (h)
+The learning curve for the curriculum approaches have an
+offset on the x-axis to account for the interactions used to go
+through the curriculum before moving on to the target task,
+signifying strong transfer (Taylor and Stone 2009). The re-
+sults in Fig. 3a show that AGCL reaches a successful policy
+quicker, and the graph-based curriculum proposed by AGCL
+outperforms the sequence-based approach. Learning source
+tasks in a graph-based curriculum is also parallelized, re-
+ducing the overall wall time. Furthermore, our method out-
+performs the ﬁve baseline approaches in terms of learning
+speed. The other four baseline approaches perform better
+than learning from scratch, but do not outperform AGCL.
+All approaches may converge to a higher asymptote, but will
+need more interactions with the environment. For this task,
+the curriculum generated by AGCL has |V| = 4 and |V| = 6
+for the sequence-based and graph-based curricula respec-
+tively. To demonstrate that the average convergence rate of
+AGCL is consistently higher than the baseline approaches,
+we perform an unpaired t-test (Kim 2015) to compare AGCL
+against the best performing baselines at the end of 107 train-
+ing interactions and we observed statistically signiﬁcant re-
+sults (95% conﬁdence). Thus, AGCL not only achieves a bet-
+ter success rate, but also converges faster.7
+5.2
+AGCL on Tasks with Distractor Objects
+Next, we test our AGCL approach (sequence and graph)
+on the pogo-stick task described in Sec. 5.1 but now the
+OOMDP description of the environment contains a new
+class C(distractor) = {distractorenv, distractorinv},
+7Statistical signiﬁcance result details in Appendix Section D.
+whose object distractorenv or distractorinv can assume
+values in the range [0, 2], signifying that the initial task
+state or the inventory may contain 0 to 2 instances of the
+distractor object. The agent interacts with this object the
+same way it interacts with trees and rocks, i.e. by navi-
+gating to the object and collecting it in inventory. However,
+presence of distractor objects in the inventory of the agent
+is not necessary to achieve the target objectives and is not
+modeled in the LTLf speciﬁcation.
+Fig. 3b demonstrates how our proposed AGCL performs
+against the baseline approaches. Since our curriculum gen-
+eration approach models not only the goal conﬁguration but
+also the initial task space conﬁguration, it is successful in es-
+timating the difﬁculty posed by the introduction of the dis-
+tractor object as they are present in the initial state of the
+target task. The curriculum generated by AGCL guides the
+agent to a successful policy in fewer interactions compared
+to the other baselines. Approaches that design a curriculum
+purely from the LTLf speciﬁcation will not model the dis-
+tractor objects, and will thus fail to determine the complexity
+of a source task that contains these distractor objects.
+5.3
+Tasks with Imperfect OOMDP Descriptions
+In certain partially observable settings, it might not be pos-
+sible to obtain an accurate OOMDP description of the en-
+vironment. To demonstrate the efﬁcacy of our approach in
+imperfect OOMDP descriptions, we incorporate a gaussian
+noise over the class parameter value ranges, i.e. if the param-
+eter range is Pargiven(world size[height]) = [a, b], we as-
+sume that this range is imperfect, and the true range is given
+
+
+by Parnoisy(world size[height]) = [a −N(0, σ), b +
+N(0, σ)], where σ = (b −a)/6; covering the entire range of
+the parameter values in six standard deviations. We incorpo-
+rate a gaussian noise over all the class parameters ranges.
+We test AGCL (sequence and graph) on the same task of
+Sec. 5.1 but now the environment’s OOMDP description is
+noisy over the parameter values, i.e., the exact OOMDP de-
+scription is unknown. We observe that even with imperfect
+OOMDP descriptions, AGCL converges faster than the base-
+lines (Fig 3c), and the graph-based AGCL converges to a
+successful policy the quickest, in 2.5 × 106 interactions.
+5.4
+Tasks with Continuous OOMDP Ranges
+In the gridworld, the OOMDP parameter values were inte-
+gers. In this experiment, we test how our approach performs
+in tasks that have continuous parameter ranges. We modify
+the function P : Ω→M that given a node in the DFA, sam-
+ples a subset of MDPs Msub ⊆M such that |Msub| = b.
+We test this on two challenging simulated robotic environ-
+ments where the interaction cost is high.
+Fig. 3e shows a robotic task with the same objective
+described in Sec. 5.1. Here the values for the parame-
+ters width, height for class world size are in the contin-
+uous range [2m, 4m]. The move forward (backward) action
+causes the robot to move forward (backward) by 0.1m and
+the robot rotates by π/8 radians with each rotate action. Ad-
+ditionally, the objects can be placed at continuous locations
+in this robotic domain as compared to discrete grid locations
+for the gridworld task. These changes increase the number
+of MDP and OOMDP states the agent can attain.
+The second simulated robotics environment (Fig. 3g)
+consists of a robotic arm performing a pick-and-place
+task (Gallou´edec et al. 2021) with the LTLf
+objec-
+tive: F(g∧F(p∧Fq)) where g, p, q are the atomic proposi-
+tions for ’reach-object’, ‘pick-up-object’ and ‘place-object’.
+The OOMDP is modeled as C = {world size, objects}
+with Par(world size)
+= {length, width, height} and
+Par(objects)
+=
+{no objects}. The continuous pa-
+rameters {length, width, height} assume values between
+[10, 50]cm. The robot has continuous action parame-
+ters for moving the arm and a binary gripper action
+(close/open). The robotic domains were modeled using Py-
+Bullet (Coumans and Bai 2021). For each node, we sample
+b = 25 different MDPs and evaluate AGCL. The results in
+Figs.(3f,3h), show that AGCL outperforms all other base-
+lines in both environments. Additionally, the graph-based
+AGCL converges to a successful policy the quickest.
+5.5
+AGCL on Subset of Curriculum Candidates
+In cases where the range of parameter values or the DFA rep-
+resentation is too large, the number of curriculum candidates
+can grow exponentially in terms of the number of nodes in
+the DFA, making it infeasible to calculate the jump-score for
+each curriculum candidate. For this, we evaluate AGCL on
+the task described in Sec. 5.1 by sampling a subset Ψsub of
+the total curriculum candidates Ψ, such that |Ψsub| = |Ψ|/4,
+thus reducing the total number of curriculum candidates and
+the amount of computation required to determine a suitable
+curriculum. From the results in Fig. 3d, we observe that in
+this experiment, AGCL takes more interactions to converge
+to a desired policy as compared to Fig. 3a, as sampling a sub-
+set prunes some desirable curriculum candidates, however it
+outperforms the other curriculum learning and automaton-
+guided RL baselines in terms of learning speed.
+6
+Conclusion and Future Work
+We proposed AGCL, a framework for curriculum generation
+using the high-level LTLf speciﬁcation and the OOMDP
+description of the environment. AGCL decomposes the tar-
+get objective into sub-goals, and generates a sequence-based
+or a graph-based curriculum for the task. Through exper-
+iments, we demonstrated that AGCL accelerates learning,
+converging to a desired success rate quicker as compared to
+other curriculum learning and automaton-guided RL base-
+lines. Moreover, our proposed approach improves learning
+performance even in the presence of distractor objects in the
+environment that are not modeled in the LTLf speciﬁcation.
+Finally, we evaluate our approach on long-horizon complex
+robotic tasks where the state space is large. AGCL reduces
+training time without relying on human-guided dense reward
+function nor does it require a perfect OOMDP description
+of the environment. The graph-based curricula produced by
+AGCL affords learning separate behaviors in parallel, reduc-
+ing wall clock time for complex sequential decision making
+tasks. Thus, our proposed AGCL approach offers accelerated
+learning when the high-level task objective is available.
+We assume that the high-level task objective is available,
+and can be characterized using a LTLf formula. However, in
+certain cases, the target tasks can be completely novel, with
+no prior information on the task objective. Additionally, it
+might not be feasible to represent the domain using OOMDP
+representation, as the objects in the environment can be un-
+known, and the only way to get more information about the
+environment is through interaction with the environment.
+In scenarios where the LTLf speciﬁcation becomes com-
+plex, the DFA gets larger, and it might become intractable
+to come up with exact solutions of curriculum optimization.
+Future work would involve devising approximate solutions
+that tightly bound exact solutions. Also, our heuristic, the
+jump score, while it was shown to be useful here, might not
+perform universally well for all task objectives and environ-
+ments. In future work, we plan to modify this heuristic to be
+more theoretically-grounded. Furthermore, we plan to ex-
+tend it to settings where obtaining an accurate LTLf speci-
+ﬁcation might be difﬁcult. Finally, we would like to extend
+our work to multi-agent settings, and investigate curriculum
+generation using even more expressive high-level languages,
+such as CTL∗and µ-calculus.
+Ethical Impact
+AGCL aims to boost the learning speed of reinforcement
+learning agents for sequential decision making tasks. This
+will enable quicker learning for robotic applications. It will
+lead to an overall reduction in the training times, saving
+computation time and energy. On the other hand, this work
+can also be used for negative applications - e.g., malicious
+
+
+use of RL. However, the above mentioned concerns are cen-
+tral to all works that deal with any aspects of AI.
+Acknowledgements
+A portion of this work was conducted in the Multimodal
+Learning, Interaction, and Perception Lab at Tufts Univer-
+sity, Assured Information Security, Inc., Georgia Tech Re-
+search Institute, and the University of Colorado Boulder,
+with support from the Air Force Research Lab under con-
+tract FA8750-22-C-0501.
+References
+Camacho, A.; Chen, O.; Sanner, S.; and McIlraith, S. A.
+2018. Non-Markovian rewards expressed in LTL: Guiding
+search via reward shaping (extended version). In GoalsRL,
+a workshop collocated with ICML/IJCAI/AAMAS.
+Coumans, E.; and Bai, Y. 2021. PyBullet, a Python mod-
+ule for physics simulation for games, robotics and machine
+learning. http://pybullet.org. Accessed: 2023-04-02.
+Da Silva, F. L.; and Costa, A. H. R. 2019. A survey on trans-
+fer learning for multiagent reinforcement learning systems.
+Journal of Artiﬁcial Intelligence Research, 64: 645–703.
+De Giacomo, G.; and Vardi, M. Y. 2013. Linear temporal
+logic and linear dynamic logic on ﬁnite traces. In IJCAI’13
+Proc. of the Twenty-Third Intl. joint Conf. on Artiﬁcial Intel-
+ligence, 854–860. Association for Computing Machinery.
+Diuk, C.; Cohen, A.; and Littman, M. L. 2008. An object-
+oriented representation for efﬁcient reinforcement learning.
+In 25th Intl. Conf. on Machine learning, 240–247.
+Foglino, F.; Christakou, C. C.; and Leonetti, M. 2019. An
+optimization framework for task sequencing in curriculum
+learning. In Intl Conf. on Development and Learning.
+Gallou´edec, Q.; Cazin, N.; Dellandr´ea, E.; and Chen, L.
+2021. panda-gym: Open-Source Goal-Conditioned Environ-
+ments for Robotic Learning. 4th Robot Learning Workshop:
+Self-Supervised and Lifelong Learning at NeurIPS.
+Gao, Y.; and Wu, L. 2021. Efﬁciently mastering the game of
+nogo with deep reinforcement learning supported by domain
+knowledge. Electronics, 10(13): 1533.
+Icarte, R. T.; Klassen, T.; Valenzano, R.; and McIlraith, S.
+2018. Using reward machines for high-level task speciﬁca-
+tion and decomposition in reinforcement learning. In Intl.
+Conf. on Machine Learning, 2107–2116.
+Jiang, Y.; Bharadwaj, S.; Wu, B.; Shah, R.; Topcu, U.; and
+Stone, P. 2021. Temporal-logic-based reward shaping for
+continuing RL tasks. In AAAI Conf. on AI.
+Jothimurugan, K.; Bansal, S.; Bastani, O.; and Alur, R. 2021.
+Compositional reinforcement learning from logical speciﬁ-
+cations. Neural Information Processing Systems.
+Karpathy, A.; and Van De Panne, M. 2012.
+Curriculum
+learning for motor skills. In Canadian Conf. on AI.
+Kim, T. K. 2015. T test as a parametric statistic. Korean
+journal of anesthesiology, 68(6): 540–546.
+Kurkcu, A.; Campolo, D.; and Tee, K. P. 2020. Autonomous
+Curriculum Generation for Self-Learning Agents. In 16th
+Intl Conf. on Control, Automation, Robotics and Vision.
+Lillicrap, T. P.; Hunt, J. J.; Pritzel, A.; Heess, N.; Erez, T.;
+Tassa, Y.; Silver, D.; and Wierstra, D. 2016.
+Continuous
+control with deep reinforcement learning. In ICLR (Poster).
+Matiisen, T.; Oliver, A.; Cohen, T.; and Schulman, J. 2020.
+Teacher-Student Curriculum Learning. IEEE Trans. Neural
+Networks Learn. Syst., 31(9): 3732–3740.
+Mnih, V.; Kavukcuoglu, K.; Silver, D.; Rusu, A. A.; Veness,
+J.; Bellemare, M. G.; Graves, A.; Riedmiller, M.; Fidjeland,
+A. K.; Ostrovski, G.; Petersen, S.; Beattie, C.; Sadik, A.;
+Antonoglou, I.; King, H.; Kumaran, D.; Wierstra, D.; Legg,
+S.; and Hassabis, D. 2015.
+Human-level control through
+deep reinforcement learning. Nature, 518(7540): 529–533.
+Narvekar, S.; Peng, B.; Leonetti, M.; Sinapov, J.; Taylor,
+M. E.; and Stone, P. 2020.
+Curriculum Learning for Re-
+inforcement Learning Domains: A Framework and Survey.
+JMLR, 21: 1–50.
+Narvekar, S.; Sinapov, J.; and Stone, P. 2017. Autonomous
+Task Sequencing for Customized Curriculum Design in Re-
+inforcement Learning. In IJCAI, 2536–2542.
+Pocius, R.; Isele, D.; Roberts, M.; and Aha, D. 2018. Com-
+paring reward shaping, visual hints, and curriculum learning.
+In AAAI Conf. on Artiﬁcial Intelligence, volume 32.
+Qiao, Z.; Muelling, K.; Dolan, J. M.; Palanisamy, P.; and
+Mudalige, P. 2018.
+Automatically generated curriculum
+based reinforcement learning for autonomous vehicles in ur-
+ban environment. In IEEE Intelligent Vehicles Symposium.
+Schulman, J.; Wolski, F.; Dhariwal, P.; Radford, A.; and
+Klimov, O. 2017. Proximal Policy Opti Algo. CoRR.
+Shukla, Y.; Thierauf, C.; Hosseini, R.; Tatiya, G.; and
+Sinapov, J. 2022. ACuTE: Automatic Curriculum Transfer
+from Simple to Complex Environments. In 21st Intl. Conf.
+on Autonomous Agents and Multiagent Systems, 1192–1200.
+Silva, F. L. D.; and Costa, A. H. R. 2018. Object-oriented
+curriculum generation for reinforcement learning. In 17th
+Intl Conf. on Autonomous Agents and MultiAgent Systems.
+Sukhbaatar, S.; Lin, Z.; Kostrikov, I.; Synnaeve, G.; Szlam,
+A.; and Fergus, R. 2018. Intrinsic Motivation and Automatic
+Curricula via Asymmetric Self-Play. In ICLR.
+Svetlik, M.; Leonetti, M.; Sinapov, J.; Shah, R.; Walker, N.;
+and Stone, P. 2017. Automatic curriculum graph generation
+for reinforcement learning agents. In AAAI Conf. on AI.
+Taylor, M. E.; and Stone, P. 2009. Transfer learning for re-
+inforcement learning domains: A survey. JMLR, 10(7).
+Toro Icarte, R.; Klassen, T. Q.; Valenzano, R.; and McIlraith,
+S. A. 2018. Teaching multiple tasks to an RL agent using
+LTL. In Autonomous Agents and MultiAgent Systems.
+Velasquez, A.; Bissey, B.; Barak, L.; Beckus, A.; Alkhouri,
+I.; Melcer, D.; and Atia, G. 2021.
+Dynamic automaton-
+guided reward shaping for monte carlo tree search. In Proc.
+of the AAAI Conf. on Artiﬁcial Intelligence, 13.
+Vis´us, ´A.; Garc´ıa, J.; and Fern´andez, F. 2021. A taxonomy
+of similarity metrics for markov decision processes. arXiv
+preprint arXiv:2103.04706.
+Weinshall, D.; Cohen, G.; and Amir, D. 2018. Curriculum
+learning by transfer learning: Theory and experiments with
+deep networks. In Intl. Conf. on Machine Learning.

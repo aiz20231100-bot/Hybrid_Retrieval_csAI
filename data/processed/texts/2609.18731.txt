@@ -1,0 +1,714 @@
+Which LLM is Best for Translating Natural Language Goals to PDDL
+Tom´aˇs Balyo, Luk´aˇs Chrpa, and G. Michael Youngblood
+Filuta AI, Inc., 1606 Headway Cir STE 9145, Austin, TX 78754, USA
+{tomas, lukas, michael}@filuta.ai
+Abstract
+Bridging the gap between human intent and machine execu-
+tion remains a challenge in automated planning, where ex-
+pressing goals in formal languages like PDDL restricts ac-
+cessibility to non-experts. This paper empirically evaluates
+whether current Large Language Models (LLMs) can reliably
+translate natural language testing goals, written in informal
+language by video game testers, into well-formed PDDL tar-
+gets suitable for classical planning. We present a carefully
+designed prompt template, integrating insights from iterative
+experimentation, aimed at maximizing both accuracy and re-
+sponse coherence from multiple state-of-the-art LLMs. Six
+contemporary models are systematically assessed on correct-
+ness, speed, and error tendencies using real-world, domain-
+specific benchmarks. All models demonstrate high correct-
+ness, exceeding 92%, with Gemini 2.5 Flash achieving the
+highest accuracy at 96% and the lowest incidence of false
+positives, while GPT-4.1 leads in response speed. Despite
+these advances, critical distinctions exist in model perfor-
+mance, and occasional failures arise from language ambigu-
+ity and limitations in domain representation. Our analysis un-
+derscores both the significant progress and ongoing gaps in
+enabling LLMs to act as robust bridges between natural lan-
+guage objectives and automated planning pipelines.
+Introduction
+Bridging the distance between human intention and ma-
+chine execution stands as one of the challenges of Artifi-
+cial Intelligence (AI). Nowhere is this divide more apparent
+than in the domain of automated planning, where express-
+ing one’s objectives requires mastery of formal languages
+that are both powerful and unforgiving. For decades, systems
+like STRIPS and the Planning Domain Definition Language
+(PDDL) have enabled remarkable advances in planning and
+problem-solving, yet their benefits remain largely confined
+to those fluent in symbolic logic and domain engineering.
+At the same time, we find ourselves in an era where Large
+Language Models (LLMs) are redefining the boundaries of
+machine understanding. These systems, trained on the full
+spectrum of human knowledge, adeptly translate between
+natural language and the structured requirements of a host
+of downstream applications. The goal of this paper is to ex-
+amine the potential of letting humans express goals in plain
+language and then use LLMs to produce the well-formed in-
+puts required by planning systems. Although the focus of
+this paper is only on the goal translation, it is an important
+element in making the planning technology accessible to a
+user who is not a planning expert. Arguably, LLMs are not
+yet capable of replacing planning experts in providing do-
+main models (Vallati et al. 2025), on the other hand, a single
+domain model often can describe required game mechanics
+and thus be used for hundreds of tests. Initial states can be
+extracted directly from the game. Specifying each test goal
+by hand, however, might be a strenuous task for both the
+user and a planning expert, yet it might not be difficult for
+LLMs, especially if the domain model is provided within the
+prompt.
+But potential is only as good as the performance in the
+wild. Translating goals for video game testing, where in-
+structions are written informally and planning domains can
+be surprisingly nuanced, provides a fertile proving ground.
+This paper explores this practical challenge, evaluating the
+latest family of LLMs across multiple providers to deter-
+mine their accuracy and speed. In doing so, we examine
+what it takes for LLMs to serve as reliable translators be-
+tween human goals and their PDDL representations, and we
+shed light on which models are currently up to the task. This
+evaluation is grounded in the needs of real testers, real plan-
+ners, and the persistent need to bring expressive AI systems
+to everyone, not just the experts.
+Related Work
+Exploiting LLMs in the field of Automated Planning has re-
+cently attracted a lot of attention (Cao et al. 2025). Plan gen-
+eration via LLMs has been studied in the field of robotics,
+where LLMs are usually capable of generating valid plans,
+although often not very complex (Zeng et al. 2023; Wang
+et al. 2024). In domain-independent settings, LLMs can be
+trained to solve problem instances sharing the same domain
+model, yet the scalability of the approach is limited (i.e.,
+LLMs are not capable of generating valid plans for larger
+problem instances that are in the training set) (Rossetti et al.
+2024). In a traditional sense, LLMs are not capable of plan-
+ning (Kambhampati et al. 2024; Goebel and Zips 2025) and,
+on top of that, it has been empirically shown that LLMs
+are not error-proof on computationally easy tasks associated
+with planning, such as identifying applicable actions or plan
+verification (Kokel et al. 2025).
+Since LLMs struggle with plan generation, to leverage
+arXiv:2609.18731v1  [cs.AI]  16 Sep 2026
+
+
+traditional symbolic planning, we have to provide domain
+and problem models. Arguably, LLMs can offer valuable as-
+sistance in the process of acquiring symbolic planning mod-
+els from requirements provided in natural language (Tanta-
+koun, Muise, and Zhu 2025; Smirnov et al. 2024). However,
+the use of LLMs in domain model acquisition (i.e., acquiring
+action schemes, predicates, or fluents representing the envi-
+ronment) still has some limitations that require the involve-
+ment of human experts in the process (Vallati et al. 2025).
+Although we still need an expert to obtain a (symbolic)
+domain model, the effort of the expert is usually needed only
+for developing the model and maintaining it (if a change in
+the requirements arrives). In the context of testing computer
+games, a domain model is developed once and modified only
+if there is a major change in the game (Balyo et al. 2025).
+However, a planning task description has to be generated for
+every test. LLMs can be used to extract a full specification
+of a planning task (Liu et al. 2023a; Agarwal and Sreepa-
+thy 2024; Zuo et al. 2025). However, this is not necessary
+for game testing as the initial state can be extracted from the
+game. Specifying goals by users, on the other hand, remains
+the bottleneck. In literature, there also exist specialized ap-
+proaches that only focus on acquiring symbolic goal spec-
+ification from a user’s text in natural language (Xie et al.
+2023; Lyu et al. 2023). For more details about the exist-
+ing techniques, the interested reader is referred to (Tanta-
+koun, Muise, and Zhu 2025). Our work, albeit sharing simi-
+lar characteristics (e.g., including PDDL domain model into
+the prompt), also focuses on providing feedback on negative
+cases in which user-specified goals cannot be expressed as a
+PDDL goal for the given domain model.
+Preliminaries
+This section introduces fundamental concepts in automated
+planning and Large Language Models (LLMs) necessary for
+understanding this paper.
+Automated Planning
+Automated Planning is an area of Artificial Intelligence
+concerned with the development of algorithms that gener-
+ate sequences of actions to achieve a goal from an initial
+state. We primarily focus on Classical Automated Plan-
+ning, which operates under several key assumptions: the
+world is static (no exogenous events), deterministic (actions
+have predictable outcomes), fully observable, and discrete.
+A widely adopted framework for classical planning is
+STRIPS (STanford Research Institute Problem Solver)
+(Fikes and Nilsson 1971). In STRIPS, the world state is de-
+fined by a set of logical propositions. Actions have precondi-
+tions (propositions that must be true for the action to be ex-
+ecutable) and effects (propositions that become true or false
+after the action).
+Fluents are propositions or predicates that can change
+their truth value over time as actions are executed. They
+represent the dynamic aspects of the world state (e.g.,
+(robot-at roomA)).
+The Planning Domain Definition Language (PDDL)
+(McDermott et al. 1998) is the de facto standard language for
+representing planning problems. A PDDL planning problem
+is split into two files:
+• A domain file: This defines the types of objects, predi-
+cates (fluents), and actions that can be performed within
+a specific planning environment. It describes the general
+rules and capabilities.
+• A problem file: This specifies a particular instance of
+the planning problem for a given domain, including the
+specific objects, their initial state (initial assignments of
+fluents), and the desired goal state.
+Large Language Models (LLMs)
+Large Language Models (LLMs) are a class of artificial in-
+telligence models, typically based on the transformer archi-
+tecture (Vaswani et al. 2017), trained on vast amounts of text
+data to understand, generate, and process human language.
+Their strength lies in their ability to perform a wide range
+of natural language understanding and generation tasks, of-
+ten through few-shot or zero-shot learning, as exemplified
+by models like GPT-3 (Brown et al. 2020).
+A prompt template is a structured text input given to
+an LLM, designed to guide its response towards a specific
+task or format. It typically contains placeholders that are
+filled with task-specific information (e.g., instructions, con-
+text, examples, or, in this paper, planning problem compo-
+nents).
+Prompt Template Design
+The complete prompt template utilized in our evaluation is
+presented in Figure 1. This specific formulation was devel-
+oped through an iterative refinement process, incorporating
+empirical insights gained from initial experimental trials and
+addressing observed limitations.
+Initially, our prompt included the full contents of the
+problem.pddl file, rather than a concise list of objects
+and their types. However, we observed a significant decrease
+in LLM response accuracy for benchmarks characterized by
+large problem files, specifically those with a high number
+of initial state predicates. We hypothesize that this degrada-
+tion in performance is attributable to the total prompt length
+exceeding a reasonable context window. This phenomenon,
+where models struggle to effectively utilize or prioritize in-
+formation in very lengthy inputs, is known to cause perfor-
+mance degradation with long contexts, sometimes referred
+to as “lost in the middle” (Liu et al. 2023b; Hong, Troynikov,
+and Huber 2024), and relates to the inherent complexities of
+the Transformer architecture (Vaswani et al. 2017). Conse-
+quently, the revised template incorporates only the essential
+object definitions to minimize overall prompt length.
+Furthermore, an earlier iteration of the prompt frequently
+led to a high incidence of false positive answers. In these
+cases, the LLMs generated PDDL goals even when the nat-
+ural language objective could not be properly expressed or
+was unachievable within the domain’s constraints. To miti-
+gate this over-generation of invalid goals, we integrated spe-
+cific examples within the prompt. These examples demon-
+strate various reasons why certain types of natural language
+goals might be inexpressible in PDDL (e.g., requiring new
+
+
+The task is to translate test goals expressed in a natural language
+text (written by someone who writes video game testing instructions)
+to automated planning goals in the PDDL language.
+We are dealing with classical STRIPS planning with numeric fluents.
+As input I will provide you with the domain in PDDL format, the
+list of all available objects along with their types
+and finally the natural language text representing the test goals.
+It may be the case that the provided natural language goals cannot
+be fully expressed as PDDL goals. Possible reasons for this could be:
+- the goal cannot be expressed in the formalism of classical planning
+with numeric fluents in general
+- the provided domain does not contain predicates or function
+definitions that match the desired goals
+- the goal cannot be expressed with the available objects provided
+- the provided goals are too ambiguous
+If the natural language goal is ambiguous or cannot be fully represented
+by the provided domain and objects, provide a short (2 or 3 sentences)
+explanation. In this this case start the message with
+"Goal cannot be expressed".
+If the goal can be expressed, then answer with the goal specification
+in PDDL format (the "(:goal)" clause) and
+nothing else (no explanation,
+no comments, no remarks, no header or title). Try to express the goals
+simply and succinctly, i.e., avoid quantifiers and use as few expressions
+and predicates as necessary. Here is an example response:
+(:goal
+(and
+(made p1 pulse_tank_type)
+(<= 1000 (resources p1))
+)
+)
+Now I provide the actual input:
+<domain>
+{domain}
+</domain>
+<objects>
+{objects}
+</objects>
+<goal>
+{human_goal}
+</goal>
+Figure 1: The complete prompt template used for evaluating all six Large Language Models (LLMs). The placeholder
+{domain} is replaced by the contents of domain.pddl, {objects} by a list of all objects and their types, and {human goal}
+by the desired goal provided in natural language.
+
+
+predicates not defined in the domain, or necessitating ac-
+tions not available). This guided the LLMs towards more
+constrained and accurate responses, reducing the propensity
+for false positives.
+Finally, we observed that some LLM-generated PDDL
+goals were not only overly complex and convoluted but also
+frequently incorrect. Such intricate and erroneous formula-
+tions posed significant challenges for subsequent automated
+planning stages. To address this issue, a clear directive re-
+questing simple and concise answers was integrated into
+the prompt. This modification proved highly effective, as it
+led the LLMs to more consistently produce correct PDDL
+goals, while simultaneously ensuring their optimal formula-
+tion and interpretability for practical use within the planning
+pipeline.
+Experimental Evaluation
+We are addressing a task that uses LLMs to translate natural
+language goals into a formal planning language. The inputs
+for this task are:
+• A planning domain model in PDDL, with features typical
+of the numeric tracks in international planning competi-
+tions.
+• A planning problem instance, which includes objects and
+an initial state but has an empty goal.
+• A planning goal expressed as unstructured natural lan-
+guage text.
+The expected output depends on whether the given natural
+language goal can be represented within the provided do-
+main and problem instance:
+• If the goal is expressible: The output should be a valid
+PDDL expression representing the goal.
+• If the goal is not expressible: The output should be a
+brief, natural language explanation (a few sentences) of
+why the goal cannot be modeled with the given domain
+and problem.
+LLM Usage
+For this evaluation, we selected two models from each
+of three leading LLM providers: OpenAI, Google, and
+Anthropic. From each provider, we chose their flagship
+model alongside their performance-optimized “lightweight”
+or “fast” model. All models were accessed via their stan-
+dard APIs, and each was evaluated using a single prompt
+for every benchmark that is based on the identical template
+described above. The used LLMs are the following:
+• OpenAI O3
+• OpenAI GPT 4.1
+• Google Gemini 2.5 Pro
+• Google Gemini 2.5 Flash
+• Anthropic Claude Opus 4
+• Anthropic Claude Sonnet 4
+Model Name
+correct
+time
+FP
+FN
+IS
+OpenAI GPT-4.1
+0.92
+1.61
+4
+2
+0
+OpenAI o3
+0.93
+11.49
+3
+2
+0
+Gemini 2.5-pro
+0.94
+15.83
+3
+0
+0
+Gemini 2.5-flash
+0.96
+5.49
+2
+1
+0
+Claude-Opus-4
+0.94
+8.29
+3
+1
+1
+Claude-Sonnet-4
+0.93
+4.10
+3
+3
+0
+Table 1: Summary of experimental results per LLM show-
+ing correctness rate, average prompt response time, number
+of false positives (FP), number of false negatives (FN), and
+responses containing invalid syntax (IS).
+Benchmarks
+Our benchmark suite comprises a total of 90 natural lan-
+guage goals. This set is balanced, with 45 goals that can be
+formally expressed in PDDL and 45 that cannot.
+To ensure a diverse evaluation, the goals were created
+across eight distinct domains. Four of these are standard do-
+mains from the International Planning Competition (IPC):
+Rovers, Barman, Woodworking, and Parking. The remain-
+ing four domains were specifically designed to simulate real-
+world problem-solving scenarios, drawing inspiration from
+video games, including two real-time strategy games, one
+first-person shooter, and a city-building adventure. The nat-
+ural language goals are displayed in the appendix of this pa-
+per in Tables 2, 3 and 4.
+The natural language goal formulations were crowd-
+sourced from a diverse group of employees within our com-
+pany. A significant majority of these goals (more than half)
+were written by individuals with no prior experience in
+PDDL modeling, and crucially, without access to the PDDL
+domain models. This approach was taken to ensure that the
+goals represent genuine human problem descriptions, free
+from the biases of a formal planning language.
+Results
+Our evaluation methodology utilized a semi-automated pro-
+cess. For the expressible goals, we established a set of refer-
+ence PDDL goals. If an LLM’s output matched one of these
+references exactly, it was automatically marked as correct. In
+all other cases, a PDDL expert conducted a manual review to
+determine if the generated goal was valid and semantically
+correct.
+Conversely, for the goals that were inexpressible, the eval-
+uation was automated. An LLM was considered to have an-
+swered correctly if its response indicated that the goal could
+not be modeled. It is important to note that we did not per-
+form a manual check on the quality or detail of the natural
+language explanations provided for these cases.
+To quantify the errors, we defined two metrics: A False
+Negative was recorded when an LLM failed to provide a
+PDDL expression for a goal that was actually expressible.
+Conversely, a False Positive was recorded when an LLM
+provided a PDDL goal for a problem that was fundamen-
+tally inexpressible.
+Table 1 summarizes the experimental results, demonstrat-
+ing that all six models achieved high correctness, exceeding
+
+
+0
+20
+40
+60
+80
+Problem Index (Sorted by Runtime)
+0
+10
+20
+30
+40
+50
+60
+70
+80
+Runtime (s)
+Runtime Distribution
+OpenAI gpt-4.1
+OpenAI o3
+Google Gemini 2.5-pro
+Google Gemini 2.5-flash
+Anthropic Claude-Opus-4
+Anthropic Claude-Sonnet-4
+Figure 2: Comparative Prompt Response Time Analysis of Large Language Models (LLMs). Each line represents a distinct
+LLM, plotting its prompt response time (y-axis) against the problem index (x-axis) after sorting all prompts by increasing
+runtime for that model.
+92%. Gemini 2.5 Flash exhibited the highest correctness rate
+at 96% and yielded the fewest false positives (2). Notably,
+Gemini 2.5 Flash surpassed its Pro counterpart (Gemini 2.5
+Pro) in accuracy while maintaining significantly faster re-
+sponse times. Conversely, GPT-4.1 emerged as the fastest
+model, albeit with the lowest accuracy among those tested.
+A more granular comparison of model runtimes is presented
+in Figure 2. Furthermore, only a single response with invalid
+syntax was generated across all evaluations.
+Variation in LLM output does exist within (intra) and
+between (inter) models. Intra-model differences from re-
+peated runs on the same LLM—arise largely from batch-
+size–dependent numerical effects and non–batch-invariant
+kernel operations, so even temperature-zero inference can
+yield diverging results (He and Lab 2025). Inter-model dif-
+ferences, by contrast, stem from deeper divergences in archi-
+tecture, training data, and engineering choices, which shape
+how each system learns language, encodes context, and re-
+sponds to ambiguity (Liu et al. 2025). Together, these factors
+mean that LLM output variation is influenced both by subtle
+computational implementation and by broad design philos-
+ophy.
+Conclusion
+This paper asks the question: can LLMs serve as bridges be-
+tween natural human intent and the rigor of automated plan-
+ning languages like PDDL? Our examination of LLM per-
+formance reveals both the significant improvements made
+and the limitations that remain. By systematically evaluating
+leading LLMs on the pragmatic challenge of translating in-
+formal video game test goals into executable PDDL targets,
+we have gained a realistic measure of where these technolo-
+gies succeed and remain challenged.
+The results are both encouraging and insightful. Current
+LLMs demonstrate a capability for this language transla-
+tion by routinely delivering high correctness across com-
+plex, domain-specific scenarios. Not all models are created
+equal though. Our benchmarks highlight critical differences
+in accuracy, response times, and the frequency of subtle
+but important errors such as false positives or syntactic er-
+rors. These distinctions matter for practitioners who must
+choose the right tools for their pipelines. Our evaluation
+also surfaces that the distance between human expression
+and machine understanding, though narrowing, has not yet
+been closed. Some failures stem from the inherent ambigu-
+ity of language; others from the current limitations of LLMs
+in parsing nuanced domain logic, or managing edge cases
+where the formalism cannot keep pace with human creativ-
+ity. Future work must focus on enhancing the interactive ca-
+pabilities of these systems, enabling richer dialogue, clari-
+fication, and error recovery. The next steps are 1) expand-
+ing the breadth and depth of evaluation datasets, 2) refining
+prompt engineering practices, and 3) integrating feedback
+loops that better allow LLMs to handle real-world imperfec-
+tions.
+Our findings provide a snapshot of the current state of
+
+
+the art and a practical pathway for harnessing the power
+of LLMs to unlock the value of automated planning for a
+broader audience. As this technology continues to advance,
+narrowing the distance between what we want to say and
+what machines can truly understand remains not just a goal,
+but a promise within reach.
+References
+Agarwal, S.; and Sreepathy, A. 2024. TIC: Translate-Infer-
+Compile for accurate ”text to plan” using LLMs and Logical
+Representations. arXiv:2402.06608.
+Balyo, T.; Bart´ak, R.; Chrpa, L.; ˇCervenka, M.; Dvoˇr´ak,
+F.; Gocht, S.; Lipˇc´ak, L.; Macek, V.; Roh´aˇcek, D.; Ryz´ı,
+J.; Suda, M.; ˇSafr´anek, D.; ˇSvancar, S.; and Youngblood,
+G. M. 2025. Using Planning for Automated Testing of Video
+Games. In Proc. of IJCAI 2025, 11004–11008.
+Brown, T. B.; Mann, B.; Ryder, N.; Subbiah, M.; Kaplan, J.;
+Dhariwal, P.; Neelakantan, A.; Shyam, P.; Sastry, G.; Askell,
+A.; et al. 2020. Language models are few-shot learners. Ad-
+vances in neural information processing systems, 33: 1877–
+1901.
+Cao, P.; Men, T.; Liu, W.; Zhang, J.; Li, X.; Lin, X.; Sui, D.;
+Cao, Y.; Liu, K.; and Zhao, J. 2025. Large Language Mod-
+els for Planning: A Comprehensive and Systematic Survey.
+arXiv:2505.19683.
+Fikes, R. E.; and Nilsson, N. J. 1971. STRIPS: A new ap-
+proach to the application of theorem proving to problem
+solving. Artificial intelligence, 2(3-4): 189–208.
+Goebel, K.; and Zips, P. 2025.
+Can LLM-Reasoning
+Models Replace Classical Planning? A Benchmark Study.
+arXiv:2507.23589.
+He, H.; and Lab, T. M. 2025.
+Defeating Nondetermin-
+ism in LLM Inference.
+Thinking Machines Lab: Con-
+nectionism.
+Https://thinkingmachines.ai/blog/defeating-
+nondeterminism-in-llm-inference/.
+Hong, K.; Troynikov, A.; and Huber, J. 2024. Context Rot:
+How Increasing Input Tokens Impacts LLM Performance.
+https://research.trychroma.com/context-rot.
+Kambhampati, S.; Valmeekam, K.; Guan, L.; Stechly, K.;
+Verma, M.; Bhambri, S.; Saldyt, L.; and Murthy, A. 2024.
+LLMs Can’t Plan, But Can Help Planning in LLM-Modulo
+Frameworks. arXiv:2402.01817.
+Kokel, H.; Katz, M.; Srinivas, K.; and Sohrabi, S. 2025.
+ACPBench: Reasoning About Action, Change, and Plan-
+ning. In Proc. of AAAI-25, 26559–26568. AAAI Press.
+Liu, B.; Jiang, Y.; Zhang, X.; Liu, Q.; Zhang, S.; Biswas,
+J.; and Stone, P. 2023a.
+LLM+P: Empowering Large
+Language Models with Optimal Planning Proficiency.
+arXiv:2304.11477.
+Liu, N. F.; Lee, K.; Min, S.; Press, O.; Smith, G.; Lewis,
+M.; Smith, N. A.; and Zettlemoyer, L. 2023b. Lost in the
+Middle: How Language Models Use Long Contexts. arXiv
+preprint arXiv:2307.03172.
+Liu, Y.; He, H.; Han, T.; Zhang, X.; Liu, M.; Tian, J.; Zhang,
+Y.; Wang, J.; Gao, X.; Zhong, T.; et al. 2025. Understanding
+llms: A comprehensive overview from training to inference.
+Neurocomputing, 620: 129190.
+Lyu, Q.; Havaldar, S.; Stein, A.; Zhang, L.; Rao, D.; Wong,
+E.; Apidianaki, M.; and Callison-Burch, C. 2023. Faithful
+Chain-of-Thought Reasoning. arXiv:2301.13379.
+McDermott, D.; Ghallab, M.; Howe, A.; Knoblock, C.; Ram,
+A.; Veloso, M.; Weld, D.; and Wilkins, D. 1998. Pddl–the
+planning domain definition language. AI magazine, 19(4):
+55–63.
+Rossetti, N.; Tummolo, M.; Gerevini, A. E.; Putelli, L.; Se-
+rina, I.; Chiari, M.; and Olivato, M. 2024. Learning Gen-
+eral Policies for Planning through GPT Models. In Proc. of
+ICAPS, 500–508.
+Smirnov, P.; Joublin, F.; Ceravola, A.; and Gienger, M. 2024.
+Generating consistent PDDL domains with Large Language
+Models. arXiv:2404.07751.
+Tantakoun, M.; Muise, C.; and Zhu, X. 2025. LLMs as Plan-
+ning Modelers: A Survey for Leveraging Large Language
+Models to Construct Automated Planning Models.
+In In
+Procf of LM4Plan.
+Vallati, M.; Bartak, R.; Chrpa, L.; McCluskey, T. L.; and
+Petrick, R. P. A. 2025. Knowledge Engineering for Planning
+and Scheduling in the LLM Era. In Proc. of ICAPS 2025,
+391–395.
+Vaswani, A.; Shazeer, N.; Parmar, N.; Uszkoreit, J.; Jones,
+L.; Gomez, A. N.; Kaiser, Ł.; and Polosukhin, I. 2017. At-
+tention is all you need. Advances in neural information pro-
+cessing systems, 30.
+Wang, J.; Wu, Z.; Li, Y.; Jiang, H.; Shu, P.; Shi, E.; Hu, H.;
+Ma, C.; Liu, Y.; Wang, X.; Yao, Y.; Liu, X.; Zhao, H.; Liu,
+Z.; Dai, H.; Zhao, L.; Ge, B.; Li, X.; Liu, T.; and Zhang, S.
+2024. Large Language Models for Robotics: Opportunities,
+Challenges, and Perspectives. arXiv:2401.04334.
+Xie, Y.; Yu, C.; Zhu, T.; Bai, J.; Gong, Z.; and Soh, H. 2023.
+Translating Natural Language to Planning Goals with Large-
+Language Models. arXiv:2302.05128.
+Zeng, F.; Gan, W.; Wang, Y.; Liu, N.; and Yu, P. S.
+2023.
+Large Language Models for Robotics: A Survey.
+arXiv:2311.07226.
+Zuo, M.; Velez, F. P.; Li, X.; Littman, M. L.; and Bach, S. H.
+2025. Planetarium: A Rigorous Benchmark for Translating
+Text to Structured Planning Languages. arXiv:2407.03321.
+Appendix: Natural Language Goals
+The specifications of the natural language goals we used in
+our experiments are provided in Tables 2–4.
+
+
+Natural Language Goals (Translatable)
+collect each type of weapon available on the map
+Test that healing works by finding and using a healthkit
+Test that you can shoot from multiple weapons in 1 game instance
+test that I can shoot directly with a pistol
+Make sure the player has the gun, rifle, and gatling in their inventory. Also, the ammo count inside the containers (magazines)
+of the gun, rifle, and gatling must be empty (set to 0).
+Restore the player’s health to maximum.
+Fire the gun at least once, then reload it.
+Eliminate bot b1.
+Reduce the gun’s total ammo to zero.
+Natural Language Goals (Not translatable)
+Eliminate a bot with a shotgun
+Eliminate two bots within a 10 seconds time interval
+perform 3 headshots in a row
+hide under a staircase
+jump ten times
+Verify that shooting a bot decreases his health points
+Go through a portal
+Validate that going through the portal won’t reduce health
+Validate you have all the weapons when going through the portal
+verify shooting reduces ammo by 1
+Verify you can’t shoot when there is no ammo
+test that crouching and leaning while shooting work
+Table 2: Natural language goals in the “first person shooter” domain. In the domain we model the weapons, the amount of
+ammunition and health of the player and bots.
+
+
+barman
+Shot 1 must contain cocktail 4 shot 2 must contain cocktail 2 shot 3 must contain cocktail 3 and shot 4 must contain cocktail 1.
+Shot 1 contains cocktail 2, shot 2 contains cocktail 3, shot 3 contains cocktail 4, and shot 4 contains cocktail 1.
+Ensure that shot1 contains cocktail2, shot2 contains cocktail4, shot3 contains cocktail1, and shot4 contains cocktail3.
+Shot 1 must contain cocktail 4. Shot 2 must contain cocktail 2. Shot 3 must contain cocktail 1. Shot 4 must contain cocktail 5.
+Shot 5 must contain cocktail 3.
+rovers
+Successfully transmit the soil data collected at waypoint2, the rock data collected at waypoint3, and a high resolution image of
+objective1.
+Transmit the soil data collected at waypoint0, the rock data collected at waypoint0, and the low-resolution image data of
+objective1.
+Transmit soil data from waypoint2, transmit rock data from waypoint0, and transmit a color image of objective0.
+woodworking
+Make sure that part p0 is available, has a smooth surface, and is varnished. Make sure that part p1 is available, made of teak
+wood, has a smooth surface, and is varnished. Make sure that part p2 is available, is coloured green, and has a smooth surface.
+Make sure that part p3 is available, made of mahogany wood, and has a smooth surface. Make sure that part p4 is available,
+made of teak wood, and is glazed.
+Make sure you have all four parts available. - p0 must be mauve in color and have a smooth surface. - p1 must be blue in color
+and have a smooth surface. - p2 must be white in color, made of oak, have a smooth surface, and be glazed. - p3 must be mauve
+in color, made of pine, and be glazed.
+Make sure at the end of your test that the following conditions are true:
+- The part p0 is available, has the mauve colour, and its surface is smooth. - The part p1 is available, has the green colour, is
+made of mahogany, its surface is very smooth, and it is varnished. - The part p2 is available, has the mauve colour, and is glazed.
+- The part p3 is available, has the white colour, is made of mahogany, its surface is smooth, and it is glazed. - The part p4 is
+available, is made of teak, and is varnished.
+Make sure the following objectives are completed: - Part p0 is available, colored white, and has the glazed treatment. - Part p1
+is available, made of pine wood, and has the varnished treatment. - Part p2 is available, colored blue, has a very smooth surface,
+and has the glazed treatment. - Part p3 is available, colored black, and has a very smooth surface. - Part p4 is available, has a
+very smooth surface, and is varnished.
+parking
+Park car 00 at curb 0 with car 07 directly behind it. Park car 01 at curb 1 with car 08 directly behind it. Park car 02 at curb 2
+with car 09 directly behind it. Park car 03 at curb 3 with car 10 directly behind it. Park car 04 at curb 4 with car 11 directly
+behind it. Park car 05 at curb 5. Park car 06 at curb 6.
+Park the cars so that curb 0 has car 00 at the curb with car 07 directly behind it, curb 1 has car 01 at the curb with car 08
+directly behind it, curb 2 has car 02 at the curb with car 09 directly behind it, curb 3 has car 03 at the curb with car 10 directly
+behind it, curb 4 has car 04 at the curb with car 11 directly behind it, curb 5 has car 05 at the curb, and curb 6 has car 06 at
+the curb.
+Park car 00 at curb 0, with car 07 behind car 00. Park car 01 at curb 1, with car 08 behind car 01. Park car 02 at curb 2, with
+car 09 behind car 02. Park car 03 at curb 3, with car 10 behind car 03. Park car 04 at curb 4, with car 11 behind car 04. Park
+car 05 at curb 5. Park car 06 at curb 6.
+Park car 00 at curb 0 with car 07 directly behind it. Park car 01 at curb 1 with car 08 directly behind it. Park car 02 at curb 2
+with car 09 directly behind it. Park car 03 at curb 3 with car 10 directly behind it. Park car 04 at curb 4 with car 11 directly
+behind it. Park car 05 at curb 5. Park car 06 at curb 6.
+Table 3: Natural language goals in the IPC domains. All translatable.
+
+
+Natural Language Goals (Translatable)
+build a pulse tank and use it to destroy an enemy light quad
+as player 1 reach research level 4
+Test that it’s possible to build air fighter unit
+Test that it’s possible to build all buildings
+Reach highest possible research level
+Collect 40000 resources as fast as possible
+Check that enemy Silo can be destroyed
+Player 1 must build at least one Pulse Tank. Player 2 must build at least one Rifleman. Then, Player 1 must destroy at least one
+of Player 2’s Riflemen using a Pulse Tank.
+Make sure that by the end of the test, Player 1 has successfully produced at least one Hover Tank and at least one Rifleman unit.
+Have player 1 build a Rocket Launcher and a Radar, and have player 2 train a Rifleman and construct a Light Vehicle Factory.
+The goal is to ensure that player 1 has successfully produced at least one Pulse Tank unit.
+Build a Radar and a Silo as player 1.
+Natural Language Goals (Not translatable)
+harvest 10000 resources within 20 minutes of gameplay
+build a rifleman and have it destroy your own harvester
+destroy enemy’s base within 30 minutes
+check that eliminating a tank with rifleman takes longer than with a rocket launcher
+check that you can drive over infantry units with vehicle, effect: infantry driven over is eliminated
+destroy your own infantry production building
+test that harvester returns automatically if fired upon
+test that the more units the more space they have to occupy (not 100 soldiers at 1 square meter)
+test that building a soldier on higher tech level is faster
+test that when approaching enemy base, you are spotted earlier when approaching over desert than over mountains
+test that you can start building during harvester unloading, i.e., don’t have to wait till harvester is empty, but when I have enough
+resources, I can build
+test parallel attack of two friendly armies against one CPU enemy (aka multiplayer game)
+test that keyboard shortcuts work as set in options, i.e. don’t have to click on units, or ”b” moves my focus on base, ”h” moves
+focus on harvester, etc
+test the shortest strategy to defeat a CPU opponent on map 1
+keep the game playing for 60 minutes in a row
+check that turrets around your base can stop the CPU opponent better than infantry (1:1 counts of turrets:infantry)
+scout through map and find unreachable places, plot map of places where a unit can not go
+check that speed of a light armored vehicle is greater than a heavy armored tank
+test that a light vehicle can reach places which other heavy units (tanks) can’t; or similar scenario, comparing pairs of units
+against each other in terms of speed, way to cross terrains, fire cadence)
+test that building two units in two separate factories takes approx. the same time
+does the game crash or misbehave with 1000 units on map?
+shooting, aiming, crouching, sprinting works across all weapon types - each unit can move, can fire, can return to base
+test coordinated attack of multiple units against an enemy base
+unit pathfinding follows terrain and obstacles as expected, test that units do not get stuck during long gameplay
+building construction works across all valid terrain types, can’t build on rock, on sand, on water
+saved games are loaded correctly, units, resources, and game state are restored as expected.
+test that automated base defenses react properly to enemies
+build an army of 5 tanks (deliberately ambiguous term ’tank’)
+A rifleman shooting at other rifleman should win the shootout in 50% times
+Verify you can’t build two buildings at the same place
+Verify you can’t build research level 8 before building research level 6
+Unit is destroyed when it reaches 0 hitpoints
+Building is destroyed when it reaches 0 hitpoints
+Table 4: Natural language goals in the “real time strategy” domain. In the domain we model gathering resources, doing research
+and constructing buildings and units.

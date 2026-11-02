@@ -1,0 +1,4262 @@
+Scale-Adaptive Balancing of Exploration and
+Exploitation in Classical Planning
+Stephen Wissowa,*,1 and Masataro Asaib,1
+aUniversity of New Hampshire
+bMIT-IBM Watson AI Lab
+Abstract.
+Balancing exploration and exploitation has been an im-
+portant problem in both adversarial games and automated planning.
+While it has been extensively analyzed in the Multi-Armed Ban-
+dit (MAB) literature, and the game community has achieved great
+success with MAB-based Monte Carlo Tree Search (MCTS) meth-
+ods, the planning community has struggled to advance in this area.
+We describe how Upper Confidence Bound 1’s (UCB1’s) assump-
+tion of reward distributions with known bounded support shared
+among siblings (arms) is violated when MCTS/Trial-based Heuris-
+tic Tree Search (THTS) in previous work uses heuristic values of
+search nodes in classical planning problems as rewards. To address
+this issue, we propose a new Gaussian bandit, UCB1-Normal2, and
+analyze its regret bound. It is variance-aware like UCB1-Normal and
+UCB-V, but has a distinct advantage: it neither shares UCB-V’s as-
+sumption of known bounded support nor relies on UCB1-Normal’s
+conjectures on Student’s t and χ2 distributions. Our theoretical anal-
+ysis predicts that UCB1-Normal2 will perform well when the esti-
+mated variance is accurate, which can be expected in deterministic,
+discrete, finite state-space search, as in classical planning. Our empir-
+ical evaluation confirms that MCTS combined with UCB1-Normal2
+outperforms Greedy Best First Search (traditional baseline) as well
+as MCTS with other bandits.
+1
+Introduction
+From the early history of AI and in particular of automated planning
+and scheduling, heuristic forward search has been a primary method-
+ology for tacking challenging combinatorial problems. A rich variety
+of search algorithms have been proposed, including Dijkstra search
+[14], A∗/ WA∗[23], and Greedy Best First Search [8, GBFS]. They
+are divided into three categories: optimizing, which must guarantee
+the optimality of the output, satisficing, which may or may not at-
+tempt to minimize solution cost, and agile, which ignores solution
+cost and focuses on finding a solution quickly. This paper focuses on
+the agile setting.
+Unlike optimizing search, theoretical understanding of satisfic-
+ing and agile search has been limited. Recent theoretical work on
+GBFS [25, 27, 26, 36] refined the concept of search progress in ag-
+ile search, but only based on a post hoc analysis that depends on
+oracular information, making their insights difficult to apply to prac-
+tical search algorithm design, although it has been recently applied
+to a learning-based approach [17]. More importantly, their analy-
+∗Corresponding Author. Email: swj@unh.edu
+1 Equal contribution.
+sis is incompatible with a wider range of randomized algorithms
+[42, 29, 33, 56, 59, 60, 61, 62, 3, 36] that outperform the determinis-
+tic baseline with randomized explorations; as a result, their detailed
+theoretical properties are largely unknown except for probabilistic
+completeness [56]. It is unsurprising that analyzing randomized al-
+gorithms requires a statistical perspective, which is also growing
+more important due to recent advances in learned heuristic functions
+[55, 16, 52, 18, 48, 21, 20].
+In this paper, we tackle the problem of balancing exploration and
+exploitation in classical planning through a statistical lens and from
+the perspective of MABs. Previous work showed that traditional for-
+ward search algorithms (A*, GBFS) can be seen as a form of MCTS,
+but we refine and recast this paradigm as a repeated process of col-
+lecting a reward dataset and exploring the environment based on es-
+timates obtained from this dataset. This perspective reveals several
+theoretical issues in GreedyUCT [51], a MCTS modified for classi-
+cal planning that uses UCB1. Among other things, the optimization
+objective of classical planning has no a priori known bound, which
+violates the bounded reward assumption of UCB1.
+To apply MAB to classical planning correctly, we propose UCB1-
+Normal2, a new Gaussian bandit, and GreedyUCT-Normal2, a new
+agile planning algorithm that combines MCTS with UCB1-Normal2,
+and show that GreedyUCT-Normal2 outperforms traditional ag-
+ile algorithms (GBFS), state-of-the-art diversified search (Softmin-
+Type(h) [36]), existing MCTS-based algorithms (GreedyUCT,
+GreedyUCT*), MCTS combined with other variance-aware bandits
+(UCB1-Normal and UCB-V [4]) or simple-regret bandits (TTTS
+[50]).
+While most of our empirical analyses are based on Pyperplan-
+based implementation and focus on algorithmic efficiency rather than
+on low-level performance, we also re-implemented the algorithms
+in C++/Fast-Downward and performed evaluations in IPC 2018 sat-
+isficing instances, where GUCT-Normal2 outperformed Softmin-
+Type(h) on the number of instances solved.
+In summary, our core contributions are as follows.
+• We identify theoretical issues that arise when applying UCB1 to
+planning tasks.
+• To address these issues, we present UCB1-Normal2, a new Gaus-
+sian bandit. We analyze its regret bound, which improves as the
+estimated variance is closer to the true variance, and is constant
+when they match. This makes it particularly powerful in a deter-
+ministic and finite state space such as classical planning.
+• GreedyUCT-Normal2, a new forward search algorithm that com-
+bines UCB1-Normal2 with MCTS, outperforms existing algo-
+arXiv:2305.09840v4  [cs.AI]  26 Mar 2026
+
+
+rithms in agile classical planning.
+The code for this paper is available at https://github.com/IBM/
+pyperplan-mcts-public.
+2
+Background
+We define a propositional STRIPS Planning problem as a 4-tuple
+[P, A, I, G] where P is a set of propositional variables, A is a set
+of actions, I ⊆P is the initial state, and G ⊆P is a goal condi-
+tion. Each action a ∈A is a 4-tuple [PRE(a), ADD(a), DEL(a), C(a)]
+where C(a) ∈Z0+ is a cost, PRE(a) ⊆P is a precondition and
+ADD(a), DEL(a) ⊆P are the add-effects and delete-effects. A state
+s ⊆P is a set of true propositions (all of P \ s is false), an ac-
+tion a is applicable when s ⊇PRE(a) (read: s satisfies PRE(a)),
+and applying action a to s yields a new successor state
+a(s) =
+(s \ DEL(a)) ∪ADD(a).
+The task of classical planning is to find a sequence of actions called
+a plan (a1, · · · , an) where, for 1 ≤t ≤n, s0 = I, st ⊇PRE(at+1),
+st+1 = at+1(st), and sn ⊇G. A plan is optimal if there is no plan
+with lower cost P
+t C(at). A plan is otherwise called satisficing. In
+this paper, we assume unit-cost: ∀a ∈A; C(a) = 1.
+A domain-independent heuristic function h in classical planning is
+a function of a state s and the problem [P, A, I, G], but the notation
+h(s) usually omits the latter. It returns an estimate of the cumula-
+tive cost from s to one of the goal states (which satisfy G), typically
+through a symbolic, non-statistical means including problem relax-
+ation and abstraction. Notable state-of-the-art functions that appear
+in this paper include hFF, hmax, hadd, and hGC [28, 8, 19]. Their
+implementation details are beyond the scope of this paper, and are
+included in the appendix [58, Sec. S1].
+2.1
+Multi-Armed Bandit (MAB)
+MAB [54, 49, 9] is a problem of finding the best strategy to choose
+from multiple unknown reward distributions. It is typically depicted
+by a row of K slot machines each with a lever or “arm.” Each time the
+player plays one of the machines and pulls an arm (a trial), the player
+receives a reward sampled from the distribution assigned to that arm.
+Through multiple trials, the player discovers the arms’ distributions
+and selects arms to maximize the reward.
+The most common optimization objective of MAB is Cumulative
+Regret (CR) minimization. Let ri (1 ≤i ≤K) be a random variable
+(RV) for the reward that we would receive when we pull arm i. We
+call p(ri) an unknown reward distribution of i. Let ti be a RV of
+the number of trials performed on arm i and T = P
+i ti be the total
+number of trials across all arms.
+Definition 1.
+The cumulative regret ∆is the gap between
+the optimal and the actual expected cumulative reward: ∆
+=
+T maxi E[ri] −P
+i E[ti]E[ri].
+Algorithms whose regret per trial ∆/T converges to 0 with
+T →∞are called zero-regret. Those with a logarithmically upper-
+bounded regret, O(log T), are also called asymptotically optimal be-
+cause this is the theoretical optimum achievable by any algorithm
+[37]. Regret bounds tell the speed of convergence, thus its proof is
+stronger than that of the convergence proof.
+Upper Confidence Bound 1 [6, UCB1] is a logarithmic CR MAB
+for rewards ri ∈[0, c] with a known c. Let ri1 . . . riti ∼p(ri) be
+ti i.i.d. samples obtained from an arm i. Let ˆµi =
+1
+ti
+Pti
+j=1 rij.
+To minimize CR, UCB1 selects i with the largest Upper Confidence
+Bound defined below.
+UCB1i = ˆµi + c
+p
+2 log T/ti
+LCB1i = ˆµi −c
+p
+2 log T/ti
+(1)
+For reward (cost) minimization, LCB1 instead selects i with the
+smallest Lower Confidence Bound defined above (e.g., in Kishimoto
+et al. [34]), but we may use the terms U/LCB1 interchangeably.
+UCB1’s second term is often called an exploration term. Generally,
+an LCB is obtained by flipping the sign of the exploration term in
+a UCB. U/LCB1 refers to a specific algorithm while U/LCB refers
+to general confidence bounds. c is sometimes set heuristically as a
+hyperparameter called the exploration rate.
+2.2
+Forward Heuristic Best-First Search
+Classical planning problems are typically solved as a path finding
+problem defined over a state space graph induced by the transition
+rules, and the current dominant approach is based on forward search.
+Forward search maintains a set of search nodes called an open list.
+They repeatedly (1) (selection) select a node from the open list, (2)
+(expansion) generate its successor nodes, (3) (evaluation) evaluate
+the successor nodes, and (4) (queueing) reinsert them into the open
+list. Termination typically occurs when a node is expanded that sat-
+isfies a goal condition, but a satisficing/agile algorithm can perform
+early goal detection, which immediately checks whether any succes-
+sor node generated in step (2) satisfies the goal condition. Since this
+paper focuses on agile search, we use early goal detection for all al-
+gorithms.
+Within forward search, forward best-first search defines a partic-
+ular ordering in the open list by defining node evaluation criteria
+(NEC) f for selecting the best node in each iteration. Let us de-
+note a node by n and the state represented by n as sn. As NEC,
+Dijkstra search uses fDijkstra(n) = g(n) (g-value), the minimum
+cost from the initial state I to the state sn found so far. A∗uses
+fA∗(n) = g(n) + h(sn), the sum of g-value and the value returned
+by a heuristic function h (h-value). GBFS uses fGBFS(n) = h(sn).
+Forward best-first search that uses h is called forward heuristic best-
+first search. Dijkstra search is a special case of A∗with h(s) = 0.
+Typically, an open list is implemented as a priority queue ordered
+by NEC. Since the NEC can be stateful, e.g., g(sn) can update its
+value, a priority queue-based open list assumes monotonic updates
+to the NEC because it has an unfavorable time complexity for re-
+movals. A∗, Dijkstra, and GBFS satisfy this condition because g(n)
+decreases monotonically and h(sn) is constant.
+MCTS is a class of forward heuristic best-first search that repre-
+sents the open list as the leaves of a tree. We call the tree a tree-based
+open list. Our MCTS is based on the description in [31, 51]. Overall,
+MCTS works in the same manner as other best-first search with a few
+key differences. (1) (selection) To select a node from the tree-based
+open list, it recursively selects an action on each branch of the tree,
+start from the root, using the NEC to select a successor node, de-
+scending until reaching a leaf node. (Sometimes the action selection
+rule is also called a tree policy.) At the leaf, it (2) (expansion) gen-
+erates successor nodes, (3) (evaluation) evaluates the new successor
+nodes, (4) (queueing) attaches them to the leaf, and backpropagates
+(or backs-up) the information to the leaf’s ancestors, all the way up
+to the root.
+The evaluation obtains a heuristic value h(sn) of a leaf node n.
+In adversarial games like Backgammon or Go, it is obtained either
+
+
+by (1) hand-crafted heuristics, (2) playouts (or rollouts) where the
+behaviors of both players are simulated by uniformly random actions
+(default policy) until the game terminates, or (3) a hybrid truncated
+simulation, which returns a hand-crafted heuristic after performing a
+short simulation [22]. In recent work, the default policy is replaced
+by a learned policy [53].
+Trial-based Heuristic Tree Search [31, 51, THTS], a MCTS for
+classical planning, is based on two key observations: (1) the rollout is
+unlikely to terminate in classical planning due to sparse goals, unlike
+adversarial games, like Go, which are guaranteed to finish in a limited
+number of steps with a clear outcome (win/loss); and (2) a tree-based
+open list can reorder nodes efficiently under non-monotonic updates
+to NEC, and thus is more flexible than a priority queue-based open
+list, and can readily implement standard search algorithms such as
+A∗and GBFS without significant performance penalty. In this paper,
+we use THTS and MCTS interchangeably.
+Finally, Upper Confidence Bound applied to trees [35, UCT]
+is a MCTS that uses UCB1 for action selection and be-
+came widely popular in adversarial games. Schulte and Keller
+[51] proposed several variants of UCT including GreedyUCT
+(GUCT), UCT*, and GreedyUCT* (GUCT*). We often abbrevi-
+ate a set of algorithms to save space, e.g., [G]UCT[*] denotes
+{UCT, GUCT, UCT∗, GUCT∗}. In this paper, we mainly discuss
+GUCT[*] due to our focus on the agile satisficing setting that does
+not prioritize minimization of solution cost.
+2.3
+Base MCTS for Graph Search
+Alg. 1 shows the pseudocode of MCTS adjusted for graph search,
+taken from [51]. Aside from what was described from the main sec-
+tion, it has a node-locking mechanism that avoids redundant effort.
+Following THTS, our MCTS has a hash table that implements a
+CLOSE list and a Transposition Table (TT). A CLOSE list stores the
+generated states and avoids instantiating nodes with duplicate states.
+A TT stores various information about the states such as the parent
+information and the action used at the parent. The close list is imple-
+mented by a lock mechanism.
+Since an efficient graph search algorithm must avoid visiting the
+same state multiple times, MCTS for graph search marks certain
+nodes as locked, and excludes them from the selection candidates.
+A node is locked either (1) when a node is a dead-end that will never
+reach a goal (detected by having no applicable actions, by a heuristic
+function, or other facilities), (2) when there is a node with the same
+state in the search tree with a smaller g-value, (3) when all of its chil-
+dren are locked, or (4) when a node is a goal (relevant in an anytime
+iterated search setting [46, 47], but not in this paper). Thus, in the ex-
+pansion step, when a generated node n has the same state as a node
+n′ already in the search tree, MCTS discards n if g(n) > g(n′), else
+moves the subtree of n′ to n and marks n′ as locked. It also implic-
+itly detects a cycle, as this is identical to the duplicate detection in
+Dijkstra/A∗/GBFS.
+The queueing step backpropagates necessary information from the
+leaf to the root. Efficient backpropagation uses a priority queue or-
+dered by descending g-value. The queue is initialized with the ex-
+panded node p; each newly generated node n that is not discarded
+is inserted into the queue, and if a node n′ for the same state was
+already present in the tree it is also inserted into the queue. In each
+backpropagation iteration, (1) the enqueued node with the highest
+g-value is popped, (2) its information is updated by aggregating its
+children’s information (including the lock status), (3) and its parent
+is queued.
+Algorithm 1 High-level general MCTS. Input: Root node r, succes-
+sor function S, NEC f, heuristic function h, priority queue Q sorted
+by g. Initialize ∀n; g(n) ←∞.
+while True do
+Parent p ←r
+while not leaf p do
+# Selection
+p ←arg minn∈S(p) f(n)
+Q ←{p}
+for n ∈S(p) do
+# Expansion
+return n if n is goal.
+# Early goal detection
+if ∃n′ already in tree with same state sn′ = sn then
+if g(n) > g(n′) then
+continue
+Lock n′, S(n) ←S(n′), Q ←Q ∪{n, n′}
+else
+Compute h(sn)
+# Evaluation
+Q ←Q ∪{n}
+while n ←Q.POPMAX() do
+# Backpropagation
+Update n’s statistics and lock status
+Q ←Q ∪{n’s parent}
+3
+Existing MCTS-based Classical Planning
+We revisit GBFS implemented as THTS/MCTS from a MAB per-
+spective. Let S(n) be the set of successors of a node n, L(n) be
+the set of leaf nodes in the subtree under n, and the NECs of GBFS
+as fGBFS(n) = hGBFS(n). We expand the definition of the backup
+functions presented by Keller and Helmert [31] recursively down to
+the leaves, assuming hGBFS(n) = h(sn) if n is a leaf where h is a
+heuristic.
+hGBFS(n) = minn′∈S(n)[hGBFS(n′)]
+= minn′∈S(n)[minn′′∈S(n′)[hGBFS(n′′)]]
+= . . . = minn′∈L(n)[h(sn′)].
+Keller and Helmert [31] called the min operator a Full-Bellman
+backup and compared it with Monte-Carlo backup in GUCT that
+uses the average, as expanded to the leaves below as well:
+hGUCT(n) =
+1
+|L(n)|
+P
+n′∈S(n) |L(n′)|hGUCT(n′)
+=
+1
+|L(n)|
+P
+n′∈S(n)
+|L(n′)|
+
+|L(n′)|
+P
+n′′∈S(n′) |L(n′′)|hGUCT(n′′)
+= . . . =
+1
+|L(n)|
+P
+n′∈L(n) h(sn′).
+To search, GUCT subtracts an exploration term from hGUCT(n)
+based on LCB1, where p is a parent of n. |L(p)| and |L(n)| respec-
+tively correspond to T and ti in Eq. 1.
+fGUCT(n) = hGUCT(n) −c
+p
+(2 log |L(p)|)/|L(n)|
+While Keller and Helmert [31] managed to generalize various al-
+gorithms focusing on the procedural aspects (e.g., recursive backup
+from the children), we focus on its mathematical meaning. One key
+observation missing in Keller and Helmert [31] and is made clear by
+these expansions is that the set L(n) of n’s leaves is a dataset, the
+heuristic h(n′) at each leaf n′ is a reward sample, and the NECs esti-
+mate its statistic such as the mean and the minimum. (The minimum
+is known as an order statistic; other order statistics include the top-k
+element, the q-quantile, and the median = 0.5-quantile.) Backprop-
+agation from the expanded leaves to the root one step at a time is
+merely an efficient implementation detail that avoids computing the
+statistic (min,max,mean) over all leaves every time. Understanding
+
+
+each h(n) is a sample of a random variable representing a reward for
+MABs, we can focus on the theoretical efficiency guarantees and see
+how existing MCTS/THTS for classical planning fail to leverage it.
+First, UCB1 assumes that all reward random variables, each asso-
+ciated with an arm, have a shared, known bounds, where each arm
+corresponds to each successor node during action selections. Heuris-
+tic values in classical planning lack such a priori known bounds,
+unlike adversarial games whose rewards are either +1/0 or +1/-1 rep-
+resenting a win/loss. Also, usually the range of heuristic values in
+each subtree of the search tree substantially differ from each other.
+Although Schulte and Keller [51] claimed to have addressed this
+issue by modifying the UCB1, but their modification does not fully
+address the issue. Let us call their variant GUCT-01. It normal-
+izes the first term of the NEC to [0, 1] by taking the minimum and
+maximum among n’s siblings sharing the parent p. Given M =
+maxn′∈S(p) hGUCT(n′), m = minn′∈S(p) hGUCT(n′), and a hy-
+perparameter c, GUCT-01 modifies fGUCT into fGUCT-01 (Eq. 2).
+fGUCT-01(n) = hGUCT(n)−m
+M−m
+−c
+q
+2 log |L(p)|
+|L(n)|
+(2)
+However, the node ordering by the GUCT-01’s NEC is same when
+all arms are shifted and scaled by the same amount, thus GUCT-01
+is identical to the standard UCB1 with a reward range [0, c(M −m)]
+(Eq. 3); we additionally note that this version avoids a division-by-
+zero issue for M −m = 0.
+m + (M −m)fGUCT-01(n)
+= hGUCT(n) −c(M −m)
+q
+2 log |L(p)|
+|L(n)|
+(3)
+Here are two issues of GUCT-01: First, GUCT-01 does not address
+the fact that different subtrees have different ranges of heuristic val-
+ues: When selecting an action, it assumes that all children have the
+same reward range [0, c(M −m)]. Although M −m differs among
+parents, and thus it adjusts its exploration rate in each action selection
+at a different depth of the tree, it does not do so for each child, thus
+it is depth-aware but not breadth-aware. Second, we expect GUCT-
+01 to explore excessively, because the range [0, c(M −n)] obtained
+from the data of the entire subtree of the parent is always broader
+than that of each child, since the parent’s data is a union of those
+from all children.
+Further, in an attempt to improve the performance of [G]UCT,
+Schulte and Keller [51] noted that using the average is “rather odd”
+for planning, and proposed UCT* and GreedyUCT* (GUCT*) which
+combines Full-Bellman backup with LCB1 without statistical justifi-
+cation.
+Finally, these variants failed to improve over traditional algorithms
+(e.g., GBFS) unless combined with various other enhancements such
+as deferred heuristic evaluation (DE) and preferred operators (PO).
+The theoretical characteristics of these enhancements are not well
+understood, rendering their use ad hoc and the reason for GUCT-
+01’s performance inconclusive, and motivating a better theoretical
+analysis.
+4
+Bandit for Unbounded Distributions
+To handle reward distributions with unknown supports that differ
+across arms, we need a MAB that assumes an unbounded reward
+distribution spanning the real numbers. We use the Gaussian distri-
+bution here, although future work may consider other distributions.
+Formally, we assume each arm i has a reward distribution N(µi, σ2
+i )
+for some unknown µi, σ2
+i . As σ2
+i differs across i, the reward uncer-
+tainty differs across the arms. By contrast, the reward uncertainty of
+each arm in UCB1 is expressed by the range [0, c], which is the same
+across the arms. We now discuss the shortcomings of MABs from
+previous work (Eq. 4-6), and present our new MAB (Eq. 7).
+UCB1-Normali = ˆµi + ˆσi
+p
+(16 log T)/ti
+(4)
+UCB1-Tuned1 =
+(5)
+ˆµi + c
+q
+min(1/4, ˆσ2
+i +
+p
+2 log T/ti) log T/ti
+UCB-Vi = ˆµi + ˆσi
+p
+(2 log T)/ti + (3c log T)/ti
+(6)
+UCB1-Normal2i = ˆµi + ˆσi
+√2 log T
+(7)
+The UCB1-Normal MAB [6, Theorem 4], which was proposed
+along with UCB1 (idem, Theorem 1), is designed exactly for this
+scenario but is still unpopular. Given ti i.i.d. samples ri1 . . . riti ∼
+N(µi, σ2
+i ) from each arm i where T = P
+i ti, it chooses i that max-
+imizes the metric shown in Eq. 4. To apply this bandit to MCTS,
+substitute T = |L(p)| and ti = |L(n)|, and backpropagate the statis-
+tics ˆµi, ˆσ2
+i (see the appendix [58, Sec. S4]). For minimization tasks
+such as classical planning, use the LCB. We refer to the GUCT vari-
+ant using UCB1-Normal as GUCT-Normal. An advantage of UCB1-
+Normal is its logarithmic upper bound on regret [6, Appendix B].
+However, it did not perform well in our empirical evaluation, likely
+because its proof relies on two conjectures which are explicitly stated
+by the authors as not guaranteed to hold.
+Theorem 1 (From [6]). UCB1-Normal has a logarithmic regret-per-
+arm 256
+σ2
+i log T
+∆2
+i
++ 1 + π2
+2 + 8 log T if, for a Student’s t RV X
+with s degrees of freedom (DOF), ∀a ∈[0,
+p
+2(s + 1)]; P(X ≥
+a) ≤e−a2/4, and if, for a χ2 RV X with s DOF, P(X ≥4s) ≤
+e−(s+1)/2.
+To avoid relying on these two conjectures, we need an alternate
+MAB that similarly adjusts the exploration rate based on the vari-
+ance. Candidates include UCB1-Tuned [6] in Eq. 5, and UCB-V [4]
+in Eq. 6, but they all have various limitations. UCB1-Tuned assumes
+a bounded reward distribution, lacks a regret bound, and is outper-
+formed by UCB-V. UCB-V improves UCB1-Tuned with a regret
+proof but it still assumes a bounded reward distribution.
+We present UCB1-Normal2 (Eq. 7) and analyze its regret bound
+(which is one of our main contributions). To understand its behav-
+ior, see Fig. 1 which shows a MCTS selecting an action at a state
+S (which is equivalent to selecting a node from the open list, see
+Sec. 2.2). S has two successors A and B. The subtrees of A and B
+contain h-values {9, 2, 6, 3} and {3, 7, 4, 6}, therefore their back-
+propagated statistics are N(µ, σ) = N(5, 3.16) and N(5, 1.83). A
+has a larger σ, thus the algorithm expects a higher chance of find-
+ing a lower h-value under A, as shown in the green plot. Although
+there is also a higher chance of finding a bad node (high h) under
+A, it avoids such branches during further recursions (e.g., prefer D
+over C). In other words, when the means are equal, it avoids low
+variances which is likely to contain mediocre heuristic values h ≈5
+all the time. This mechanism generalizes the concept of escaping
+heuristic plateaus during search [11]: The low σ of B indicates that
+its subtree contains a set of nodes with different but similar values.
+A heuristic plateau is a special case of σ = 0. In contrast, GUCT
+does not use σ and prefers A and B equally (both nodes have LCB
+= µ −c
+q
+2 log T
+ni
+= 5 −c
+q
+2 log 8
+4
+).
+
+
+I
+h=9
+h=6
+h=2
+h=3
+h=3,7,4,6
+N(5, 3.16)
+N(5, 1.83)
+action
+selection
+a1
+a2
+A
+S
+B
+C
+D
+initial
+state
+Figure 1.
+Search behavior. Larger σ assigns more probability on the lower
+h values we get in the next expansion.
+Theorem 2 (Main Result). Let α ∈[0, 1] be an unknown problem-
+dependent constant and χ2
+1−α,n be the critical value for the tail prob-
+ability of a χ2 distribution with significance α and DOF n that sat-
+isfies P(tiˆσ2
+i /σ2
+i < χ2
+1−α,ti) = α. UCB1-Normal2 has a following
+worst-case polynomial, best-case constant regret-per-arm where C
+is a finite constant if each arm is pulled at least M = inf{n|8 <
+χ2
+1−α,n} times.
+−4(log α)σ2
+i log T
+∆2
+i
++1 + 2C + (1 −α)T(T + 1)(2T + 1)
+3
+α→1
+−−−→1 + 2C
+Proof. (Sketch of the appendix [58, Sec. S3].) We use Hoeffding’s
+inequality for sub-Gaussian distributions as Gaussian distributions
+belong to sub-Gaussian distributions. Unlike in UCB1 where the
+rewards have a fixed known support [0, c], we do not know the
+true reward variance σ2
+i . Therefore, we use the mathematical truth
+(not a conjecture) that, when ri1 . . . riti ∼N(µi, σ2
+i ) and ˆσi
+2 =
+1
+ti
+Pti
+j=1 r2
+ij −( 1
+ti
+Pti
+j=1 rij)2, then ti ˆσi
+2/σ2
+i follows a χ2 distri-
+bution and P(ti ˆσi
+2/σ2
+i
+< χ2
+1−α,ti) = α for some α. We use
+union-bound to address the correlation and further upper-bound the
+tail probability. We also use χ2
+1−α,ti ≥χ2
+1−α,2 = −2 log α for
+ti ≥2. The resulting upper bound contains an infinite series C. Its
+convergence condition dictates the minimum pulls M that must be
+performed initially.
+□
+Polynomial regrets are generally worse than logarithmic regrets of
+UCB1-Normal. However, UCB1-Normal relies on unproven conjec-
+tures and our experimental results shows UCB1-Normal is outper-
+formed by UCB1-Normal2, suggesting that these conjectures do not
+hold. Our regret bound also improves over that of UCB1-Normal if
+T is small and α ≈1 (log α ≈0 therefore 1 −α ≈0). α repre-
+sents the accuracy of the sample variance ˆσ2 toward the true variance
+σ2. In deterministic, discrete, finite state-space search problems like
+classical planning, α tends to be close to (or sometimes even match)
+1 because σ = ˆσ is achievable. Several factors of classical planning
+contribute to this. Heuristic functions in classical planning are deter-
+ministic, unlike rollout-based heuristics in adversarial games. This
+means σ = ˆσ = 0 when a subtree is linear due to the graph shape.
+Also, σ = ˆσ when all reachable states from a node are exhaustively
+enumerated in its subtree. In statistical terms, this is because draws
+from heuristic samples are performed without replacements due to
+duplication checking in search algorithms.
+Unlike UCB1-Normal, which pulls arms uniformly until all arms
+satisfy ti ≥⌊8 log T⌋, UCB1-Normal2 does not need such initial-
+ization pulls because every node is evaluated once and its heuristic
+value is used as a single sample. This means we assume M = 1, thus
+α > ERF(2) > 0.995 because 8 < χ2
+1−α,1 ⇔1 −α <
+γ( 1
+2 , 8
+2 )
+Γ( 1
+2 )
+=
+1 −ERF(2). In classical planning, α > 0.995 is more realistic than
+the conjectures used by UCB1-Normal.
+Another explanation for the failure of UCB1-Normal is that its
+exploration term is made too confident / too small by 1/√ti because
+it was derived with more assumptions (the χ2 conjecture).
+During the discussion, yet another potential explanation related
+to the aleatoric and epistemic uncertainty was suggested by one of
+the reviewers. The rewards in the typical bandit problems are “truly”
+stochastic, i.e., each arm always samples a different reward from the
+unknown fixed distribution, thus the uncertainty is aleatoric / an ob-
+jective truth. However all rewards in classical planning are determin-
+istic, and the uncertainty comes purely from the sampling (search
+behavior in the subtree), thus the uncertainty is epistemic / subjective
+to the agent. Under this interpretation, the standard regret analysis
+above (yielding polynomial regret) may tell little about the actual
+performance of the algorithms, potentially suggesting a new chal-
+lenge for the bandit community.
+5
+Experimental Evaluation
+We evaluated the algorithms over a subset of the International Plan-
+ning Competition benchmark domains,2 selected for compatibility
+with the set of PDDL extensions supported by Pyperplan [1]. We
+maintain the superset of the results of the experiments under a 10,000
+node evaluation limit, a 4,000 node expansion limit, and a 300 sec-
+ond runtime limit, and then count the number of instances solved
+under each limit. We mainly focus on the node evaluations because
+heuristic computation is the main bottleneck in classical planning.
+See the appendix [58, Fig. S3-S5] for the results controlled by ex-
+pansions and the runtime. Another reason for this focus is the fact
+that we used a python-based implementation (Pyperplan) for conve-
+nient prototyping. It is slower than C++-based state-of-the-art sys-
+tems (e.g. Fast Downward [24]), but our focus on evaluations makes
+this irrelevant and also improves reproducibility by avoiding the ef-
+fect of hardware differences and low-level implementation details.
+In order to limit the length of the experiment, we also removed the
+problem instances which Pyperplan took more than 5 minutes and
+2GB memory to parse and instantiate the input file. The instantiation
+limit removed 47 instances from freecell, 4 from logistics98, 2 from
+openstacks, and 24 from pipesworld-tankage. This resulted in 772
+problem instances across 24 domains in total. We evaluated various
+algorithms with hFF, hadd, hmax, and hGC (goal count) heuristics
+[19], and our analysis focuses on hFF. We included hGC because it
+can be used in environments without domain descriptions, e.g., in the
+planning-based approach [39] to the Atari environment [7]. We ran
+each configuration with 5 random seeds and report the average num-
+ber of problem instances solved. To see the spread due to the seeds,
+see the cumulative histogram plots in the appendix [58, Fig. S3-S5].
+We evaluated the following algorithms: GBFS is GBFS imple-
+mented in Pyperplan and FastDownward. We evaluated both im-
+plementations in order to compare the difference. WA* (w = 5)
+based on FastDownward is added because it outperformed GBFS
+in [51] in agile setting. GUCT is a GUCT based on the original
+UCB1. GUCT-01 is GUCT with ad hoc [0, 1] normalization of the
+mean [51]. GUCT-Normal/-Normal2/-V are GUCT variants using
+UCB1-Normal/UCB1-Normal2/UCB-V respectively. The * variants
+GUCT*/-01/-Normal/-Normal2 are using full-bellman backup. For
+2 github.com/aibasel/downward-benchmarks
+
+
+Table 1.
+The number of problem instances solved with less than 10,000 node evaluations; best configurations in bold for each heuristic; each number
+represents an average over 5 trials. We show results for both c = 1.0 and c = 0.5 (“best parameter” according to Schulte and Keller [51]) when the algorithm
+requires one. Algorithms in the bottom half have no hyperparameter. †: Data missing due to the lack of support of PO for GBFS in Pyperplan. ‡: Data missing
+because DE in Fast Downward measures node evaluations differently.
+PO:Preferred Operators, DE:Deferred Evaluation.
+h =
+hFF
+hadd
+hmax
+hGC
+hFF+PO
+hFF+DE
+hFF+DE+PO
+c =
+0.5
+1
+0.5
+1
+0.5
+1
+0.5
+1
+0.5
+1
+0.5
+1
+0.5
+1
+GUCT
+442.8
+412.0
+435.8
+397.8
+237.0
+228.4
+306.6
+285.2
+484.6
+454.0
+455.8
+389.2
+497.4
+439.4
+*
+542.0
+458.6
+529.2
+480.8
+248.4
+242.2
+317.8
+310.4
+591.6
+495.8
+480.2
+423.6
+527.4
+471.0
+-01
+399.8
+368.0
+375.4
+328.8
+256.8
+237.4
+318.4
+302.4
+441.4
+408.4
+387.6
+361.2
+445.0
+422.6
+*-01
+425.6
+388.0
+404.8
+364.4
+246.8
+233.4
+318.0
+297.6
+470.6
+420.6
+409.4
+378.2
+466.8
+438.8
+-V
+361.2
+317.4
+354.0
+310.6
+226.2
+208.6
+278.4
+255.4
+427.0
+389.6
+370.8
+344.6
+431.2
+421.0
+-Normal
+-
+283.4
+-
+265.0
+-
+212.0
+-
+233.4
+-
+372.4
+-
+289.0
+-
+381.6
+*-Normal
+-
+318.8
+-
+300.0
+-
+215.2
+-
+246.2
+-
+378.1
+-
+304.4
+-
+386.7
+-Normal2
+-
+581.8
+-
+535.8
+-
+316.6
+-
+379.0
+-
+621.0
+-
+518.0
+-
+578.0
+*-Normal2
+-
+567.2
+-
+533.8
+-
+263.0
+-
+341.0
+-
+618.0
+-
+511.4
+-
+567.8
+TTTS-Normal
+-
+181.0
+-
+180.0
+-
+171.4
+-
+170.8
+-
+151.0
+-
+180.6
+-
+150.6
+TTTS-Normal*
+-
+189.4
+-
+186.4
+-
+177.4
+-
+174.4
+-
+159.4
+-
+185.8
+-
+155.8
+GBFS(Pyperplan/FastDownward)
+538/539
+-
+518/517
+-
+224/226
+-
+354/349
+-
+†/539
+-
+489/‡
+-
+†/‡
+WA∗(w = 5) (FastDownward)
+528
+-
+522
+-
+211
+-
+319
+-
+528
+-
+‡
+-
+‡
+Softmin-Type(h) (FastDownward)
+576.0
+-
+542.6
+-
+297.2
+-
+357.6
+-
+575.8
+-
+‡
+-
+‡
+GUCT and GUCT-01, we evaluated the hyperparameter c with the
+standard value c = 1.0 and c = 0.5. The choice of the latter is due to
+Schulte and Keller [51], who claimed that GUCT [*]-01 performed
+the best when 0.6 < C = c
+√
+2 < 0.9, i.e., 0.4 < c < 0.63. Our aim
+of testing these hyperparameters is to compare them against auto-
+matic exploration rate adjustments performed by UCB1-Normal[2].
+Other algorithms are explained later.
+Schulte and Keller [51] previously reported that two ad hoc en-
+hancements to GBFS, PO and DE, also improve the performance of
+GUCT [*]-01. We evaluated our equivalent reimplementation. We
+did not evaluate PO with heuristics other than hFF, which are not
+supported by Pyperplan.
+In all comparisons between GUCT-Normal2 and other algorithms
+based on FF heuristics below, we performed Welch’s unequal vari-
+ances t-test on the coverage scores with 5 different random seeds,
+and confirmed p < 0.001 for all comparisons. Note that all algo-
+rithms evaluated in this paper are deterministic up to tie-breaking,
+including MCTS variants: With the same set of leafs, all NECs are
+deterministic, and thus the action selection is deterministic.
+Detailed Ablation
+We first reproduced [51] and provide its more
+detailed ablation. Table 1 shows that GUCT [*]-01 is indeed signifi-
+cantly outperformed by the baseline algorithm GBFS, indicating that
+UCB1-based exploration is not beneficial for planning. Although this
+result disagrees with the final conclusion of their paper, their conclu-
+sion relied on incorporating the DE and PO enhancements, and these
+confounding factors impede conclusive analysis.
+We also tested GUCT [*], which lacks the mean normalization
+(Eq. 2) of GUCT [*]-01, which was not previously evaluated. GUCT
+[*]-01 performs significantly worse, indicating that its normalization
+not only fails to address the unknown and different supports, but also
+harms the performance by excessive exploration, as predicted by our
+analysis in Sec. 3.
+GUCT-Normal2
+We then compared various algorithms. GUCT-
+Normal2 outperformed GBFS, GUCT/-01/-Normal/-V, and their *
+variants. The dominance against GUCT-Normal supports our anal-
+ysis that in classical planning ˆσ2
+≈
+σ2, thus P(tiˆσ2/σ2
+<
+χ2
+1−α,ti) = α ≈1, overcoming the asymptotic deficit (the polyno-
+mial regret in GUCT-Normal2 vs. the logarithmic regret of GUCT-
+Normal). In other words, the logarithmic regret of UCB1-Normal
+does not hold in classical planning because the χ2 conjectures tend
+to be violated.
+While the * variants can be significantly better than the non-* vari-
+ants at times, this trend was opposite in algorithms that perform bet-
+ter, e.g., GUCT*-Normal2 tend to be worse than GUCT-Normal2.
+This supports our claim that Full-Bellman backup proposed by [51]
+is theoretically unfounded and thus does not consistently improve
+search algorithms. Further theoretical investigation of Full-Bellman
+backup is an important avenue of future work.
+The table also compares GUCT [*]-Normal[2], which do not re-
+quire any hyperparameter, against GUCT [*][/-01/-V] with different
+c values. Although c = 0.5 improves the performance of GUCT [*]-
+01 as reported by Schulte and Keller [51], it did not improve enough
+to catch up with the adaptive exploration rate of GUCT [*]-Normal2.
+We also tested c ∈{0.1, 0.3, 3.0} (see the appendix [58, Sec. S6.3]).
+Results indicated that c = 0.1 tends to be better, but it still did not
+outperform GUCT-Normal2 (e.g., the best coverage among GUCT
+[*][-01] with FF/c = 0.1 was 561.8 by GUCT*, compared to 581.8
+by GUCT-Normal2.) This is not surprising, as the limit of c →0 for
+GUCT* is GBFS, which also performs well (538).
+Simple Regret
+Cumulative regret (CR, Eq. 1) bandits maximize
+the total rewards, including those obtained during the experimenta-
+tion, while simple regret (SR) bandits / best-arm identification algo-
+rithms [5, 30] maximize the expected rewards of the incumbent best
+arm that is maintained during the experimentation and is returned at
+the end. SR MABs can explore more aggressively than CR MABs
+because the cost of the experimentation is free for SR. Feldman and
+Domshlak [15] showed that SR MABs are superior in online MDPs
+where the incumbent corresponds to the action to take next. The con-
+cept of incumbent also exists in anytime search [46], e.g., in LAMA
+[47], suggesting an interesting future direction. However, the incum-
+bent does not exist in agile search, or in the first iteration of anytime
+search, so SR MABs are conceptually mismatched with offline agile
+search. Table 1 shows the performance of MCTS combined with a
+state-of-the-art SR MAB [50, TTTS]. TTTS-Normal/* respectively
+uses the Monte-Carlo/Full-Bellman backup. As expected, they are
+vastly outperformed by other algorithms. In online planning and act-
+ing, the justification for SR is that search is not a commitment, only
+the first action of the policy/plan is. However, in agile planning,
+search is indeed a commitment to the computational resources (time,
+memory) which we minimize, thus it justifies the CR objective.
+
+
+102
+102
+GUCT-01 vs GBFS
+102
+103
+102
+103
+GUCT-Normal2 vs GBFS
+102
+103
+102
+103
+Softmin-Type(h) vs GBFS
+Figure 2.
+Comparing solution length of GUCT [-01/Normal2] and
+Softmin-Type(h) (x-axis) against GBFS (y-axis) using hFF.
+Preferred Operators
+In addition to the heuristic value of a state,
+some heuristic functions are able to return a list of actions called
+“helpful actions” [28] or “preferred operators” [45]. We reimple-
+mented Schulte and Keller [51]’s strategy which limits the action
+selection to the preferred operators and falling back to the normal
+behavior if there are none. Table 1 shows that it also improves GUCT
+[*][-Normal2], consistent with the previous report on GUCT [*]-01.
+Deferred Evaluation
+Table 1 shows the effect of deferred heuristic
+evaluation (DE) on search algorithms. In this experiment, DE should
+perform worse than eager evaluations because DE trades the num-
+ber of calls to heuristics with the number of nodes inserted to the
+tree, which is limited to 10,000. When CPU time is the limiting re-
+source, DE usually solves more instances, assuming the implemen-
+tation is optimized for speed (e.g., using C++). However, our Python
+implementation (typically 100–1,000 times slower than C++) is not
+able to measure this effect because this low-level bottleneck could
+hide the effect of speed improvements. What we could learn from
+this experiment is therefore whether DE+PO is better than DE, and
+if GUCT [*]-Normal2+DE continues to dominate other algorithms
+with DE. Table 1 answers both questions positvely: DE+PO tends to
+perform better than DE alone, and GUCT [*]-Normal2 is still supe-
+rior to other algorithms with DE and DE+PO.
+Diversified Search
+We evaluated Softmin-Type(h) [36], a recent
+state-of-the-art diversified search algorithm for classical planning.
+We used the original C++ implementation based on Fast Down-
+ward. We excluded diversification methods that use state informa-
+tion, such as BFWS [38], as they are orthogonal concepts. Ta-
+ble 1 shows that UCB1-Normal2 outperforms Softmin-Type(h) with
+hFF, hmax, hGC, hFF+PO. See the domain-wise comparisons in the
+appendix [58, Sec. S6.5].
+Solution Quality
+Fig. 2 shows that GUCT-Normal2 and Softmin-
+Type(h) return longer solutions than GBFS does. GUCT-01 finds so-
+lutions with highly varying length, but overall they are not consis-
+tently longer or shorter than GBFS. See the appendix [58, Fig. S9-
+S12] for more plots. For agile search, we believe that a successful
+exploration must sacrifice the solution quality for faster search.
+Runtime Comparison
+To assess the impact of the runtime over-
+head required by GUCT-Normal2 to maintain MCTS search tree, we
+reimplemented GUCT/-Normal/2 on Fast Downward and evaluated
+them on IPC 2018 satisficing instances. Table 2 shows that GUCT-
+Normal2 outperforms other algorithms.
+6
+Related Work
+The idea of using variances to guide the search has been proposed
+as early as Crazy Stone for computer Go [13]. However, due to
+its focus on adversarial games, MCTS literature typically assumes
+a bounded reward setting (e.g., 0/1, -1/+1), making applications of
+UCB1-Normal scarce (e.g., Google Scholar returns 5900 vs. 60 for
+Table 2.
+IPC 2018 results (average number of instances solved over 3
+seeds) using hFF under 5 min time limit and 8GB memory limit. For caldera
+and organic-synthesis, we used their action-splitting variants [2] provided by
+the organizers. “Softmin” stands for Softmin-Type(h). Best results are
+highlighted in bold.
+domain
+GBFS
+WA*
+Softmin
+GUCT
+Normal
+Normal2
+agricola
+9.0
+4.0
+9.0
+8.0
+1.0
+9.7
+caldera
+4.0
+2.0
+7.3
+6.0
+6.7
+6.7
+data-net
+4.0
+5.0
+9.0
+4.0
+2.0
+9.7
+flashfill
+9.0
+8.0
+9.0
+1.0
+0.0
+6.7
+nurikabe
+7.0
+8.0
+7.0
+8.0
+8.0
+8.3
+org-syn
+9.0
+10.0
+9.3
+10.0
+10.3
+9.7
+settlers
+0.0
+4.0
+5.3
+6.3
+5.3
+2.3
+snake
+5.0
+3.0
+5.0
+3.3
+3.0
+16.7
+spider
+8.0
+11.0
+8.7
+8.7
+9.0
+9.3
+termes
+12.0
+4.0
+12.0
+10.0
+9.7
+6.0
+total
+67.0
+59.0
+81.7
+65.3
+55.0
+85.0
+keyword “UCB1” and “UCB1-Normal”, respectively) except a few
+model-selection applications [40]. While Gaussian Process MAB
+[43] has been used with MCTS for sequential decision making in
+continuous space search and robotics [32], it is significantly different
+from discrete search spaces like in classical planning.
+MABs may provide a rigorous theoretical tool to analyze
+the behavior of a variety of existing randomized enhancements
+for agile/satisficing search that tackle the exploration-exploitation
+dilemma. ϵ-greedy GBFS was indeed inspired by MABs [56, Sec.2].
+GUCT-Normal2 encourages exploration in nodes further from the
+goal, which tend to be close to the initial state. This behavior is sim-
+ilar to that of Diverse Best First Search [29], which stochastically
+enters an “exploration mode” that expands a node with a smaller g
+value more often. This reverse ordering is unique from other diver-
+sified search algorithms, including ϵ-GBFS, Type-GBFS [62], and
+Softmin-Type-GBFS [36], which selects g rather uniformly during
+the exploration.
+Theoretical guarantees of MABs require modifications in tree-
+based algorithms (e.g. MCTS) due to non-i.i.d. sampling from the
+subtrees [12, 41]. Incorporating the methods developed in the MAB
+community to counter this bias in the subtree samples is an important
+direction for future work.
+MDP and Reinforcement Learning literature often use discounting
+to avoid the issue of divergent cumulative reward: when the upper
+bound of step-wise reward is known to be R, then the maximum cu-
+mulative reward goes to ∞with infinite horizon, while the discount-
+ing with γ makes it below
+R
+1−γ , allowing the application of UCB1.
+Although it addresses the numerical issue and UCB1’s theoretical
+requirement, it no longer optimizes the cumulative objective.
+7
+Conclusion
+We examined the theoretical assumptions of existing bandit-based
+exploration mechanisms for classical planning, and showed that ad
+hoc design decisions can invalidate theoretical guarantees and harm
+performance. We presented GUCT-Normal2, a classical planning al-
+gorithm combining MCTS and our Gaussian bandit UCB1-Normal2,
+and analyzed it both theoretically and empirically. Future work in-
+cludes combinations with other enhancements for agile search in-
+cluding novelty metric [38], lazy evaluations and preferred operators
+[44], and iterated anytime search [46].
+
+
+Acknowledgments
+This work was supported through DTIC contract FA8075-18-D-
+0008, Task Order FA807520F0060, Task 4 - Autonomous Defensive
+Cyber Operations (DCO) Research & Development (R&D).
+References
+[1] Y. Alkhazraji, M. Frorath, M. Grützner, M. Helmert, T. Liebetraut,
+R. Mattmüller, M. Ortlieb, J. Seipp, T. Springenberg, P. Stahl, and
+J. Wülfing.
+Pyperplan, 2020.
+URL https://doi.org/10.5281/zenodo.
+3700819.
+[2] C. Areces, F. Bustos, M. A. Dominguez, and J. Hoffmann. Optimizing
+Planning Domains by Automatic Action Schema Splitting. In Proc. of
+ICAPS, 2014.
+[3] M. Asai and A. Fukunaga. Exploration Among and Within Plateaus in
+Greedy Best-First Search. In Proc. of ICAPS, 2017.
+[4] J.-Y. Audibert, R. Munos, and C. Szepesvári. Exploration–Exploitation
+Tradeoff using Variance Estimates in Multi-Armed Bandits. Theoretical
+Computer Science, 2009.
+[5] J.-Y. Audibert, S. Bubeck, and R. Munos. Best Arm Identification in
+Multi-Armed Bandits. In Proc. of COLT, 2010.
+[6] P. Auer, N. Cesa-Bianchi, and P. Fischer. Finite-Time Analysis of the
+Multiarmed Bandit Problem. Machine Learning, 2002.
+[7] M. G. Bellemare, Y. Naddaf, J. Veness, and M. Bowling. The Arcade
+Learning Environment: An Evaluation Platform for General Agents
+(Extended Abstract). In Proc. of IJCAI, 2015.
+[8] B. Bonet and H. Geffner. Planning as Heuristic Search. Artificial Intel-
+ligence, 2001.
+[9] R. R. Bush and F. Mosteller. A Stochastic Model with Applications to
+Learning. The Annals of Mathematical Statistics, 1953.
+[10] T. Bylander. A Probabilistic Analysis of Prepositional STRIPS Plan-
+ning. Artificial Intelligence, 1996.
+[11] A. Coles and A. Smith. Marvin: A Heuristic Search Planner with Online
+Macro-Action Learning. J. Artif. Intell. Res.(JAIR), 2007.
+[12] P.-A. Coquelin and R. Munos. Bandit Algorithms for Tree Search. In
+Proc. of UAI, 2007.
+[13] R. Coulom. Efficient Selectivity and Backup Operators in Monte-Carlo
+Tree Search. In International Conference on Computers and Games,
+2006.
+[14] E. W. Dijkstra. A Note on Two Problems in Connexion with Graphs.
+Numerische mathematik, 1959.
+[15] Z. Feldman and C. Domshlak. Simple Regret Optimization in Online
+Planning for Markov Decision Processes. J. Artif. Intell. Res.(JAIR),
+2014.
+[16] P. Ferber, M. Helmert, and J. Hoffmann. Neural Network Heuristics
+for Classical Planning: A Study of Hyperparameter Space. In Proc. of
+ECAI, 2020.
+[17] P. Ferber, L. Cohen, J. Seipp, and T. Keller. Learning and Exploiting
+Progress States in Greedy Best-First Search. In Proc. of IJCAI, 2022.
+[18] P. Ferber, F. Geißer, F. Trevizan, M. Helmert, and J. Hoffmann. Neural
+Network Heuristic Functions for Classical Planning: Bootstrapping and
+Comparison to Other Methods. In Proc. of ICAPS, 2022.
+[19] R. E. Fikes, P. E. Hart, and N. J. Nilsson.
+Learning and Executing
+Generalized Robot Plans. Artificial Intelligence, 1972.
+[20] C. R. Garrett, L. P. Kaelbling, and T. Lozano-Pérez. Learning to Rank
+for Synthesizing Planning Heuristics. In Proc. of IJCAI, 2016.
+[21] C. Gehring, M. Asai, R. Chitnis, T. Silver, L. P. Kaelbling, S. Sohrabi,
+and M. Katz. Reinforcement learning for classical planning: Viewing
+heuristics as dense reward generators. In Proc. of ICAPS, 2022.
+[22] S. Gelly and D. Silver. Monte-Carlo Tree Search and Rapid Action
+Value Estimation in Computer Go. Artificial Intelligence, 2011.
+[23] P. E. Hart, N. J. Nilsson, and B. Raphael. A Formal Basis for the Heuris-
+tic Determination of Minimum Cost Paths. Systems Science and Cyber-
+netics, IEEE Transactions on, 1968.
+[24] M. Helmert.
+The Fast Downward Planning System.
+J. Artif. Intell.
+Res.(JAIR), 2006.
+[25] M. Heusner, T. Keller, and M. Helmert. Understanding the Search Be-
+haviour of Greedy Best-First Search. In Proc. of SOCS, 2017.
+[26] M. Heusner, T. Keller, and M. Helmert. Best-Case and Worst-Case Be-
+havior of Greedy Best-First Search. In Proc. of IJCAI, 2018.
+[27] M. Heusner, T. Keller, and M. Helmert. Search Progress and Potentially
+Expanded States in Greedy Best-First Search. In Proc. of IJCAI, 2018.
+[28] J. Hoffmann and B. Nebel. The FF Planning System: Fast Plan Gener-
+ation through Heuristic Search. J. Artif. Intell. Res.(JAIR), 2001.
+[29] T. Imai and A. Kishimoto. A Novel Technique for Avoiding Plateaus
+of Greedy Best-First Search in Satisficing Planning. In Proc. of AAAI,
+2011.
+[30] Z. Karnin, T. Koren, and O. Somekh. Almost Optimal Exploration in
+Multi-Armed Bandits. In Proc. of ICML, 2013.
+[31] T. Keller and M. Helmert. Trial-Based Heuristic Tree Search for Finite
+Horizon MDPs. In Proc. of ICAPS, 2013.
+[32] B. Kim, K. Lee, S. Lim, L. Kaelbling, and T. Lozano-Pérez. Monte
+Carlo Tree Search in Continuous Spaces using Voronoi Optimistic Op-
+timization with Regret Bounds. In Proc. of AAAI, 2020.
+[33] A. Kishimoto, R. Zhou, and T. Imai. Diverse Depth-First Search in
+Satisificing Planning. In Proc. of SOCS, 2012.
+[34] A. Kishimoto, D. Bouneffouf, R. Marinescu, P. Ram, A. Rawat, M. Wis-
+tuba, P. Palmes, and A. Botea. Bandit Limited Discrepancy Search and
+Application to Machine Learning Pipeline Optimization. In Proc. of
+AAAI, 2022.
+[35] L. Kocsis and C. Szepesvári. Bandit Based Monte-Carlo Planning. In
+Proc. of ECML, 2006.
+[36] R. Kuroiwa and J. C. Beck. Biased Exploration for Satisficing Heuristic
+Search. In Proc. of ICAPS, 2022.
+[37] T. L. Lai, H. Robbins, et al. Asymptotically Efficient Adaptive Alloca-
+tion Rules. Advances in Applied Mathematics, 1985.
+[38] N. Lipovetzky and H. Geffner. Best-First Width Search: Exploration
+and Exploitation in Classical Planning . In Proc. of AAAI, 2017.
+[39] N. Lipovetzky, M. Ramírez, and H. Geffner. Classical Planning with
+Simulators: Results on the Atari Video Games. In Proc. of IJCAI, 2015.
+[40] D. McConachie and D. Berenson.
+Estimating Model Utility for
+Deformable Object Manipulation using Multiarmed Bandit Methods.
+IEEE Transactions on Automation Science and Engineering, 2018.
+[41] R. Munos et al. From Bandits to Monte-Carlo Tree Search: The Op-
+timistic Principle Applied to Optimization and Planning. Foundations
+and Trends® in Machine Learning, 2014.
+[42] H. Nakhost and M. Müller. Monte-Carlo Exploration for Deterministic
+Planning. In Proc. of IJCAI, 2009.
+[43] S. Niranjan, A. Krause, S. M. Kakade, and M. W. Seeger. Gaussian
+Process Optimization in the Bandit Setting: No Regret and Experimen-
+tal Design. In Proc. of ICML, 2010.
+[44] S. Richter and M. Helmert. Preferred Operators and Deferred Evalua-
+tion in Satisficing Planning. In Proc. of ICAPS, 2009.
+[45] S. Richter and M. Helmert. Preferred operators and deferred evaluation
+in satisficing planning. In Proc. of ICAPS, 2009.
+[46] S. Richter, J. T. Thayer, and W. Ruml. The Joy of Forgetting: Faster
+Anytime Search via Restarting. In Proc. of ICAPS, 2010.
+[47] S. Richter, M. Westphal, and M. Helmert. LAMA 2008 and 2011. In
+Proc. of IPC, 2011.
+[48] O. Rivlin, T. Hazan, and E. Karpas. Generalized planning with deep
+reinforcement learning. In Proc. of PRL, 2019.
+[49] H. Robbins. Some Aspects of the Sequential Design of Experiments.
+Bulletin of the American Mathematical Society, 1952.
+[50] D. Russo. Simple Bayesian Algorithms for Best-Arm Identification.
+Operations Research, 2020.
+[51] T. Schulte and T. Keller. Balancing Exploration and Exploitation in
+Classical Planning. In Proc. of SOCS, 2014.
+[52] W. Shen, F. Trevizan, and S. Thiébaux. Learning Domain-Independent
+Planning Heuristics with Hypergraph Networks. In Proc. of ICAPS,
+2020.
+[53] D. Silver, A. Huang, C. J. Maddison, A. Guez, L. Sifre, G. Van
+Den Driessche, J. Schrittwieser, I. Antonoglou, V. Panneershelvam,
+M. Lanctot, et al. Mastering the Game of Go with Deep Neural Net-
+works and Tree Search. Nature, 2016.
+[54] W. R. Thompson. On the Likelihood that One Unknown Probability
+Exceeds Another in View of the Evidence of Two Samples. Biometrika,
+1933.
+[55] S. Toyer, F. Trevizan, S. Thiébaux, and L. Xie. Action Schema Net-
+works: Generalised Policies with Deep Learning. In Proc. of AAAI,
+2018.
+[56] R. A. Valenzano, J. Schaeffer, N. R. Sturtevant, and F. Xie. A Compar-
+ison of Knowledge-Based GBFS Enhancements and Knowledge-Free
+Exploration. In Proc. of ICAPS, 2014.
+[57] R. Vershynin. High-Dimensional Probability: An Introduction with Ap-
+plications in Data Science. Cambridge Series in Statistical and Proba-
+bilistic Mathematics. 2018.
+[58] S. Wissow and M. Asai. Scale-Adaptive Balancing of Exploration and
+Exploitation in Classical Planning (Full version of this paper). arXiv
+preprint arXiv:2305.09840, 2023.
+[59] F. Xie, H. Nakhost, and M. Müller. Planning Via Random Walk-Driven
+Local Search. In Proc. of ICAPS, 2012.
+[60] F. Xie, M. Müller, and R. C. Holte. Adding Local Exploration to Greedy
+
+
+Best-First Search in Satisficing Planning. In Proc. of AAAI, 2014.
+[61] F. Xie, M. Müller, R. C. Holte, and T. Imai. Type-Based Exploration
+with Multiple Search Queues for Satisficing Planning. In Proc. of AAAI,
+2014.
+[62] F. Xie, M. Müller, and R. C. Holte. Understanding and Improving Local
+Exploration for GBFS. In Proc. of ICAPS, 2015.
+
+
+Appendix
+S1
+Domain-Independent Heuristics in Classical
+Planning
+A domain-independent heuristic function h in classical planning
+is a function of a state s and the problem [P, A, I, G], but the nota-
+tion h(s) usually omits the latter. In addition to what we discussed
+in the main article, this section also uses a notation h(s, G). It
+returns an estimate of the cumulative cost from s to one of the
+goal states (states that satisfy G), typically through a symbolic,
+non-statistical means including problem relaxation and abstrac-
+tion. Notable state-of-the-art functions that appear in this paper
+includes hFF, hmax, hadd, hGC [28, 8, 19].
+A significant class of heuristics is called delete relaxation
+heuristics, which solve a relaxed problem which does not con-
+tain delete effects, and then returns the cost of the solution of the
+relaxed problem as an output. The cost of the optimal solution
+of a delete relaxed planning problem from a state s is denoted
+by h+(s), but this is too expensive to compute in practice (NP-
+complete) [10]. Therefore, practical heuristics typically try to ob-
+tain its further relaxations that can be computed in polynomial
+time.
+One such admissible heuristic based on delete-relaxation is
+called hmax [8] that is recursively defined as follows:
+hmax(s, G) = max
+p∈G
+
+
+
+
+
+0 if p ∈s. Otherwise,
+min{a∈A|p∈ADD(a)}
+h
+C(a) + hadd(s, PRE(a))
+i
+.
+(8)
+Its inadmissible variant is called additive heuristics hadd [8]
+that is recursively defined as follows:
+hadd(s, G) =
+X
+p∈G
+
+
+
+
+
+0 if p ∈s. Otherwise,
+min{a∈A|p∈ADD(a)}
+h
+C(a) + hadd(s, PRE(a))
+i
+.
+(9)
+Another inadmissible delete-relaxation heuristics called hFF
+[28] is defined based on another heuristics h, such as h = hadd,
+as a subprocedure. For each unachieved subgoal p ∈G\s, the ac-
+tion a that adds p with the minimal [C(a) + h(s, PRE(a))] is con-
+ceptually “the cheapest action that achieves a subgoal p for the
+first time under delete relaxation”, called the cheapest achiever /
+best supporter bs(p, s, h) of p. hFF is defined as the sum of ac-
+tions in a relaxed plan Π+ constructed as follows:
+hFF(s, G, h) =
+X
+a∈Π+(s,G,h)
+C(a)
+(10)
+Π+(s, G, h) =
+[
+p∈G
+
+
+
+∅if p ∈s. Otherwise,
+{a} ∪Π+(s, PRE(a))
+where a = bs(p, s, h).
+(11)
+bs(p, s, h) =
+arg min
+{a∈A|p∈ADD(a)}
+[C(a) + h(s, PRE(a))] .
+(12)
+Goal Count heuristics hGC is a simple heuristic proposed in
+[19] that counts the number of propositions that are not satisfied
+yet. [condition] is a cronecker’s delta / indicator function that re-
+turns 1 when the condition is satisfied.
+hGC(s, G) =
+X
+p∈G
+Jp̸ ∈sK.
+(13)
+
+
+S2
+Proof of Bandit Algorithms (Tutorial)
+This section serves as a tutorial for understanding our main proof
+in the later sections. To help understand the proof of various
+confidence bounds, we first describe the general procedure for
+proving the regret of bandit algorithms, demonstrate the proof of
+UCB1 using this scheme, then finally show the proof of other
+bandits.
+The ingredients for proving an upper/lower confidence bound
+are as follows:
+• Ingredient 1: The main term and the exploration term. For
+example, in the standard UCB1 [6], the main term is the em-
+pirical mean ˆµ while the exploration term is c
+q
+2 log T
+ni
+. Their
+forms are heavily affected by the proof of the upper bound on
+the regret, therefore it is not like you can use an arbitrary ex-
+ploration term you came up with.
+• Ingredient 2: A specification of reward distributions. For
+example, in the standard UCB1 [6], one assumes a reward dis-
+tribution bounded in [0, c]. Different algorithms assume dif-
+ferent reward distributions, and in general, more information
+about the distribution gives a tighter bound (and faster conver-
+gence). For example, one can assume an unbounded distribu-
+tion with known variance, etc.
+• Ingredient 3: A concentration inequality. It is also called a
+tail probability bound. For example, in the standard UCB1, one
+uses Hoeffding’s inequality. Different algorithms use different
+inequalities to prove the bound, based on what reward distri-
+bution it assumes and what main term it uses. Examples in-
+clude the Chernoff bound, Chebishev’s inequality, Bernstein’s
+inequality, Bennett’s inequality, etc. Note that the inequality
+may be two-sided or one-sided.
+The general procedure for proving the bound is as follows.
+1. Let the main term be a random variable Xn and the exploration
+term be δ. Then write down the concentration inequality for Xn
+as follows.
+• P(|Xn −E[Xn]| ≥δ) ≤F(δ). (two-sided)
+F is an inequality-specific formula. If necessary, simplify the
+inequality based on the assumptions made in the reward distri-
+bution, e.g., bounds, mean, variance.
+2. Expand |Xn −E[Xn]| ≥δ into δ ≥Xn −E[Xn] ≥−δ.
+3. Change the notations to model the bandit problem because
+each concentration inequality is a general statement about
+RVs. Before this step, the notation was:
+• n (number of samples)
+• Xn is a function of i.i.d. random variables (x1, . . . , xn)
+• E[Xn] = E[x1] = . . . = E[xn] is assumed.
+For example,
+• µn = 1
+n
+Pn
+i=1 xi
+• E[µn] = E[x1] = . . . = E[xn]
+After the change, they correspond to:
+• ni (number of pulls of arm i).
+•
+ˆ
+Xi (empirical value of arm i from ni pulls),
+• Xi (true value of arm i).
+For example,
+• ˆµi (sample mean of arm i from ni pulls),
+• µi (true mean of arm i),
+4. Let i be a suboptimal arm, ∗be an optimal arm, UCBi =
+ˆµi + δ, and LCBi = ˆµi −δ. Derive the relationship between δ
+and the gap ∆i = µi −µ∗so that the following conditions for
+the best arm holds:
+• UCBi ≤UCB∗(for maximization)
+• LCBi ≥LCB∗(for minimization)
+This results in 2δ ≤∆i.
+5. Replace the δ with the exploration term. For example, in
+UCB1, δ =
+q
+2 log T
+ni
+.
+6. Derive the lower bound L for ni from 2δ ≤∆i.
+7. Find the upper-bound of the probability of selecting a sub-
+optimal arm i. This is typically done by a union-bound argu-
+ment.
+8. Derive the upper bound of the expected number of pulls E[ni]
+of a suboptimal arm i using a triple loop summation. This is
+typically the heaviest part that needs mathematical tricks. The
+tricks do not seem generally transferable between approaches.
+9. Finally, derive an upper bound of the regret TX∗−
+PK
+i=1 XiE[ni] by
+TX∗−
+K
+X
+i=1
+XiE[ni] =
+K
+X
+i=1
+(X∗−Xi)E[ni] =
+K
+X
+i=1
+∆iE[ni].
+S2.1
+The Proof of UCB1 (Tutorial Example)
+We prove the logarithmic upper bound of the cumulative regret
+of the UCB1 ˆµi −c
+q
+2 log T
+ni
+where ˆµi is the empirical mean of
+samples from arm i, ni is the number of pulls from arm i, and
+T = PK
+i=1 ni is the total pulls from all K arms.
+1. UCB1 assumes a reward distribution with a known bound.
+For such a distribution, we can use Hoeffding’s inequality.
+Given RVs x1 . . . xn, where xi ∈[li, ui], and their sum Sn =
+Pn
+i=1 xi,
+P(|Sn −E[Sn]| ≥ϵ) ≤2 exp −
+2ϵ2
+Pn
+i=1(ui−li)2 .
+Using δ = ϵ
+n and µn = Sn
+n ,
+P(|µn −E[µn] ≥δ|) ≤2 exp −
+2n2δ2
+Pn
+i=1(ui −li)2 .
+UCB1 assumes xi are i.i.d. copies, thus ∀i; ui −li = c.
+P(|µn −E[µn] ≥δ|) ≤2 exp −2n2δ2
+nc2
+= 2 exp −2nδ2
+c2 .
+2. Expanding the two-sided error:
+δ ≥µn −E[µn] ≥−δ.
+3. Changing the notation:
+δ ≥ˆµi −µi ≥−δ.
+4. Adding µi −δ to both sides,
+µi ≥ˆµi −δ = LCBi(T, ni) ≥µi −2δ.
+Substituting i = ∗(optimal arm), the first inequality is
+µ∗≥ˆµ∗−δ = LCB∗(T, n∗).
+
+
+Assuming 2δ ≤∆i = µi −µ∗, the second inequality is
+LCBi(T, ni) ≥µi −2δ ≥µi −∆i = µ∗.
+Therefore
+LCBi(T, ni) ≥µ∗≥LCB∗(T, n∗).
+5. Let δ = c
+q
+2 log T
+ni
+. Then
+P(µni −E[µni] ≥δ) ≤exp −
+2nic2 2 log T
+ni
+c2
+= T −4.
+6. From 2δ ≤∆i, considering ni is an integer,
+2c
+r
+2 log T
+ni
+≤∆i ⇔4c2 2 log T
+ni
+≤∆2
+i
+⇔8c2 log T
+∆2
+i
+≤
+
+8c2 log T
+∆2
+i
+
+= L ≤ni.
+7. LCBi(T, ni) ≥µ∗≥LCB∗(T, n∗) does not hold when ei-
+ther inequality does not hold. LCBi(T, ni) ≥µ∗does not hold
+with probability less than T −4. µ∗≥LCBi(T, n∗) does not
+hold with probability less than T −4. Thus, by union-bound
+(probability of disjunctions),
+P(LCBi(T, ni) ≤LCB∗(T, n∗)) ≤2T −4.
+8. Assume we followed the UCB1 strategy, i.e., we pulled the
+arm that minimizes the LCB. The expected number of pulls
+E[ni] from a suboptimal arm i is as follows. Note that for K
+arms, every arm is at least pulled once.
+E[ni] = 1 +
+T
+X
+t=K+1
+P(i is pulled at time t)
+≤L +
+T
+X
+t=K+1
+P(i is pulled at time t ∧ni > L)
+= L +
+T
+X
+t=K+1
+P ∀j; LCBj(t, nj) ≥LCBi(t, ni)
+≤L +
+T
+X
+t=K+1
+P(LCB∗(t, n∗) ≥LCBi(t, ni))
+≤L +
+T
+X
+t=K+1
+P(∃u, v; LCB∗(t, u) ≥LCBi(t, v))
+≤L +
+T
+X
+t=K+1
+t−1
+X
+u=1
+t−1
+X
+v=L
+P(LCB∗(t, u) ≥LCBi(t, v))
+≤L +
+T
+X
+t=K+1
+t−1
+X
+u=1
+t−1
+X
+v=L
+2t−4
+≤L +
+∞
+X
+t=1
+t
+X
+u=1
+t
+X
+v=1
+2t−4 = L +
+∞
+X
+t=1
+t2 · 2t−4
+= L + 2
+∞
+X
+t=1
+t−2 = L + 2 · π
+6 = L + π
+3
+≤c2 8 log T
+∆2
+i
++ 1 + π
+3
+∵⌈x⌉≤x + 1
+9. The regret is
+Tµ∗−
+K
+X
+i=1
+µiE[ni] =
+K
+X
+i=1
+(µ∗−µi)E[ni] =
+K
+X
+i=1
+∆iE[ni]
+≤
+K
+X
+i=1
+∆i
+
+c2 8 log T
+∆2
+i
++ 1 + π
+3
+
+≤
+K
+X
+i=1
+
+c2 8 log T
+∆i
++
+
+1 + π
+3
+
+∆i
+
+.
+S3
+The Proof of UCB1-Normal2
+Our analysis begins with a definition of Sub-Gaussian distribu-
+tions.
+Definition 2. [57, Proposition 2.5.2, (iv)] A distribution p(x) is
+sub-Gaussian when
+∃t > 0; E[exp x2/t2] < 2.
+Theorem 3. A Gaussian distribution with 0-mean N(0, σ2)
+(without loss of generality) is sub-Gaussian.
+Proof.
+p(x) = N(0, σ2) =
+1
+√
+2πσ2 exp −x2
+2σ2 .
+E[exp x2/t2] =
+Z
+R
+exp x2
+t2
+1
+√
+2πσ2 exp −x2
+2σ2 dx
+=
+1
+√
+2πσ2
+Z
+R
+exp −x2 1
+2σ2 −1
+t2
+
+dx
+=
+1
+√
+2πσ2
+Z
+R
+exp −x2
+C2 dx
+=
+1
+√
+2πσ2
+Z
+R
+exp −y2Cdy
+ x
+C = y ⇔dx = Cdy
+
+=
+C
+√
+2πσ2
+√π
+=
+C
+√
+2σ2 .
+Where
+1
+C2 =
+1
+2σ2 −1
+t2
+⇔C2 =
+2σ2t2
+t2 −2σ2 .
+To show E[exp x2/t2] < 2,
+E[exp x2/t2] =
+C
+√
+2σ2 =
+r
+t2
+t2 −2σ2 < 2,
+⇔t2 < 4(t2 −2σ2),
+⇔8
+3σ2 < t2.
+□
+Definition 3. For a sub-Gaussian RV x, the sub-Gaussian norm
+is defined as
+||x|| = inf
+n
+t > 0 | E[exp x2/t2] < 2
+o
+.
+
+
+Corollary 1. For p(x) = N(0, σ2), ||x|| =
+q
+8
+3σ.
+Next, we review the general Hoeffding’s inequality for sub-
+Gaussian distributions [57, Theorem 2.6.2].
+Theorem 4. For independent sub-Gaussian RVs x1, . . . , xn, let
+their sum be Sn = Pn
+i=1 xi. Then, for any ϵ > 0,
+Pr(|Sn −E[Sn]| ≤ϵ) ≥2 exp −
+ϵ2
+Pn
+i=1 ||xi||2 ,
+Pr(Sn −E[Sn] ≤ϵ) ≥exp −
+ϵ2
+Pn
+i=1 ||xi||2 ,
+Pr(E[Sn] −Sn ≤ϵ) ≥exp −
+ϵ2
+Pn
+i=1 ||xi||2 .
+(Two-sided bounds and one-sided upper/lower bounds, respec-
+tively.)
+We then prove UCB1-Normal2’s regret, following the tutorial
+steps in the previous section.
+1. According to Hoeffding’s inequality for sub-Gaussian RVs
+X1 . . . Xn and their sum Sn = Pn
+i=1 Xi,
+P(|Sn −E[Sn] ≥ϵ|) ≤exp −
+ϵ2
+Pn
+i=1 ||Xi||2 .
+Using δ = ϵ
+n,
+P(|µn −E[µn] ≥δ|) ≤exp −
+n2δ2
+Pn
+i=1 ||Xi||2 .
+We assume Xi = N(µ, σ2), thus ||Xi||2 = 8
+3σ2.
+P(|µn −E[µn] ≥δ|) ≤exp −3n2δ2
+8nσ2 = exp −3nδ2
+8σ2 .
+2. Same as UCB1.
+3. Same as UCB1.
+4. Same as UCB1.
+5. Let δ = ˆσ√log T. Then
+P(A : µni −E[µni] ≥δ) ≤exp −3niˆσ2 log T
+8σ2
+= T −3ni ˆσ2
+8σ2 .
+The trick starts here. The formula above is problematic be-
+cause we do not know the true variance σ2. However, if event
+B : niˆσ2
+σ2
+≥X holds for some X > 0, we have
+T −3ni ˆσ2
+8σ2
+≤T −3
+8 X.
+One issue with this approach is that the two events A, B may
+be correlated. To address the issue, we further upper-bound the
+probability by union-bound. Let P(B) = α which is close to
+1. Then
+P(¬(A ∧B)) = P(¬A ∨¬B) ≤P(¬A) + P(¬B).
+1 −P(A ∧B) ≤1 −P(A) + P(¬B).
+P(A) ≤P(A ∧B) + P(¬B).
+∴P(µni −E[µni] ≥δ) ≤T −3
+8 X + 1 −α.
+We next obtain X that satisfies P(B) = α. We use the fact that
+niˆσ2
+σ2
+follows a Chi-Squared distribution χ2(ni) with a degree
+of freedom ni. Then X = χ2
+1−α,ni, the upper-tail critical value
+of χ2 distribution with degree of freedom ni and significance
+level α, because
+P(¬B) = P(niˆσ2
+σ2
+< χ2
+1−α,ni)
+= χ2(niˆσ2
+σ2
+< χ2
+1−α,ni | ni) = 1 −α.
+6. From 2δ ≤∆i, assuming ni is an integer and ni ≥2,
+∆2
+i ≥2ˆσ2 log T = 2niˆσ2 log T
+ni
+≥2σ2χ2
+1−α,ni log T
+ni
+≥2σ2χ2
+1−α,2 log T
+ni
+= −4σ2 log α log T
+ni
+.
+∴ni ≥
+
+−4σ2 log α log T
+∆2
+i
+
+= L ≥−4σ2 log α log T
+∆2
+i
+.
+Note that we used the fact that χ2
+1−α,n is monotonically in-
+creasing for n, therefore χ2
+1−α,n ≥χ2
+1−α,2 (ni ≥2), and that
+χ2
+1−α,2 = −2 log α:
+1 −α = χ2(X < χ2
+1−α,n | n = 2)
+= γ( 2
+2,
+χ2
+1−α,2
+2
+)
+Γ( 2
+2)
+= 1 −e−
+χ2
+1−α,2
+2
+.
+where γ and Γ are (incomplete) Gamma functions.
+7. Using the same union-bound argument used in UCB1,
+P(LCBi(T, ni) ≤LCB∗(T, n∗))
+≤2(T −χ2
+1−α,ni + 1 −α).
+8. Assume we followed the UCB1-Normal2 strategy. We use the
+same argument as UCB1. Assume we pull each arm at least M
+times in the beginning and M ≤L.
+E[ni] ≤L +
+T
+X
+t=K+1
+P(∃u, v; LCB∗(t, u) ≥LCBi(t, v))
+≤L +
+T
+X
+t=K+1
+t−1
+X
+u=1
+t−1
+X
+v=L
+2(t−3
+8 χ2
+1−α,v + 1 −α)
+≤L +
+T
+X
+t=K+1
+t−1
+X
+u=1
+t−1
+X
+v=L
+2(t−3
+8 χ2
+1−α,M + 1 −α)
+≤L +
+T
+X
+t=K+1
+t
+X
+u=1
+t
+X
+v=1
+2(t−3
+8 χ2
+1−α,M + 1 −α)
+= L +
+T
+X
+t=K+1
+2(t2−3
+8 χ2
+1−α,M + (1 −α)t2)
+≤L + 2
+∞
+X
+t=1
+t2−3
+8 χ2
+1−α,M + 2(1 −α)
+T
+X
+t=1
+t2
+= L + 2C + 2(1 −α)T(T + 1)(2T + 1)
+6
+≤−4σ2 log α log T
+∆2
+i
++ 1
+(∵⌈x⌉≤x + 1)
+
+
++ 2C + (1 −α)T(T + 1)(2T + 1)
+3
+.
+C is a convergent series when
+2 −3
+8χ2
+1−α,M < −1 ⇔8 < χ2
+1−α,M.
+You can look up the value of M that guarantees this condition
+from a numerically computed, so-called χ2-table (Table S3).
+For example, with α = 0.99, 8 < χ2
+0.01,M, thus M ≥2, and
+with α = 0.9, 8 < χ2
+0.1,M, thus M ≥5. However, the value of
+α depends on the problem and is unknown prior to solving the
+problem.
+9. Omitted.
+S4
+Statistics after Merging Datasets
+Backpropagation in MCTS requires computing the statistics of
+the samples in the leaf nodes in a subtree of a parent node. To
+avoid iterating over all leaves of each parent, Backpropagation
+typically propagates the statistics from the immediate children.
+This can be seen as merging multiple datasets and compute the
+statistics of the merged dataset from the statistics of multiple
+datasets.
+In variance-based MCTS algorithms, both the mean and vari-
+ance are backpropagated. Given two sets of samples X1, X2, each
+with an empirical mean µi and ni elements (i ∈{1, 2}), the em-
+pirical mean µ12 of X1 ∪X2 is given by
+µ12 =
+P
+x∈X1 x+P
+x∈X2 x
+n1+n2
+= n1µ1+n2µ2
+n1+n2
+We obtain NECs by iterating this process over a node’s children,
+although there is a more efficient, incremental method for back-
+propagating a change in a single child (see appendix). For the
+variance, we similarly merge the samples. Given individual vari-
+ances σ2
+1 and σ2
+2, the variance σ2
+12 of X1 ∪X2 (proof available in
+appendix) is:
+σ2
+12 =
+n1σ2
+1+n2σ2
+2+ n1n2
+n1+n2 (µ2−µ1)2
+n1+n2
+.
+Below, we show the formulae and the proofs for this method.
+Theorem 5 (The empirical mean of merged datasets). Given two
+sets of samples X1, X2, each with an empirical mean µi and ni
+elements (i ∈{1, 2}), the empirical mean µ12 of X1∪X2 is given
+by
+µ12 = n1µ1 + n2µ2
+n1 + n2
+.
+Also,
+µ12 = µ1 +
+n2
+n1 + n2
+(µ2 −µ1).
+Proof.
+µ12 =
+P
+x∈X1 x + P
+x∈X2 x
+n1 + n2
+= n1µ1 + n2µ2
+n1 + n2
+.
+□
+Theorem 6 (The empirical variance of merged datasets). Given
+two sets of samples X1, X2, each with an empirical mean µi,
+variance σ2
+i , and ni elements (i ∈{1, 2}), and nij = ni + nj,
+the empirical variance µ12 of X1 ∪X2 is given by
+σ2
+12 =
+n1σ2
+1 + n2σ2
+2 +
+n1n2
+n1+n2 (µ2 −µ1)2
+n1 + n2
+.
+Proof.
+σ2
+12 =
+P
+x∈X1(x −µ12)2 + P
+x∈X2(x −µ12)2
+n1 + n2
+.
+X
+x∈X1
+(x −µ12)2
+=
+X
+x∈X1
+(x −(µ1 +
+n2
+n1 + n2
+(µ2 −µ1)))2
+=
+X
+x∈X1
+((x −µ1) −
+n2
+n1 + n2
+(µ2 −µ1)))2
+=
+X
+x∈X1
+(x −µ1)2 −2
+X
+x∈X1
+(x −µ1)
+n2
+n1 + n2
+(µ2 −µ1)
++
+X
+x∈X1
+
+n2
+n1 + n2
+(µ2 −µ1)
+2
+= n1σ2
+1 −2 · 0 + n1(
+n2
+n1 + n2
+(µ2 −µ1))2.
+∴(n1 + n2)σ2
+12
+= n1σ2
+1 + n1(
+n2
+n1 + n2
+(µ2 −µ1))2
++ n2σ2
+2 + n2(
+n1
+n1 + n2
+(µ1 −µ2))2
+= n1σ2
+1 + n2σ2
+2 + n1n2
+2 + n2n2
+1
+(n1 + n2)2 (µ2 −µ1)2
+= n1σ2
+1 + n2σ2
+2 +
+n1n2
+n1 + n2
+(µ2 −µ1)2.
+□
+S5
+Statistics after Retracting a Dataset
+In the backpropagation step of MCTS, typically, only a few chil-
+dren of an intermediate node update their statistics (most often a
+single children). To compute the updated statistics efficiently, we
+could compute them by retracting the old data of the child(ren)
+from the merged data and merging the new data for the child(ren),
+rather than iterating over the children to merge everything from
+scratch. This can impact the performance when the number of
+children / the branching factor is high.
+Theorem 7 (The empirical mean after retracting a dataset). As-
+sume samples X1, X2 with empirical means µi and number of
+elements ni (i ∈{1, 2}). Let their union be X12 = X1 ∪X2, its
+empirical means µ12, and its number of elements n12 = n1 +n2.
+µ1 is given by
+µ1 = n12µ12 −n2µ2
+n12 −n2
+.
+Theorem 8 (The empirical variance after retracting a dataset).
+Assume samples X1, X2 with empirical means µi, empirical vari-
+ance σ2
+i , and number of elements ni (i ∈{1, 2}). Let their union
+be X12 = X1 ∪X2, its empirical mean µ12, its empirical vari-
+ance σ2
+12, and its number of elements n12 = n1 + n2. σ2
+1 is given
+by µ12, µ2, µ1, n1, n2, n12, σ2
+12, and σ2
+2 as follows.
+σ2
+1 = 1
+n1
+
+n12σ2
+12 −n2σ2
+2 −n2n12
+n1
+(µ12 −µ2)2
+
+
+
+n
+α
+0.995
+0.99
+0.975
+0.95
+0.90
+0.10
+0.05
+0.025
+0.01
+0.005
+1
+—
+—
+0.001
+0.004
+0.016
+2.706
+3.841
+5.024
+6.635
+7.879
+2
+0.010
+0.020
+0.051
+0.103
+0.211
+4.605
+5.991
+7.378
+9.210
+10.597
+3
+0.072
+0.115
+0.216
+0.352
+0.584
+6.251
+7.815
+9.348
+11.345
+12.838
+4
+0.207
+0.297
+0.484
+0.711
+1.064
+7.779
+9.488
+11.143
+13.277
+14.860
+5
+0.412
+0.554
+0.831
+1.145
+1.610
+9.236
+11.070
+12.833
+15.086
+16.750
+6
+0.676
+0.872
+1.237
+1.635
+2.204
+10.645
+12.592
+14.449
+16.812
+18.548
+7
+0.989
+1.239
+1.690
+2.167
+2.833
+12.017
+14.067
+16.013
+18.475
+20.278
+8
+1.344
+1.646
+2.180
+2.733
+3.490
+13.362
+15.507
+17.535
+20.090
+21.955
+9
+1.735
+2.088
+2.700
+3.325
+4.168
+14.684
+16.919
+19.023
+21.666
+23.589
+10
+2.156
+2.558
+3.247
+3.940
+4.865
+15.987
+18.307
+20.483
+23.209
+25.188
+11
+2.603
+3.053
+3.816
+4.575
+5.578
+17.275
+19.675
+21.920
+24.725
+26.757
+12
+3.074
+3.571
+4.404
+5.226
+6.304
+18.549
+21.026
+23.337
+26.217
+28.300
+13
+3.565
+4.107
+5.009
+5.892
+7.042
+19.812
+22.362
+24.736
+27.688
+29.819
+14
+4.075
+4.660
+5.629
+6.571
+7.790
+21.064
+23.685
+26.119
+29.141
+31.319
+15
+4.601
+5.229
+6.262
+7.261
+8.547
+22.307
+24.996
+27.488
+30.578
+32.801
+16
+5.142
+5.812
+6.908
+7.962
+9.312
+23.542
+26.296
+28.845
+32.000
+34.267
+17
+5.697
+6.408
+7.564
+8.672
+10.085
+24.769
+27.587
+30.191
+33.409
+35.718
+18
+6.265
+7.015
+8.231
+9.390
+10.865
+25.989
+28.869
+31.526
+34.805
+37.156
+19
+6.844
+7.633
+8.907
+10.117
+11.651
+27.204
+30.144
+32.852
+36.191
+38.582
+20
+7.434
+8.260
+9.591
+10.851
+12.443
+28.412
+31.410
+34.170
+37.566
+39.997
+21
+8.034
+8.897
+10.283
+11.591
+13.240
+29.615
+32.671
+35.479
+38.932
+41.401
+22
+8.643
+9.542
+10.982
+12.338
+14.041
+30.813
+33.924
+36.781
+40.289
+42.796
+23
+9.260
+10.196
+11.689
+13.091
+14.848
+32.007
+35.172
+38.076
+41.638
+44.181
+24
+9.886
+10.856
+12.401
+13.848
+15.659
+33.196
+36.415
+39.364
+42.980
+45.559
+25
+10.520
+11.524
+13.120
+14.611
+16.473
+34.382
+37.652
+40.646
+44.314
+46.928
+26
+11.160
+12.198
+13.844
+15.379
+17.292
+35.563
+38.885
+41.923
+45.642
+48.290
+27
+11.808
+12.879
+14.573
+16.151
+18.114
+36.741
+40.113
+43.195
+46.963
+49.645
+28
+12.461
+13.565
+15.308
+16.928
+18.939
+37.916
+41.337
+44.461
+48.278
+50.993
+29
+13.121
+14.256
+16.047
+17.708
+19.768
+39.087
+42.557
+45.722
+49.588
+52.336
+30
+13.787
+14.953
+16.791
+18.493
+20.599
+40.256
+43.773
+46.979
+50.892
+53.672
+40
+20.707
+22.164
+24.433
+26.509
+29.051
+51.805
+55.758
+59.342
+63.691
+66.766
+50
+27.991
+29.707
+32.357
+34.764
+37.689
+63.167
+67.505
+71.420
+76.154
+79.490
+60
+35.534
+37.485
+40.482
+43.188
+46.459
+74.397
+79.082
+83.298
+88.379
+91.952
+70
+43.275
+45.442
+48.758
+51.739
+55.329
+85.527
+90.531
+95.023
+100.425
+104.215
+80
+51.172
+53.540
+57.153
+60.391
+64.278
+96.578
+101.879
+106.629
+112.329
+116.321
+90
+59.196
+61.754
+65.647
+69.126
+73.291
+107.565
+113.145
+118.136
+124.116
+128.299
+100
+67.328
+70.065
+74.222
+77.929
+82.358
+118.498
+124.342
+129.561
+135.807
+140.169
+Table S3.
+χ2
+α,n table.
+
+
+Proof.
+n12σ2
+12 = n1σ2
+1 + n2σ2
+2 + n1n2
+n12
+(µ2 −µ1)2.
+∴n1σ2
+1 = n12σ2
+12 −n2σ2
+2 −n1n2
+n12
+(µ2 −µ1)2.
+n1µ1 = n12µ12 −n2µ2.
+∴µ1 −µ2 = n12µ12 −n2µ2
+n1
+−µ2
+= n12µ12 −n2µ2 −n1µ2
+n1
+= n12µ12 −n2µ2 −(n12 −n2)µ2
+n1
+= n12
+n1
+(µ12 −µ2).
+∴n1σ2
+1 = n12σ2
+12 −n2σ2
+2 −n1n2
+n12
+n2
+12
+n2
+1
+(µ12 −µ2)2
+= n12σ2
+12 −n2σ2
+2 −n2n12
+n1
+(µ12 −µ2)2.
+□
+S6
+Further Results
+S6.1
+Cumulative Histograms for All Heuristics and
+All Search Statistics
+Fig. S3-S5 shows the cumulative histogram of the number of in-
+stances solved by a particular evaluation/expansion/runtime.
+S6.2
+Deferred Heuristic Evaluation
+Fig. S6 shows the cumulative histogram of the number of in-
+stances solved under a particular evaluation/expansion/runtime
+by hFF with/without DE, with/without PO.
+S6.3
+Comparing Different c values
+Fig. S7-S8 shows how the hyperparameter c affects the perfor-
+mance of GUCT and GUCT-01. In our experiment, GUCT tends
+to perform better with a smaller c value. As the results with
+c = 0.1 tend to be the best, Table S4 shows a variation of Ta-
+ble 1 with c = 0.1 instead of c = 0.5 recommended by Schulte
+and Keller [51]. This result does not affect the overall trend that
+GUCT and GUCT-01 tend to be inferior to GUCT-Normal2.
+S6.4
+Solution Quality
+Fig. S9-S12 shows the complete set of plots for the solution qual-
+ity.
+S6.5
+Domain-wise comparison
+In order to see the effect of domains on the performance, Ta-
+ble S5 shows the domain-wise coverage comparison between
+GUCT-Normal2, GBFS, and Softmin-Type(h) evaluated with
+hFF heuristic, hadd heuristic, and hFF+PO configuration. In ad-
+dition, in Fig. S13-S14 we plotted the number of node evaluations
+for GUCT-Normal2, GBFS, and Softmin-Type(h) in individual
+instances solved by both configurations and colored the points
+according to the domain.
+
+
+GUCT
+GUCT*
+100
+101
+102
+103
+104
+0
+200
+400
+600
+GUCT-Normal2
+GBFS
+GBFSbucket
+GUCT
+GUCT-01
+GUCT-Normal
+GUCT-V
+TTTS-Normal
+Softmin-Type(h)
+100
+101
+102
+103
+104
+0
+200
+400
+600
+GUCT*-Normal2
+GBFS
+GBFSbucket
+GUCT*
+GUCT*-01
+GUCT*-Normal
+TTTS-Normal*
+Softmin-Type(h)
+hFF
+100
+101
+102
+103
+104
+0
+200
+400
+600
+100
+101
+102
+103
+104
+0
+200
+400
+600
+hadd
+100
+101
+102
+103
+104
+0
+200
+400
+600
+100
+101
+102
+103
+104
+0
+200
+400
+600
+hmax
+100
+101
+102
+103
+104
+0
+200
+400
+600
+100
+101
+102
+103
+104
+0
+200
+400
+600
+hGC
+Figure S3.
+The cumulative histogram of the number of problem instances solved (y-axis) below a certain number of node evaluations (x-axis, 10,000 nodes
+maximum). Each line represents a random seed. In algorithms with an exploration coefficient hyperparameter, we use c = 1.0. The total numbers at the limit
+differ from those in other plots (this result does not limit the expansions or the runtime).
+
+
+GUCT
+GUCT*
+100
+101
+102
+103
+0
+200
+400
+600
+GUCT-Normal2
+GBFS
+GBFSbucket
+GUCT
+GUCT-01
+GUCT-Normal
+GUCT-V
+TTTS-Normal
+Softmin-Type(h)
+100
+101
+102
+103
+0
+200
+400
+600
+GUCT*-Normal2
+GBFS
+GBFSbucket
+GUCT*
+GUCT*-01
+GUCT*-Normal
+TTTS-Normal*
+Softmin-Type(h)
+hFF
+100
+101
+102
+103
+0
+200
+400
+600
+100
+101
+102
+103
+0
+200
+400
+600
+hadd
+100
+101
+102
+103
+0
+200
+400
+600
+100
+101
+102
+103
+0
+200
+400
+600
+hmax
+100
+101
+102
+103
+0
+200
+400
+600
+100
+101
+102
+103
+0
+200
+400
+600
+hGC
+Figure S4.
+The cumulative histogram of the number of problem instances solved (y-axis) below a certain number of node expansions (x-axis, 4,000 nodes
+maximum). Each line represents a random seed. In algorithms with an exploration coefficient hyperparameter, we use c = 1.0. The total numbers at the limit
+differ from those in other plots (this result does not limit the evaluations or the runtime).
+
+
+GUCT
+GUCT*
+100
+101
+102
+0
+200
+400
+600
+GUCT-Normal2
+GBFS
+GBFSbucket
+GUCT
+GUCT-01
+GUCT-Normal
+GUCT-V
+TTTS-Normal
+Softmin-Type(h)
+100
+101
+102
+0
+200
+400
+600
+GUCT*-Normal2
+GBFS
+GBFSbucket
+GUCT*
+GUCT*-01
+GUCT*-Normal
+TTTS-Normal*
+Softmin-Type(h)
+hFF
+100
+101
+102
+0
+200
+400
+600
+100
+101
+102
+0
+200
+400
+600
+hadd
+100
+101
+102
+0
+200
+400
+600
+100
+101
+102
+0
+200
+400
+600
+hmax
+100
+101
+102
+0
+200
+400
+600
+100
+101
+102
+0
+200
+400
+600
+hGC
+Figure S5.
+The cumulative histogram of the number of problem instances solved (y-axis) below a certain runtime (x-axis, 300 seconds maximum). Each line
+represents a random seed. In algorithms with an exploration coefficient hyperparameter, we use c = 1.0. The total numbers at the limit differ from those in
+other plots (this result does not limit the evaluations or the expansion). GBFS shows a unique slowdown, potentially due to the suboptimal heap-based open list
+implementation in Pyperplan, which is not necessarily a representative performance of GBFS in general (e.g., in Fast Downward, it can be implemented as a
+bucket-based open list). To reject this hypothesis, we also implemented a GBFS using bucket-based queue in Pyperplan, whose results are shown as
+GBFSbucket. The results indicate that GBFSbucket and GBFS has a similar runtime curve, indicating that the unique curve of GBFS is not due to the efficiency
+of open list insertion.
+
+
+evaluated
+expanded
+elapsed
+h
+100
+101
+102
+103
+104
+0
+200
+400
+600
+GUCT-Normal2
+GUCT*-Normal2
+GUCT-01
+GUCT*-01
+100
+101
+102
+103
+0
+200
+400
+600
+GUCT-Normal2
+GUCT*-Normal2
+GUCT-01
+GUCT*-01
+100
+101
+102
+0
+200
+400
+600
+GUCT-Normal2
+GUCT*-Normal2
+GUCT-01
+GUCT*-01
+hFF
+100
+101
+102
+103
+104
+0
+200
+400
+600
+100
+101
+102
+103
+0
+200
+400
+600
+100
+101
+102
+0
+200
+400
+600
+hFF+DE
+100
+101
+102
+103
+104
+0
+200
+400
+600
+100
+101
+102
+103
+0
+200
+400
+600
+100
+101
+102
+0
+200
+400
+600
+hFF+PO
+100
+101
+102
+103
+104
+0
+200
+400
+600
+100
+101
+102
+103
+0
+200
+400
+600
+100
+101
+102
+0
+200
+400
+600
+hFF+DE+PO
+Figure S6.
+The cumulative histogram of the number of problem instances solved (y-axis) below a certain evaluations/expansions/runtime (x-axis). Each line
+represents a random seed. In algorithms with an exploration coefficient hyperparameter, we use c = 1.0.
+
+
+evaluated
+expanded
+elapsed
+h
+100
+101
+102
+103
+104
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+103
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+hFF
+100
+101
+102
+103
+104
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+103
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+hadd
+100
+101
+102
+103
+104
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+103
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+hmax
+100
+101
+102
+103
+104
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+103
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+hGC
+Figure S7.
+The cumulative histogram of the number of problem instances solved (y-axis) below a certain number of node evaluations/expansions/elapsed
+time (x-axis, 10,000 nodes maximum, 4,000 nodes maximum, 300 seconds maximum), comparing GUCT with c ∈{0.1, 0.3, 0.5, 1.0, 3.0}. Each line
+represents a random seed.
+
+
+evaluated
+expanded
+elapsed
+h
+100
+101
+102
+103
+104
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+103
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+hFF
+100
+101
+102
+103
+104
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+103
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+hadd
+100
+101
+102
+103
+104
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+103
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+hmax
+100
+101
+102
+103
+104
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+103
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+100
+101
+102
+0
+200
+400
+600
+c=0.1
+c=0.3
+c=0.5
+c=1.0
+c=3.0
+hGC
+Figure S8.
+The cumulative histogram of the number of problem instances solved (y-axis) below a certain number of node evaluations/expansions/elapsed
+time (x-axis, 10,000 nodes maximum, 4,000 nodes maximum, 300 seconds maximum), comparing GUCT-01 with c ∈{0.1, 0.3, 0.5, 1.0, 3.0}. Each line
+represents a random seed.
+
+
+h =
+hFF
+hadd
+hmax
+hGC
+hFF+PO
+hFF+DE
+hFF+DE+PO
+c =
+0.1
+1
+0.1
+1
+0.1
+1
+0.1
+1
+0.1
+1
+0.1
+1
+0.1
+1
+GUCT
+528.8
+412.0
+504.2
+397.8
+260.6
+228.4
+334.0
+285.2
+454.0
+389.2
+439.4
+0.0
+0.0
+0.0
+*
+555.0
+458.6
+537.2
+480.8
+263.2
+242.2
+328.4
+310.4
+495.8
+423.6
+471.0
+0.0
+0.0
+0.0
+-01
+526.2
+368.0
+488.6
+328.8
+271.4
+237.4
+345.0
+302.4
+408.4
+361.2
+422.6
+0.0
+0.0
+0.0
+*-01
+561.8
+388.0
+534.0
+364.4
+258.6
+233.4
+339.6
+297.6
+420.6
+378.2
+438.8
+0.0
+0.0
+0.0
+-V
+443.0
+317.4
+441.4
+310.6
+248.6
+208.6
+326.2
+255.4
+389.6
+344.6
+421.0
+0.0
+0.0
+0.0
+-Normal
+-
+283.4
+-
+265.0
+-
+212.0
+-
+233.4
+-
+372.4
+-
+289.0
+-
+381.6
+*-Normal
+-
+318.8
+-
+300.0
+-
+215.2
+-
+246.2
+-
+378.1
+-
+304.4
+-
+386.7
+-Normal2
+-
+581.8
+-
+535.8
+-
+316.6
+-
+379.0
+-
+621.0
+-
+518.0
+-
+578.0
+*-Normal2
+-
+567.2
+-
+533.8
+-
+263.0
+-
+341.0
+-
+618.0
+-
+511.4
+-
+567.8
+TTTS-Normal
+-
+181.0
+-
+180.0
+-
+171.4
+-
+170.8
+-
+151.0
+-
+180.6
+-
+150.6
+TTTS-Normal*
+-
+189.4
+-
+186.4
+-
+177.4
+-
+174.4
+-
+159.4
+-
+185.8
+-
+155.8
+GBFS(Pyperplan/FastDownward)
+538/539
+-
+518/517
+-
+224/226
+-
+354/349
+-
+†/539
+-
+489/‡
+-
+†/‡
+Softmin-Type(h)
+-
+576.0
+-
+542.6
+-
+297.2
+-
+357.6
+-
+575.8
+-
+‡
+-
+‡
+Table S4.
+A variation of Table 1, but c = 0.5 is replaced by c = 0.1. The best results are unchanged, and configurations with a hyperparameter c never
+outperformed GUCT-Normal2 except one case with GUCT* + hadd. †: Data missing due to the lack of support of PO for GBFS in Pyperplan. ‡: Data missing
+because DE in Fast Downward measures node evaluations differently.
+hFF
+hadd
+hFF+PO
+domain
+-Normal2
+GBFS(Pp)
+Softmin
+-Normal2
+GBFS(Pp)
+Softmin
+-Normal2
+GBFS(FD)
+Softmin
+airport
+22
+27
+26.8
+25
+25
+24.8
+21.4
+27
+26.8
+barman-opt14
+6
+0
+0
+2.2
+0
+0
+14
+0
+0
+blocks
+29.8
+31
+30.4
+34.4
+35
+34.8
+34.8
+28
+30.4
+depot
+8.8
+7
+8.2
+6.2
+6
+6.8
+12
+6
+8.2
+driverlog
+14.2
+14
+14
+14.4
+14
+14.6
+16.6
+14
+14
+freecell
+34
+34
+34
+34
+34
+34
+34
+34
+34
+grid
+3.6
+4
+3
+2
+2
+3
+5
+3
+3
+gripper
+20
+13
+20
+10
+20
+20
+20
+13
+20
+logistics00
+27.4
+26
+28
+28
+28
+28
+28
+28
+28
+logistics98
+10.6
+12
+11
+9.6
+11
+9.8
+15
+11
+11
+miconic
+150
+150
+150
+150
+150
+150
+150
+150
+150
+movie
+30
+30
+30
+30
+30
+30
+0
+30
+30
+mystery
+15.2
+16
+16.4
+15.4
+17
+17
+12.8
+16
+16.4
+openstacks
+27
+21
+25.8
+5
+7
+5
+27
+22
+25.8
+pipesworld-nt
+26.4
+23
+28
+20.4
+12
+27.8
+41.2
+21
+28
+pipesworld-t
+12.8
+9
+15.6
+12.8
+9
+11.4
+19.8
+11
+15.6
+psr-small
+44.8
+47
+48.6
+40.4
+43
+43.4
+50
+47
+48.6
+rovers
+18.8
+17
+18
+17
+13
+16.8
+29.8
+17
+17.8
+tpp
+23.6
+9
+11.4
+24.4
+9
+12.6
+29.6
+9
+11.4
+trucks
+6.4
+8
+9.6
+5.4
+7
+6.6
+6
+8
+9.6
+visitall-opt11
+19.6
+14
+19.2
+20
+19
+19
+20
+19
+19.2
+visitall-opt14
+13.4
+7
+12.4
+13
+12
+12
+14
+12
+12.4
+zenotravel
+17.4
+19
+15.6
+16.2
+15
+15.2
+20
+13
+15.6
+Total
+581.8
+538
+576
+535.8
+518
+542.6
+621
+539
+575.8
+Table S5.
+Domain-wise coverage for hFF heuristic, hadd heuristic, and hFF+PO configuration. (Pp) stands for Pyperplan, and (FD) stands for Fast
+Downward. Best results in bold except all ties. GUCT-Normal2’s failure in movie could be a bug, but we do not consider it an issue since it only disadvantages
+our proposed method.
+
+
+102
+102
+GUCT-01 vs GBFS
+102
+102
+GUCT*-01 vs GBFS
+102
+102
+GUCT vs GBFS
+102
+102
+GUCT* vs GBFS
+102
+102
+GUCT-Normal vs GBFS
+102
+102
+GUCT*-Normal vs GBFS
+102
+103
+102
+103
+GUCT-Normal2 vs GBFS
+102
+103
+102
+103
+GUCT*-Normal2 vs GBFS
+102
+102
+GUCT-V vs GBFS
+Figure S9.
+Comparing the length of solutions found by GUCT-based algorithms (x-axis) against those by the baseline GBFS (y-axis) using hFF.
+
+
+102
+103
+102
+103
+GUCT-01 vs GBFS
+102
+103
+102
+103
+GUCT*-01 vs GBFS
+102
+103
+102
+103
+GUCT vs GBFS
+102
+103
+102
+103
+GUCT* vs GBFS
+102
+103
+102
+103
+GUCT-Normal vs GBFS
+102
+103
+102
+103
+GUCT*-Normal vs GBFS
+102
+103
+102
+103
+GUCT-Normal2 vs GBFS
+102
+103
+102
+103
+GUCT*-Normal2 vs GBFS
+102
+103
+102
+103
+GUCT-V vs GBFS
+Figure S10.
+Comparing the length of solutions found by GUCT-based algorithms (x-axis) against those by the baseline GBFS (y-axis) using hadd.
+
+
+102
+2 × 1013 × 101
+4 × 1016 × 101
+102
+× 101
+× 101
+× 101
+× 101
+GUCT-01 vs GBFS
+102
+102
+GUCT*-01 vs GBFS
+102
+2 × 1013 × 101
+4 × 1016 × 101
+102
+× 101
+× 101
+× 101
+× 101
+GUCT vs GBFS
+102
+102
+GUCT* vs GBFS
+102
+2 × 1013 × 101
+4 × 1016 × 101
+102
+× 101
+× 101
+× 101
+× 101
+GUCT-Normal vs GBFS
+102
+2 × 1013 × 101
+4 × 1016 × 101
+102
+× 101
+× 101
+× 101
+× 101
+GUCT*-Normal vs GBFS
+102
+103
+102
+103
+GUCT-Normal2 vs GBFS
+102
+103
+102
+103
+GUCT*-Normal2 vs GBFS
+102
+2 × 1013 × 101
+4 × 1016 × 101
+102
+× 101
+× 101
+× 101
+× 101
+GUCT-V vs GBFS
+Figure S11.
+Comparing the length of solutions found by GUCT-based algorithms (x-axis) against those by the baseline GBFS (y-axis) using hmax.
+
+
+102
+102
+GUCT-01 vs GBFS
+102
+102
+GUCT*-01 vs GBFS
+102
+102
+GUCT vs GBFS
+102
+102
+GUCT* vs GBFS
+102
+102
+GUCT-Normal vs GBFS
+102
+102
+GUCT*-Normal vs GBFS
+102
+103
+102
+103
+GUCT-Normal2 vs GBFS
+102
+103
+102
+103
+GUCT*-Normal2 vs GBFS
+102
+102
+GUCT-V vs GBFS
+Figure S12.
+Comparing the length of solutions found by GUCT-based algorithms (x-axis) against those by the baseline GBFS (y-axis) using hGC.
+
+
+101
+102
+103
+104
+101
+102
+103
+104
+airport
+barman-opt14
+blocks
+depot
+driverlog
+freecell
+grid
+gripper
+logistics00
+logistics98
+miconic
+movie
+mystery
+openstacks
+pipesworld-nt
+pipesworld-t
+psr-small
+rovers
+tpp
+trucks
+visitall-opt11
+visitall-opt14
+zenotravel
+Figure S13.
+The scatter plot of node evaluations for GBFS (y-axis) and GUCT-Normal2 (x-axis) for instances solved by both. The error bar shows the
+fluctuation due to 5 random seeds (applicable only to GUCT-Normal2).
+101
+102
+103
+104
+101
+102
+103
+104
+airport
+barman-opt14
+blocks
+depot
+driverlog
+freecell
+grid
+gripper
+logistics00
+logistics98
+miconic
+movie
+mystery
+openstacks
+pipesworld-nt
+pipesworld-t
+psr-small
+rovers
+tpp
+trucks
+visitall-opt11
+visitall-opt14
+zenotravel
+Figure S14.
+The scatter plot of node evaluations for Softmin-Type(h) (y-axis) and GUCT-Normal2 (x-axis) for instances solved by both. The error bar shows
+the fluctuation due to 5 random seeds.

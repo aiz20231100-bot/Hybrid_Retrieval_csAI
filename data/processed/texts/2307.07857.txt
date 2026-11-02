@@ -1,0 +1,866 @@
+A Multi-Heuristic Search-based Motion Planning
+for Automated Parking
+1st Bhargav Adabala
+Virtual Vehicle Research GmbH
+Graz, Austria
+bhargav.adabala@gmail.com
+2nd Zlatan Ajanovi´c
+Virtual Vehicle Research GmbH
+Graz, Austria
+0000-0003-2214-0007
+Abstract—In unstructured environments like parking lots or
+construction sites, due to the large search-space and kinodynamic
+constraints of the vehicle, it is challenging to achieve real-
+time planning. Several state-of-the-art planners utilize heuristic
+search-based algorithms. However, they heavily rely on the
+quality of the single heuristic function, used to guide the
+search. Therefore, they are not capable to achieve reasonable
+computational performance, resulting in unnecessary delays in
+the response of the vehicle. In this work, we are adopting a
+Multi-Heuristic Search approach, that enables the use of multiple
+heuristic functions and their individual advantages to capture
+different complexities of a given search space. Based on our
+knowledge, this approach was not used previously for this prob-
+lem. For this purpose, multiple admissible and non-admissible
+heuristic functions are defined, the original Multi-Heuristic A*
+Search was extended for bidirectional use and dealing with hybrid
+continuous-discrete search space, and a mechanism for adapting
+scale of motion primitives is introduced. To demonstrate the
+advantage, the Multi-Heuristic A* algorithm is benchmarked
+against a very popular heuristic search-based algorithm, Hybrid
+A*. The Multi-Heuristic A* algorithm outperformed baseline
+in both terms, computation efficiency and motion plan (path)
+quality.
+Index Terms—Motion Planning, Automated Driving, Multi-
+Heuristic Search, A* Search
+I. INTRODUCTION
+Robot motion planning problems can be elegantly formu-
+lated as path planning in higher-dimensional configuration
+space [1]. However, finding a solution is computationally
+challenging due to a large continuous search space and
+kinodynamic constraints. The sampling-based approaches for
+motion planning have been extensively studied in robotics
+[2]. Instead of explicitly constructing the collision-free con-
+figuration space, which is time-consuming to compute, these
+algorithms probe the free space and search with a sampling
+strategy. The algorithms stop when a path connecting the initial
+and final poses is found. According to the sampling type,
+the sampling-based path-finding algorithms can be classified
+into two categories: random-sampling-based algorithms and
+orderly-sampling-based algorithms.
+The most popular random-sampling-based algorithm is the
+Rapidly-exploring Random Tree (RRT) [3]. RRT can be con-
+sidered as a special case of Monte Carlo Tree Search (MCTS)
+[4]. The most notable orderly sampling-based algorithm is
+A* [5], including many of its extensions. It was initially
+*Work done while at Virtual Vehicle Research GmbH.
+Fig. 1: Motion Planning for Autonomous Parking.
+developed to plan a path for the Shakey robot and it was further
+generalized and used for many different domains since then.
+The orderly sampling-based algorithms tend to be more
+efficient than random sampling-based planners, especially
+when the dimensions of the state spaces are fewer than
+six [6]. Random sampling-based planners inherently come
+with the disadvantages of being highly non-deterministic and
+converging towards solutions that are far from the optimum
+and suffer from bug trap problems [7]. The variants of RRT
+such as RRT* also provide comparable solutions, but they are
+computationally expensive and the efficiency depends on the
+size of the search space [8]. Furthermore, if no collision-free
+path to the goal exists, orderly sampling-based algorithms can
+report this failure much more quickly than random sampling-
+based ones. However, original A* deals with discrete state-
+space and requires discretization of the configuration space.
+Continuous state-space and kinodynamic constraints can be
+satisfied by constructing a lattice in the form of a regular grid
+[9]. Another approach is to use motion primitives [10]. To
+avoid the problem of rounding states generated using motion
+primitives to the grid, Hybrid-State A* [11] might be used.
+Sampling-based motion planning approaches were exten-
+sively used for autonomous vehicle path planning in unstruc-
+tured environments during the 2007 DARPA Urban Challenge,
+both A*-based [12], [11] and RRT-based [13]. Several ex-
+tensions for these approaches have been introduced in recent
+arXiv:2307.07857v1  [cs.RO]  15 Jul 2023
+
+
+years, namely A*-based [14], [15], [16], RRT*-based [17] and
+optimization-based [18]. An overview of recent developments
+and open challenges is presented in [19].
+Besides motion planning for wheeled vehicles in unstruc-
+tured environments (e.g. autonomous parking), different vari-
+ants of search-based planning were recently used for planning
+footsteps for humanoid robots [20], robot manipulation [21],
+underwater vehicles [22], the aggressive flight of UAVs [23],
+as well as for special use-cases in automated driving such as
+energy-efficient driving [24], driving in complex scenarios in
+structured urban environments [25], unstructured and partially
+observable environments [15] and performance driving includ-
+ing drifting maneuvers [26][27].
+This paper presents a motion planning approach for
+wheeled vehicles in unstructured environments based on
+Multi-Heuristic Search [28]. Based on our knowledge, this is
+the first application of a Multi-Heuristic Search for motion
+planning in automated parking scenarios. This is achieved
+by using a combination of geometric and orderly sampling-
+based approaches in order to achieve maximum coverage of
+the complexities within the search space. For this purpose,
+two heuristic functions are defined to get an accurate estimate
+of the cost-to-go and prune the unnecessary search nodes for
+faster path computation. The geometric approach is used to
+solve the simplified problem (without obstacles) by modeling
+the physical constraints of the vehicle and is used as a second
+heuristic function in a Multi-Heuristic A* algorithm, the first
+being the path length to the destination while considering
+obstacles but neglecting some physical constraints like turning
+radius. With this approach, both non-holonomic and holo-
+nomic constraints are combined to provide an optimal solution
+to the motion planning problem. Two approaches for the solu-
+tion have been developed, one using Forward Search and
+the other using Bi-directional Search. Additionally,
+adaptive motion primitive arc length was developed to avoid
+the search getting stuck in depression regions indefinitely. An
+earlier version of this work is presented in the ICAPS 2020
+PlanRob workshop [29].
+II. AUTONOMOUS PARKING AS MOTION PLANNING
+PROBLEM
+The autonomous parking problem tackled in this work
+represents a fully observable problem where intelligent in-
+frastructure provides a connected vehicle with information
+about the structure and area of the parking lot. The driver
+enters the parking and drives the vehicle into a designated
+drop-off area. The autonomous parking algorithm overtakes a
+control and guides and maneuvers the vehicle into the assigned
+parking slot automatically based on the information from the
+infrastructure. This concept was demonstrated by Bosch and
+Daimler as Automated Valet Parking (AVP) [30].
+The planning problem this work aims to solve can be stated
+as follows:
+”Find a solution in real-time that autonomously navigates
+a non-holonomic vehicle without any collisions, from a given
+start position to a desired goal position within the parking
+Fig. 2: Parking with perpendicular parking slots
+layout based on the input of a two-dimensional obstacle map,
+or report the non-existence of such a solution.”
+To fully define the problem, the environment (obstacles), the
+vehicle model, and Key Performance Indicators (KPIs) must
+be defined.
+A. Environment
+Figure 2, shows an example of the parking layout structure
+which is considered for the motion planning problem of
+autonomous parking. There might be two most prominent
+parking orientations, perpendicular or parallel. However, the
+algorithm should be general to work on different parking
+arrangements. Each parking slot is enumerated with a parking
+slot ID. The number of parking slots and dimensions of
+the open space are configurable. The red cross symbols in
+the figure highlight the goal position for each parking slot
+within the layout. The entry point to the parking lot is fixed
+at (xs, ys, θs) = (0, 10, 0). The parking position for the
+respective parking slots ID is read from a pre-computed map.
+The computation of goal position within each parking slot is
+based on the vehicle dimensions as the control reference would
+be different for the individual vehicle due to differences in
+length and width.
+B. Vehicle Model
+Due to vehicle geometry and physics, there are constraints
+on the vehicle motion that restrict the allowable velocities.
+The first-order constraints, that consider the first derivative of
+the position (velocity), are often called kinematic constraints.
+Including the dynamics of a vehicle results in second-order
+differential constraints, which allows the modeling of acceler-
+ation. The planning with such models is called kinodynamic
+planning. As the focus of this work is on low-velocity parking
+maneuvers, higher-order constraints are not included, only
+kinematic constraints are considered.
+A simple yet useful model of a car is the single track
+model, also known as the bicycle model, shown in Figure 3a.
+
+
+θ
+α
+vy
+vx
+x
+y
+L
+(a) Single-track vehicle model. (b) 3 Disk approximation
+for vehicle geometry.
+Fig. 3: Vehicle models.
+It does not consider dynamics, but it is useful to model
+lower-velocity driving. Consider the case where a car with
+wheelbase L moves forward with velocity vx with a steering
+angle α and assuming no wheel slip, then the car will move
+along a circle with radius R. The kinematic constraints can
+then be derived by trigonometry. Let x = (x, y, θ) denote
+the configuration state of the car-like robot, where x and y
+denote the position and θ the heading of the car. Vehicle
+motion is constrained to ˙x/ ˙y = tan(θ), which together with
+the constraint R = L/tan(α) gives the following first-order
+differential constraints:
+˙x = vx cos(θ)
+(1)
+˙y = vx sin(θ)
+(2)
+˙θ = vx
+L tan(α)
+(3)
+Setting the maximum steering angle |α| ≤αmax results in
+a minimum turning radius Rmin. The model clearly represents
+the non-holonomic behavior as it is impossible to move
+sideways without violating the no-slip condition. Restricting
+the allowed velocities and steering angles to the finite set
+Uvx = {0, 1} and Uα = {−αmax, 0, αmax} results in the
+Dubin’s car that can only stop and move forward at unit speed
+[31] and setting it to Uvx = {−1, 0, 1} results in the Reed-
+Shepp car that can also reverse at a unit speed [32]. Even
+though these models are very simplified they have efficient
+analytic solutions for optimal paths between any two states
+that can be useful for designing heuristic functions for search-
+based motion planners.
+A time-discretized single-track model is easily obtained
+using Euler forward or higher-order methods. By integrating
+the differential equations forward in time, a simulated path
+or trajectory resulting from a given input can be obtained
+and used to construct motion segments within a planning
+framework.
+C. Collision Detection
+To avoid collisions with obstacles in the environment,
+vehicle geometry should be considered. The geometry of a
+car, approximate rectangular shape, can be reasonably ap-
+proximated with overlapping circular disks. This simplifies the
+collision detection significantly as it is sufficient to check if
+the obstacles fall within the boundaries of the disk, which is
+represented by the radii of the disks. The problem of covering
+rectangles with equal-sized disks in an optimal way has been
+studied in the literature [33].
+As stated in [34], a rectangle of length l and width w can
+be covered by n circles of radius r calculated as:
+r =
+r
+l2
+n2 + w2
+4
+(4)
+placed at a distance of d calculated as:
+d = 2
+r
+r2 −w2
+4
+(5)
+In practical applications, the above approximation may lead
+to under-utilization of available collision-free space, especially
+in the case of environments where tight or narrow maneuvering
+is required, e.g. parking lots. Besides, the stated approach
+assumes the control reference to be at the center of the
+rectangular shape which is not true in the case of car-like
+robots which are mostly either front-wheel or rear-wheel
+driven.
+In this work, an approach proposed in [34] is adapted to fit
+a practical application of a car-like robot. The bounding disks
+can be arranged as shown in Figure 3b. By this method, the
+bounding disks are arranged compactly to fit the geometry of
+the vehicle allowing better utilization of the free space even
+for tight maneuvers in narrow spaces. Moreover, all the cal-
+culations are based on the standard dimensions available from
+any production car design, and parametrizing the same makes
+the approach generic for any vehicle under consideration.
+D. KPI Definition for Benchmark
+To compare the performance and quality of solutions gen-
+erated by motion planning algorithms, the following Key
+Performance Indicators (KPIs) have been used.
+Performance Paramters
+Number of Expanded States: For a given configuration
+space, the number of expanded states reflects the guidance
+power of the heuristic functions in pruning the unwanted
+branches of the search. The lesser the number of expanded
+states, the better the heuristic.
+Execution Time: The execution time depends on the im-
+plementation of the vehicle model, the definition of motion
+primitives, and the algorithm itself. It is a measure of the time
+that the algorithm needs to return a solution using the defined
+attribute functions.
+Number of Iterations: The iteration counter quantifies how
+quickly the algorithm converges to either finding a solution or
+reporting that there exists no solution.
+Solution Path Quality Parameters
+Path Length: The path length is computed as the accumu-
+lated sum of Euclidean distance between two points on the
+final trajectory. It quantifies the efficiency of the generated
+solution as shorter path lengths are preferred.
+
+
+Reverse Path Length: The reverse path length indicates the
+quality of the algorithm to foresee a wrong branch. The longer
+reverse path length indicates that the vehicle had to move a
+lot in a backward direction in order to correct its path or in
+some cases the algorithm prefers to move the vehicle more in
+a backward direction rather than forward. In any case, longer
+reverse path lengths are not preferred.
+Direction Changes: Each direction change during driving
+indicates a stop-and-go situation, which will be annoying for
+a human driver. Even though it is an autonomous vehicle the
+quality solution shall be close to an experienced human driver,
+i.e., avoid multiple direction changes.
+III. MOTION PLANNING APPROACH
+The motion planning approach presented in this paper is
+based on Multi-Heuristic A* search, extended with a concept
+from the Hybrid A* Algorithm, employed in a bi-directional
+search fashion. The kinodynamic feasibility of the solution is
+provided by motion primitives based on the vehicle model.
+Several admissible heuristic functions enable efficient optimal
+planning.
+A. Hybrid A* Algorithm
+The Hybrid A* algorithm was developed as a practical
+path-planning algorithm that can generate smooth paths for an
+autonomous vehicle operating in an unstructured environment
+and used in the DARPA Urban Challenge by the Stanford
+University team [11]. The hybrid A* algorithm is based on
+the A* algorithm, with the key difference being, that state
+transitions occur in continuous rather than in a discrete space.
+By considering the non-holonomic constraints of the robotic
+vehicle, the algorithm generates feasible transitions which can
+be executed by the actuator module.
+The three-dimensional state space X (represented by x, y
+position and θ heading angle of the vehicle) is associated
+with a discrete grid of reasonable resolution such that each
+continuous state is associated with some grid cell to enable the
+use of discrete search algorithm. Continuous states are rounded
+to the grid for association in order to prune the branches, by
+keeping only the best trajectory coming to the grid cell. The
+expansion still uses the actual continuous value that is not
+rounded to the grid. Similar to the original A*, if the current
+state being expanded is not the goal state, new successors
+are generated for all possible actions u ∈U(x). The cost-to-
+come is only computed for successor states that are not in the
+CLOSED list. If the state is not in the OPEN list it is directly
+pushed to the OPEN list. If the state is already in the OPEN list,
+and the cost-to-come is smaller than the cost for a state with
+the same index that is in the OPEN list then the pointer to the
+parent, the cost-to-come and the cost-to-go are updated. After
+that, the key is decreased using the newly computed cost.
+B. Multi Heuristic A* Algorithm
+The performance of the A* algorithm depends on the quality
+of the heuristic function used to guide the search. It is hard
+to design a single heuristic function that captures all the
+Algorithm 1: Bi-Directional Multi-Heuristic Search
+1 function SMHA∗(xI, XG, O,hi):
+2
+return Collision free trajectory from xI to x ∈XG
+3 function CombinePath((xstart, . . . , x′
+f),(x′′
+f , . . . , xG)):
+/* Use an analytic function to connect paths
+*/
+4
+return Combined trajectory from xstart to xgoal
+5 begin
+/* Forward Search
+*/
+6
+XG ←{x | ∥x −xG∥≤dfw1};
+7
+(xstart, . . . , x′
+f) ←SMHA∗(xstart, XG, O, hi);
+/* Reassign Start and Goal Positions
+*/
+8
+x′
+start ←xgoal;
+9
+X′
+G ←{x | ∥x −x′
+f∥≤dfw2};
+/* Backward Search
+*/
+10
+(xG, . . . , x′′
+f ) ←SMHA∗(x′
+start, X′
+G, O, hi);
+/* Combine Paths
+*/
+11
+path ←CombinePath((xstart, . . . , x′
+f), (x′′
+f , . . . , xG));
+12 return path
+complexities of the problem. Furthermore, it is hard to ensure
+that heuristics are admissible (provide lower bounds on the
+cost-to-go) and consistent, which is necessary for an A*-like
+search to provide guarantees on completeness and bounds on
+sub-optimality.
+In [35] authors introduced an approach of alternation be-
+tween different heuristic functions for satisficing (i.e. non-
+optimal) planning. Multi-Heuristic A* (MHA*) [28] over-
+comes the dependency on a single heuristic function in optimal
+planning too. MHA* can use multiple inadmissible heuristic
+functions in addition to a single consistent heuristic simul-
+taneously to search in a way that preserves guarantees on
+completeness and bounds on sub-optimality. This enables us to
+effectively combine the guiding powers of different heuristic
+functions and simplifies dramatically the process of designing
+heuristic functions by a user because these functions no longer
+need to be admissible or consistent [28].
+MHA* has two variants: Independent Multi-Heuristic A*
+(IMHA*) which uses independent cost-to-come and cost-to-
+go values for each search, and Shared Multi-Heuristic A*
+(SMHA*) which uses different cost-to-go values but a single
+cost-to-come value for all the searches. With this shared
+approach, SMHA* can guarantee the sub-optimality bounds
+with at most two expansions per state. In addition, SMHA* is
+potentially more powerful than IMHA* in avoiding depression
+regions as it can use a combination of partial paths found by
+different searches to reach the goal [28].
+In SMHA* approach the optimal path for a given state is
+shared among all the searches so that if a better path to a
+state is discovered by any of the searches, the information is
+updated in all the priority queues. This allows the algorithm to
+expand each state at most twice, which significantly improves
+the computational time.
+C. Our Planning Algorithm
+The presented planning algorithm is based on MHA*
+Search with features of Hybrid A* search and adaptive
+motion primitives. It uses MHA* in a forward and back-
+ward manner as shown in Algorithm 1. For this pur-
+pose, multiple admissible and non-admissible heuristic func-
+
+
+tions are defined. The framework has three main func-
+tions SharedMultiHeuristicA*, GeneratePath, and
+CombinePath.
+SharedMultiHeuristicA*
+searches
+the configuration space according to the algorithm defined
+in [28]. It is expanded with hybrid A* features and uses
+motion primitives. It is used in both forward and back-
+ward steps. GeneratePath executes the search using
+SharedMultiHeuristicA* while continuously checking
+if the EucledianDistance from the current state to the
+goal state is greater than a configurable parameter dfw. If the
+search has reached the closest state defined by dfw then the
+function returns the path from the start position to the closest
+point to the goal. Due to the discretization of the continuous
+space, in CombinePath an analytic function is required
+to combine the two paths generated by GeneratePath
+function. In this work, we used Reeds-Shepp curves for this
+purpose.
+1) Bi-Directional Search: The presented algorithm is using
+the Bi-directional Search, by searching for the path
+in two steps. In the first step, the search expands in the
+forward direction (towards the goal) from the start state to
+reach the state close to the goal position. In the second step, the
+search proceeds backward from the goal position toward the
+closest point reached by the forward search. The solution paths
+generated by the forward search step and backward search step
+are then joined by the analytical expansion using Reeds-Sheep
+curves.
+2) Motion Primitives: The motion primitives refer to the
+motion sequence that is triggered by an action request and
+corresponds to a basic move that is possible by the vehicle,
+sampled from a continuous control space. In this work, motion
+primitives are generated by applying one of the six control
+actions defined by combinations of Uvx
+= {−1, 1} and
+Uα = {−αmax, 0, αmax}. These represent maximum steering
+left while driving in the forward direction, no steering while
+driving in the forward direction, maximum steering right while
+driving in the forward direction, maximum steering left while
+driving in the backward direction, no steering while driving in
+the backward direction, maximum steering right while driving
+in the backward direction. Finer resolution is also possible,
+however that increases the branching factor and computational
+complexity.
+As shown in Figure 4, each of these control actions is
+applied for a certain amount of time, resulting in an arc of
+a circle with a lower bound turning radius Rmin. This will
+ensure that the resulting paths are always drivable, as the actual
+vehicle model is used to expand the state, even though they
+might result in excessive steering actions. An adaptive sizing
+of motion primitives is applied, wherein the arc length used
+for the execution of motion primitives is adapted dynamically
+to adjust to the environment. A shorter arc length is used
+near obstacles and a longer arc length in free space. This
+approach improves maneuverability in tight spaces. Using a
+shorter length in all cases promises higher levels of resolution
+completeness, as the likelihood to reach each state is increasing
+but reduces the computational efficiency.
+v
+Fig. 4: Motion Primitives.
+3) Heuristics: A heuristic function h is used to estimate
+the cost needed to travel from some state x to the goal state
+xg (cost-to-go). As it is shown in [5], if the heuristic function
+is underestimating the optimal cost-to-go, A* search provides
+the optimal solution. For the shortest path search, the usual
+heuristic function is the Euclidean distance.
+In general, SMHA* algorithm supports n number of heuris-
+tics with n > 1. In this work, to restrict the complexity and to
+be comparable with Hybrid A* which is used as a reference
+for benchmarking, two heuristic functions have been used.
+The two heuristics capture different aspects of the problem
+as explained in the sections below.
+Non-Holonomic without Obstacles This heuristic function
+takes into account the non-holonomic constraints of the vehicle
+while neglecting the influence of the environment (obstacles).
+The most suitable candidate functions are either Dubins or
+Reeds-Shepp curves. These curves are the paths of minimal
+length with an upper bound curvature for the forward and
+combined forward and backward driving car respectively. We
+choose the Reeds-Shepp curves since in parking maneuvers it
+is important that the car can move in both forward and back-
+ward directions. These curves are computationally inexpensive
+to compute as they are based on an analytic solution. As
+shown in Figure 5a, this heuristic takes into account the current
+heading as well as the turning radius, which ensures that the
+vehicle approaches the goal with the appropriate heading. This
+is especially important when the car gets closer to the goal.
+Given that Reeds-Shepp curves are minimal, this heuristic is
+clearly admissible.
+Holonomic with Obstacles This heuristic function neglects
+the characteristics of the vehicle and only accounts for obsta-
+cles. The estimate is based on the shortest distance between
+the goal state and the state currently being expanded. This
+
+
+(a) Non-holonomic without ob-
+stacles (Reeds-Shepp Curve).
+(b) Holonomic with obstacles.
+Fig. 5: Paths based on relaxed models of heuristic functions.
+(a) .
+(b)
+Fig. 6: Parking Lot with Start Position - Cyan and Goal
+Position - Green (left) and cost-to-go map generated by 2D
+Dijkstra search (right).
+distance is determined using the standard Dijkstra search in
+two dimensions (x and y position). As the search is 2D and
+assumes the object under control is holonomic, the path is not
+smooth. The search is performed backward, it uses the initial
+state of the SMHA* as the goal state, and the goal state of the
+SMHA* search as the start state to generate the heuristic cost.
+The closed list of the Dijkstra search stores all the shortest
+distances to the goal and guides the vehicle away from dead
+ends and around obstacles. Since this heuristic function does
+not depend on any runtime sensor information, it can be fully
+pre-computed offline and used as a lookup table or simply
+translated and rotated to match the current goal instead of
+initiating a new search while SMHA* progresses.
+IV. SIMULATION RESULTS
+In order to benchmark the performance of the solution
+developed using SMHA*, we chose the Hybrid A* as a
+reference. As discussed earlier, Hybrid A* gives a comparable
+reference as it is also based on the orderly sampling approach
+and also uses two heuristics to guide the search. The key
+difference is that in the Hybrid A* approach, the maximum of
+both of the results of the heuristics is considered to update the
+priority queue while in SMHA* the heuristics are iteratively
+computed and both can update the priority queue.
+The use cases chosen for the simulation depict common
+situations encountered in a parking lot such as Entering
+Parking Lot and Exiting Parking Lot. The simulations are
+performed by executing the Hybrid A* and SMHA* algorithm
+back-to-back to compare the KPIs of the generated solution.
+In the rest of the section, an elaborate analysis of the
+simulation results and solution paths that are generated for
+the use case Entering Parking Lot using Bi-directional
+(a) State expansions.
+(b) Path generated by Hybrid A*.
+Fig. 7: Entering Parking Lot with Bi-Directional - Hybrid A*.
+(a) State expansions.
+(b) Path generated.
+Fig. 8: Entering Parking Lot with Bi-Directional - SMHA*.
+Search for parallel parking configuration is presented. Fig-
+ure 6a depicts the selected start and goal position (Parking
+Slot ID: 27) on the parking layout.
+First, the configuration space is explored using the 2D
+Dijkstra search to generate the cost-to-go map as shown in
+Figure 6b. The cost-to-go map shows in a color scale distance
+from the goal pose considering obstacles but neglecting non-
+holonomic constraints. The results of this step are stored in a
+look-up and represents the Holonomic with Obstacles heuristic
+explained earlier.
+Figure 7a depicts the state expansion pattern of the Hybrid
+A* algorithm. The algorithm has searched the area around
+the start position with a bias towards the goal position even
+though the solution path lies in another direction. The heuristic
+strongly guides the search towards the shortest path as far as
+possible within the obstacle-free area. As the search explores,
+it expands all states with lower costs that can lead to the
+shortest path until it reaches a point where the heuristic cost of
+expanding the points which do not lead to the shortest path has
+a lower cost to reach the goal. As a result of this poor pruning
+of the unwanted branches, the planner expands several states
+around the start position before it realizes the optimal direction
+of the path which leads to poor timing performance. The final
+path generated as seen in Figure 7b has many orientation
+changes in the Forward Search step and maneuvering step
+into the parking slot is determined by the backward search.
+The solution path is smooth, but the direction of orientation
+is reversed for the most part of the path which is not optimal.
+Figure 8a depicts the state expansion pattern of the SMHA*
+algorithm. Similar to Hybrid A*, the algorithm has searched
+the area around the start position with a bias towards the goal
+position even though the solution path lies in another direction.
+But, the multi-heuristic approach, quickly balances the bias
+towards finding the shortest path to finding a feasible path
+considering the obstacles. In addition, due to the mutually in-
+formed independent search by respective heuristics, the states
+
+
+KPI
+Hybrid A*
+SMHA*
+Number of Expanded States
+2457
+73
+Execution Time (s)
+47.8
+11.51
+Path Length (m)
+90.3
+90.58
+Reverse Path Length (m)
+7.29
+3.29
+Direction Changes
+4
+4
+Number of Iterations
+23633
+73
+TABLE I: Entering parking lot with Bi-Directional Search - KPI
+Comparision.
+that are expanded by one heuristic function are not expanded
+by other heuristic functions. As a result, the algorithm could
+prune the unwanted branches and realize the optimal direction
+of the path much faster compared to Hybrid A*.
+As seen in Figure 8b, the path is smooth and the direction
+of orientation is in the forward direction for most parts of the
+path, which is preferred.
+Fig. 9: Entering Parking Lot with Bi-Directional Search - KPI
+Comparision (Expanded States (ES), Execution Time (ET), Forward
+Path Length (FPL), Reverse Path Length (RPL), Direction Changes
+(DC), Iteration Count (IC)).
+As seen from KPI values tabulated in Table I, the Hybrid
+A* algorithm expands significantly more states and uses more
+time to generate the solution path compared to SMHA*
+approach. Even though the heuristics used are the same, the
+mutually informed independent search of SMHA* prunes the
+unwanted branches much more significantly allowing faster
+convergence towards the solution and improved execution
+time.
+To give a comprehensive performance comparison of both
+the algorithms for the use case Entering Parking Lot for par-
+allel parking lot layout using Bi-directional Search,
+a full simulation run through all the parking slots is executed.
+In this simulation mode, each parking slot ID is selected as
+a goal position sequentially and the back-to-back run of the
+Hybrid A* and SMHA* algorithm is performed.
+As observed from Figure 10, SMHA* outperforms the Hy-
+brid A* algorithm in terms of both performance and solution
+path quality parameters. With the multi-heuristic approach, the
+average execution time to generate the solution path is reduced
+by 81%, which is a significant improvement demonstrating
+ES
+ET
+FPL
+RPL
+DC
+IC
+20
+0
+20
+40
+60
+80
+100
+120
+140
+Mean Performance Improvement in %
+97
+81
+7
+63
+-2
+100
+Expanded States (ES)
+Execution Time (ET)
+Forward Path Length (FPL)
+Reverse Path Length (RPL)
+Direction Changes (DC)
+Iteration Count (IC)
+Fig. 10: Entering Parking Lot with Bi-Directional Search - Mean
+Performance Improvement.
+the potential of multi heuristic approach to solve the given
+planning problem.
+V. CONCLUSION
+The work focused on providing a Multi-Heuristic search-
+based approach to solve the motion planning problem for
+autonomous parking. To benchmark the results obtained, a
+state-of-the-art planning algorithm Hybrid A* was chosen as
+a reference.
+As the environment for the given use case involves only
+low-speed maneuvering, a Single Track Bicycle Model which
+reflects the kinematics of the vehicle was used as a motion
+model. The model emulates the non-holonomic nature of the
+vehicle in all stages of the algorithm, motion primitives (node
+expansion), and heuristic estimates. Thus, the paths generated
+are always driveable.
+A collision check algorithm was implemented based on
+the Multi-Disk Decomposition of the bounded volume. The
+algorithm was parameterized based on the vehicle geometry
+making it a generic solution to fit with any vehicle type and
+independent of the environment.
+The path planning problem was solved using the Shared
+Multi-Heuristic A* approach in which two heuristic func-
+tions were implemented with a round-robin scheduling. The
+respective heuristic searches share the current path obtained
+to a state. The heuristics were defined to capture the non-
+holonomic and holonomic constraints of the vehicle. Two
+solution approaches were developed: Forward Search and
+Bi-Directional Search .
+The SMHA* algorithm solved the motion planning problem
+elegantly and outperformed Hybrid A* with respect to the
+response time and path quality of the generated solution path.
+The KPI comparison clearly indicates that SMHA* is an
+ideal candidate for motion planning in slow-speed driving in
+unstructured environments applications like autonomous valet
+parking.
+
+
+VI. ACKNOWLEDGMENTS
+The project leading to this study has received funding from
+the European Union’s Horizon 2020 research and innovation
+programme under the Marie Skłodowska-Curie grant agree-
+ment No 675999, ITEAM project.
+VIRTUAL VEHICLE Research Center is funded within the
+COMET – Competence Centers for Excellent Technologies –
+programme by the Austrian Federal Ministry for Transport,
+Innovation and Technology (BMVIT), the Federal Ministry
+of Science, Research and Economy (BMWFW), the Austrian
+Research Promotion Agency (FFG), the province of Styria and
+the Styrian Business Promotion Agency (SFG). The COMET
+programme is administrated by FFG.
+REFERENCES
+[1] T. Lozano-P´erez and M. A. Wesley, “An algorithm for planning
+collision-free paths among polyhedral obstacles,” Communications of
+the ACM, vol. 22, no. 10, pp. 560–570, 1979.
+[2] Z. Kingston, M. Moll, and L. E. Kavraki, “Sampling-Based Methods for
+Motion Planning with Constraints,” Annual Review of Control, Robotics,
+and Autonomous Systems, vol. 1, no. 1, pp. 159–185, 2018.
+[3] S. M. LaValle, “Rapidly-exploring random trees: A new tool for
+path planning,” 1998. [Online]. Available: http://citeseerx.ist.psu.edu/
+viewdoc/summary?doi=10.1.1.35.1853
+[4] C. B. Browne, E. Powley, D. Whitehouse, S. M. Lucas, P. I. Cowling,
+P. Rohlfshagen, S. Tavener, D. Perez, S. Samothrakis, and S. Colton, “A
+Survey of Monte Carlo Tree Search Methods,” IEEE Transactions on
+Computational Intelligence and AI in Games, vol. 4, no. 1, pp. 1–43,
+2012.
+[5] P. Hart, N. Nilsson, and B. Raphael, “A Formal Basis for the Heuristic
+Determination of Minimum Cost Paths,” IEEE Transactions on Systems
+Science and Cybernetics, vol. 4, no. 2, pp. 100–107, 1968.
+[6] S. M. LaValle, M. S. Branicky, and S. R. Lindemann, “On the Rela-
+tionship between Classical Grid Search and Probabilistic Roadmaps,”
+The International Journal of Robotics Research, vol. 23, no. 7-8, pp.
+673–692, 2004.
+[7] S. Karaman and E. Frazzoli, “Incremental sampling-based algorithms
+for optimal motion planning,” Robotics Science and Systems VI, vol.
+104, no. 2, 2010.
+[8] S. Karaman, M. R. Walter, A. Perez, E. Frazzoli, and S. Teller,
+“Anytime Motion Planning using the RRT*,” in 2011 IEEE International
+Conference on Robotics and Automation, 2011, pp. 1478–1483.
+[9] M. Pivtoraiko and A. Kelly, “Generating near minimal spanning control
+sets for constrained motion planning in discrete state spaces,” in 2005
+IEEE/RSJ International Conference on Intelligent Robots and Systems,
+2005, pp. 3231–3237.
+[10] E. Frazzoli, M. A. Dahleh, and E. Feron, “Real-Time Motion Planning
+for Agile Autonomous Vehicles,” Journal of Guidance, Control, and
+Dynamics, vol. 25, no. 1, pp. 116–129, 2002.
+[11] D. Dolgov, S. Thrun, M. Montemerlo, and J. Diebel, “Practical search
+techniques in path planning for autonomous driving,” Ann Arbor, vol.
+1001, no. 48105, pp. 18–80, 2008.
+[12] M. Likhachev and D. Ferguson, “Planning Long Dynamically Feasible
+Maneuvers for Autonomous Vehicles,” The International Journal of
+Robotics Research, vol. 28, no. 8, pp. 933–945, 2009.
+[13] Y. Kuwata, S. Karaman, J. Teo, E. Frazzoli, J. P. How, and G. Fiore,
+“Real-Time Motion Planning With Applications to Autonomous Urban
+Driving,” IEEE Transactions on control systems technology, vol. 17,
+no. 5, pp. 1105–1118, 2009.
+[14] D. Nemec, M. Gregor, E. Buben´ıkov´a, M. Hruboˇs, and R. Pirn´ık,
+“Improving the Hybrid A* method for a non-holonomic wheeled robot,”
+International Journal of Advanced Robotic Systems, vol. 16, no. 1, p.
+172988141982685, 2019.
+[15] S. Dai and Y. Wang, “Long-Horizon Motion Planning for Autonomous
+Vehicle Parking Incorporating Incomplete Map Information,” in 2021
+IEEE International Conference on Robotics and Automation (ICRA),
+2021, pp. 8135–8142.
+[16] J. Leu, Y. Wang, M. Tomizuka, and S. Di Cairano, “Autonomous
+Vehicle Parking in Dynamic Environments: An Integrated System with
+Prediction and Motion Planning,” 2022.
+[17] H. Banzhaf, L. Palmieri, D. Nienhuser, T. Schamm, S. Knoop, and J. M.
+Zollner, “Hybrid curvature steer: A novel extend function for sampling-
+based nonholonomic motion planning in tight environments,” in IEEE
+ITSC 2017, I. I. T. S. Conference, Ed.
+Piscataway, NJ: IEEE, 2017,
+pp. 1–8.
+[18] X. Zhang, A. Liniger, and F. Borrelli, “Optimization-based collision
+avoidance,” IEEE Transactions on control systems technology, 2020.
+[19] H. Banzhaf, D. Nienh¨user, S. Knoop, and J. M. Z¨ollner, “The future of
+parking: A survey on automated valet parking with an outlook on high
+density parking,” in 2017 IEEE Intelligent Vehicles Symposium (IV),
+2017, pp. 1827–1834.
+[20] V. Ranganeni, S. Chintalapudi, O. Salzman, and M. Likhachev, “Ef-
+fective footstep planning using homotopy-class guidance,” Artificial
+Intelligence, p. 103346, 2020.
+[21] A. Mandalika, O. Salzman, and S. Srinivasa, “Lazy receding horizon A*
+for efficient path planning in graphs with expensive-to-evaluate edges,”
+in Twenty-Eighth International Conference on Automated Planning and
+Scheduling, 2018.
+[22] D. Youakim, P. Cieslak, A. Dornbush, A. Palomer, P. Ridao, and
+M. Likhachev, “Multirepresentation, Multiheuristic A* search-based mo-
+tion planning for a free-floating underwater vehicle-manipulator system
+in unknown environment,” Journal of field Robotics, 2020.
+[23] S. Liu, K. Mohta, N. Atanasov, and V. Kumar, “Search-based motion
+planning for aggressive flight in se (3),” IEEE Robotics and Automation
+Letters, vol. 3, no. 3, pp. 2439–2446, 2018.
+[24] Z. Ajanovi´c, M. Stolz, and M. Horn, “A novel model-based heuristic
+for energy-optimal motion planning for automated driving,” IFAC-
+PapersOnLine, vol. 51, no. 9, pp. 255–260, 2018.
+[25] Z. Ajanovi´c, B. Lacevic, B. Shyrokau, M. Stolz, and M. Horn, “Search-
+Based Optimal Motion Planning for Automated Driving,” in 2018
+IEEE/RSJ International Conference on Intelligent Robots and Systems
+(IROS).
+IEEE, 2018, pp. 4523–4530.
+[26] Z. Ajanovi´c, E. Regolin, G. Stettinger, M. Horn, and A. Ferrara,
+“Search-Based Motion Planning for Performance Autonomous Driving,”
+in IAVSD Vehicles on Road and Tracks 2019, 2019.
+[27] Z. Ajanovi´c, E. Regolin, B. Shyrokau, H. ´Cati´c, M. Horn, and A. Ferrara,
+“Search-based task and motion planning for hybrid systems: Agile
+autonomous vehicles,” vol. 121, p. 105893.
+[28] S. Aine, S. Swaminathan, V. Narayanan, V. Hwang, and M. Likhachev,
+“Multi-Heuristic A*,” The International Journal of Robotics Research,
+vol. 35, no. 1-3, pp. 224–243, 2016.
+[29] B. Adabala and Z. Ajanovic, “A multi-heuristic search-based motion
+planning for autonomous parking,” in 30th International Conference on
+Automated Planning and Scheduling: Planning and Robotics Workshop.
+[30] J. Becker, M.-B. A. Colas, S. Nordbruch, and M. Fausten, “Bosch’s
+vision and roadmap toward fully autonomous driving,” in Road vehicle
+automation.
+Springer, 2014, pp. 49–59.
+[31] L. E. Dubins, “On curves of minimal length with a constraint on
+average curvature, and with prescribed initial and terminal positions and
+tangents,” American Journal of mathematics, vol. 79, no. 3, pp. 497–516,
+1957.
+[32] J. Reeds and L. Shepp, “Optimal paths for a car that goes both forwards
+and backwards,” Pacific Journal of Mathematics, vol. 145, no. 2, pp.
+367–393, 1990.
+[33] J. B. M. Melissen and P. C. Schuur, “Covering a rectangle with six
+and seven circles,” Discrete Applied Mathematics, vol. 99, no. 1-3, pp.
+149–156, 2000.
+[34] J. Ziegler and C. Stiller, “Fast collision checking for intelligent vehicle
+motion planning,” in 2010 IEEE intelligent vehicles symposium (IV
+2010), La Jolla, California, USA, 21-24 June 2010.
+Piscataway: IEEE,
+2010, pp. 518–522.
+[35] G. R¨oger and M. Helmert, “The more, the merrier: Combining heuristic
+estimators for satisficing planning,” in Twentieth International Confer-
+ence on Automated Planning and Scheduling, 2010.

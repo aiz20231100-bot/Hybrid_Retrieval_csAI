@@ -1,0 +1,2103 @@
+Memory Assignment for Finite-Memory Strategies
+in Adversarial Patrolling Games
+Vojtˇech K˚ur, V´ıt Musil, Vojtˇech ˇReh´ak
+Masaryk University, Brno, Czechia
+vojtech.kur@mail.muni.cz, {musil, rehak}@fi.muni.cz
+Abstract
+Adversarial Patrolling games form a subclass of Security
+games where a Defender moves between locations, guard-
+ing vulnerable targets. The main algorithmic problem is con-
+structing a strategy for the Defender that minimizes the worst
+damage an Attacker can cause. We focus on the class of finite-
+memory (also known as regular) Defender’s strategies that
+experimentally outperform other competing classes. A finite-
+memory strategy can be seen as a positional strategy on a fi-
+nite set of states. Each state consists of a pair of a location and
+a certain integer value–called memory. Existing algorithms
+improve the transitional probabilities between the states but
+require that the available memory size itself is assigned at
+each location manually. Choosing the right memory assign-
+ment is a well-known open and hard problem that hinders
+the usability of finite-memory strategies. We solve this issue
+by developing a general method that iteratively changes the
+memory assignment. Our algorithm can be used in connec-
+tion with any black-box strategy optimization tool. We eval-
+uate our method on various experiments and show its robust-
+ness by solving instances of various patrolling models.
+Code — https://gitlab.fi.muni.cz/formela/regstar
+Extended version — https://arxiv.org/abs/2505.14137
+Introduction
+This work follows the patrolling games line of work study-
+ing non–cooperative games where a mobile Defender guards
+resources against an Attacker. In adversarial patrolling
+(Vorobeychik, An, and Tambe 2012; Agmon, Kraus, and
+Kaminka 2008; Agmon et al. 2009; Basilico, Gatti, and
+Amigoni 2012, 2009; de Cote et al. 2013; Sless, Agmon,
+and Kraus 2019), the Attacker knows the Defender’s strategy
+and observes his locations. The solution concept is based on
+Stackelberg equilibrium. The Defender commits to a strat-
+egy σ, and the Attacker chooses a counter-strategy π that
+maximizes the expected Attacker’s utility against σ. Intu-
+itively, the value Val(σ) denotes the damage caused by the
+best Attacker, and the precise definition of Val depends on
+the underlying patrolling model.
+The environment where the agents play can be described
+by a Markov decision process. If the environment is not fully
+known, the problem becomes one of reinforcement learning,
+where the agent learns the strategy through interaction with
+the environment, using either model-free (e.g., Q-learning)
+or model-based (e.g., using a learned model to simulate out-
+comes) approaches. We focus on the cases when the environ-
+ment is fully known both to the Defender and the Attacker.
+An example of such an environment is an oriented graph that
+typically describes the topology of the terrain. This concept
+is also used in the domain of planning.
+Another aspect is the time frame in which the game is
+evaluated, which plays a critical role in shaping the agent’s
+behavior. We focus on an infinite-horizon model, where the
+Attacker can wait as long as needed to exploit the best op-
+portunity that maximizes the targets’ damage. This is espe-
+cially suitable for uninterrupted services where the Defender
+represents many consecutive patrol shifts or a robot that is
+expected to run for a long time.
+For general topologies, deciding whether there is a De-
+fender’s strategy with null expected damage is PSPACE-
+complete(Ho and Ouaknine 2015). Additionally, deciding
+whether there is a strategy with at most ε expected dam-
+age is NP-hard (Klaˇska, Kuˇcera, and ˇReh´ak 2020) (where
+ε ≤1/2n and n is the number of vertices). Therefore, no
+polynomial algorithm can guarantee (sub)optimality in gen-
+eral (unless P = NP). Hence, finding suitable heuristics ap-
+plicable to real-world scenarios is of great importance.
+Prior works focus on constructing positional strategies
+where the Defender makes a randomized choice of the next
+location based only on the current location (Basilico, Gatti,
+and Amigoni 2012; Alpern et al. 2022; Basilico, Nittis, and
+Gatti 2017; Collins et al. 2013). However, positional strate-
+gies fail to provide optimal protection even in a simple set-
+ting; see Figure 3 or (Kuˇcera and Lamser 2016).
+To increase the strategy expressivity, Kuˇcera and Lamser
+(2016) introduced a class of regular strategies, where the
+Defender is equipped with a suitable finite-state automaton.
+In each location, the distribution over the next locations is
+determined by the state of the automaton after feeding it
+with the current history of locations. The authors proved
+that regular strategies offer better protection than window-
+based strategies, which generalize positional strategies by
+considering the last k locations. They also present a strat-
+egy synthesis algorithm for regular strategies. However, this
+approach’s main limitation is that the finite-state automaton
+must be supplied manually to achieve strong strategies.
+The idea of regular strategies was followed by finite-
+arXiv:2505.14137v2  [cs.AI]  20 Apr 2026
+
+
+memory strategies where the finite-state automaton is ab-
+stracted into finite integer memory denoted M (Klaˇska et al.
+2018). The Defender chooses the new location based on the
+current location and memory value and also selects (possibly
+randomly) the new memory value.
+Finite-memory strategies can also be seen as positional
+strategies on the set of states consisting of the pairs of the
+location and a memory integer between 1 and M. In this
+view, the state space increases dramatically, limiting the
+usability and performance of optimization algorithms. In
+fact, the size of the memory does not necessarily need to
+be the same in each location, i.e., the states can be set as
+C = {(v, i) | v ∈V, 1 ≤i ≤mem(v)}, where V is a set of
+locations and mem: V →N is certain memory-assignment
+function.
+Recent works provide well-performing optimization al-
+gorithms for finite-memory strategies and various patrolling
+models (Klaˇska et al. 2018, 2021; Br´azdil et al. 2022; Klaˇska
+et al. 2022). However, they all assume that a suitable mem-
+ory assignment is given as an input. Currently, this is the
+main bottleneck of these algorithms, and the results depend
+heavily on the choice of mem.
+All the published experiments either use uniform memory
+assignment with increasing M (that hits the limits of the al-
+gorithms already for M ≲10) or use carefully handcrafted
+assignment mem based on the expert knowledge of the prob-
+lem at hand. To the best of our knowledge, no approach au-
+tomates memory assignment for general topologies. Klaˇska
+et al. (2021) state that choosing the optimal set of states is
+an open and hard problem. We demonstrate the problem of
+optimal memory assignment in Example 1 below.
+Example 1
+Consider a graph where three target vertices
+v1, v2, v3 are connected to a central vertex X, forming a star
+topology.
+Assume that moving along any edge takes 1 time unit, and
+each target requires 6 time units to complete an attack. The
+Defender uses a patrolling strategy that cycles through the
+targets in the sequence:
+v1 →X →v2 →X →v3 →X →v1.
+Since the length of this cycle is 6, the patrol takes 6 time
+units to complete. This way, the Defender reaches each tar-
+get within the attack duration and can thus intercept any on-
+going attack in time.
+However, this strategy is not positional since the De-
+fender’s decision at X depends on the history. We can model
+this behavior as a finite-memory strategy, where the De-
+fender must maintain three distinct internal states at X, de-
+noted X1, X2, X3, resulting in the sequence:
+v1 →X1 →v2 →X2 →v3 →X3 →v1.
+Now suppose that the attack duration of v1 is 4 and the
+attack durations of v2 and v3 are 8. The original strategy is
+no longer good, since an observing and patient Attacker can
+wait for the moment when the Attacker moves from v1 to X
+and initiate an attack on v1. Since the Defender will return
+to v1 after 6 time units, the attack will be completed.
+X
+v1
+v2
+v3
+d(v1) = 6
+d(v2) = 6
+d(v3) = 6
+(a)
+X
+X X
+v1
+v2
+v3
+optimal strategy σ1
+X
+v1
+v2
+v3
+d(v1) = 4
+d(v2) = 8
+d(v3) = 8
+(b)
+X
+X
+X
+X
+v1
+v1
+v2
+v3
+optimal strategy σ2
+Figure 1: The optimal deterministic strategies require differ-
+ent memory allocations. The goal is to patrol a graph (a) with
+three targets and an internal location M. It takes d = 6 time
+units to complete an attack on each target. The optimal strat-
+egy is to cycle around the graph since the cycle’s length is
+6. This is represented as σ1, which requires 3 different states
+at M. In (b), the attack durations change. The strategy σ2
+achieves perfect protection since v1 is always visited every
+4 steps, and both v2 and v3 are visited once on the cycle of
+length 8. Strategy σ2 needs 4 states in M and 2 states in v1.
+In this case, the optimal strategy returns to v1 after each
+visit of v2 and v3, resulting in a sequence:
+v1 →X →v2 →X →v1 →X →v3 →X →v1.
+Here, the Defender needs two different states for v1 and 4
+for X. Both settings and their respective optimal strategies
+are visualized in Figure 13.
+Discussion. This example demonstrates the difficulty of
+choosing the optimal memory assignment. It shows that the
+minimal optimal set of states does not solely depend on the
+topology but differs based on particular properties of the tar-
+gets. Moreover, memory may serve purposes beyond merely
+remembering the last visited vertex; it can capture more
+complex patterns in the Defender’s behavior.
+Our Contribution
+We propose a smart general heuristic algorithm that dy-
+namically adjusts the memory assignment for finite-memory
+strategies without any expert knowledge. Our method works
+with any differentiable value function and any black-box
+strategy optimization tool. In combination, our memory as-
+signment algorithm, together with any strategy synthesis al-
+gorithm, yields a general and fully automated method for a
+strong finite-memory Defender’s strategy.
+We evaluate our method on several benchmarks and for
+various patrolling models. Our automated approach outper-
+forms the manual memory assignment when mem is chosen
+
+
+to be uniform with increasing M in nearly all cases. Fur-
+thermore, our method is on par with expertly handcrafted
+memory assignments.
+Related Work
+This work contributes to the field of security games, which
+focuses on the optimal allocation of limited security re-
+sources to achieve effective target coverage, see mono-
+graph (Tambe 2012). Patrolling games are a specialized type
+of security games where the Defender is mobile; see survey
+works (Huang et al. 2019; Almeida et al. 2004; Portugal and
+Rocha 2011; Basilico 2022). Most existing patrolling mod-
+els can be categorized as either regular or adversarial.
+Regular patrolling (Afshani et al. 2021; Hari et al. 2021;
+Farinelli, Iocchi, and Nardi 2017) is akin to surveillance,
+where the Defender’s goal is to quickly discover incidents
+by minimizing the time between consecutive visits to each
+target. In this model, the Defender typically employs a strat-
+egy involving a single path or cycle that visits all targets.
+In contrast, adversarial patrolling (Vorobeychik, An, and
+Tambe 2012; Agmon, Kraus, and Kaminka 2008; Agmon
+et al. 2009; Basilico, Gatti, and Amigoni 2012, 2009;
+de Cote et al. 2013; Sless, Agmon, and Kraus 2019; Basilico
+2022) focuses on protecting targets from an Attacker who
+seeks to exploit the best opportunities to maximize damage.
+This model is generally framed within the context of Stack-
+elberg equilibrium (Yin et al. 2010; Sinha et al. 2018). The
+Defender’s strategies are often randomized to prevent the
+Attacker from predicting future moves, and the Defender
+aims to maximize the probability of detecting an attack.
+The adversarial approach is particularly relevant in scenar-
+ios where a certain level of protection must be maintained,
+even if incidents occur at the most inconvenient times.
+For patrolling scenarios of bounded duration, such as an
+eight-hour shift of a human ranger, finite-horizon models are
+sufficient. In contrast, infinite-horizon models are used when
+the duration is potentially unbounded or the bound is large,
+like 24/7 surveillance.
+The model can also be distinguished by prior knowledge
+about the environment, which can be either fully known to
+all players or needs to be discovered during patrolling.
+The difference between models has a substantial impact
+on strategy synthesis techniques. For finite horizon mod-
+els with known environments, mathematical programming is
+the primary technique (Basilico, Gatti, and Amigoni 2012,
+2009). Reinforcement learning has been largely successful
+for patrolling scenarios with a finite horizon and unknown
+environment, such as green security games (Wang et al.
+2019; Biswas et al. 2021; Xu 2021; Karwowski et al. 2019).
+Gradient descent methods for finite-memory strategies are
+used extensively for infinite horizon models with known en-
+vironments (Klaˇska et al. 2018, 2021; Br´azdil et al. 2022;
+Klaˇska et al. 2022).
+Practical applications of security games include the de-
+ployment of police checkpoints at Los Angeles International
+Airport (Pita et al. 2008), the scheduling of federal air mar-
+shals on domestic airline flights across the U.S. (Tsai et al.
+2011), and the strategic arrangement of city guards in the
+Los Angeles Metro (Fave et al. 2014), positioning of U.S.
+Coast Guard patrols to secure critical locations (An et al.
+2012), as well as the initiatives for wildlife protection in
+Uganda (Ford et al. 2014).
+Background
+First, we recall the standard notions of a patrolling graph,
+the Defender’s and Attacker’s strategy, and their value, and
+we fix the notation. Then, we formulate the requirements of
+our algorithm for the underlying patrolling model and show
+how existing patrolling models fit our framework. We as-
+sume familiarity with basic notions of calculus, linear alge-
+bra, probability theory, and finite-state discrete-time Markov
+chains.
+Patrolling Graph
+A patrolling graph is a tuple G = (V, T, E, time), where V
+is a non-empty set of locations (admissible Defender’s posi-
+tions), T ⊆V is a non-empty set of targets, E ⊆V ×V is a
+set of edges (admissible Defender’s moves) and time : E →
+N specifies the traversal time of an edge.
+Defender’s Strategy
+In general, the Defender can choose the next location ran-
+domly based on the whole history of previously visited lo-
+cations. However, general strategies may not be finitely rep-
+resentable. We focus on finite-memory Defender’s strate-
+gies, which were shown to achieve the same limit protection
+as general strategies in two different patrolling models; see
+(Klaˇska et al. 2021) and (Klaˇska et al. 2022).
+In finite-memory strategies, the Defender is equipped
+with an integer variable M called memory. A state of the
+Defender is a pair (v, i) ∈V × N. A finite-memory strategy
+of the Defender can be seen as positional on a fixed finite
+set of states, i.e., it forms a discrete-time Markov chain on
+V × N.
+To prevent the state space from blowing up, different
+amounts of memory can be allocated to each location.
+Hence, we define the memory assignment as a function
+mem: V →N and a set of Defender’s states
+C = {(v, i) | v ∈V, 1 ≤i ≤mem(v)}.
+(1)
+A finite-memory strategy of the Defender on V is a posi-
+tional strategy on C, i.e., a function σ: C × C →[0, 1] sat-
+isfying P
+y∈C σ(x, y) = 1, for each x ∈C, and (u, v) ∈E,
+whenever σ((u, i), (v, j)) > 0. Intuitively, if the Defender
+is currently in a location u with a memory value i, the next
+state (v, j) is chosen with probability σ((u, i), (v, j)), which
+means that the Defender changes the memory value to j and
+starts traveling from u to v. The second condition ensures
+that the strategy respects the edges of the graph.
+For every finite sequence of states h = (c1, . . . , cn), we
+use Pσ,c[h] to denote the probability of executing h when
+the Defender starts patrolling in the state c ∈C and follows
+the strategy σ. That is, Pσ,c[h] = 0 if c1̸ = c, and Pσ,c[h] =
+Qn−1
+i=1 σ(ci, ci+1) otherwise.
+
+
+Strategy Types
+If mem ≡1, then we say that σ is posi-
+tional on V or memoryless. If for every state x there is a state
+y such that σ(x, y) = 1, then we say that σ is deterministic.
+Note that σ can be both memoryless and deterministic.
+Attacker’s Strategy
+In the patrolling graph, the time is spent traversing the edges.
+In adversarial models, the Attacker is assumed to perfectly
+observe the Defender’s moves and can determine the next
+edge taken by the Defender immediately after its departure.
+For the Attacker, this is the best moment to attack because
+delaying the attack could only lower the attack’s gain. Fur-
+thermore, the Attacker is allowed to attack only once in a
+single run.
+An
+observation
+is
+a
+sequence
+of
+states
+o
+=
+(c1, · · · , cn, cn+1). Intuitively, c1 is the initial state of
+the Defender, cn is the current state of the Defender,
+and cn+1 is the state chosen as the next one according
+to the Defender’s strategy. The set of all observations is
+denoted by Ω. Formally, an Attacker’s strategy is a function
+π: Ω→T ∪{wait}. Since the Attacker is allowed to attack
+only once, it is required that if π(o) ∈T, then π(o′) = wait
+for every prefix o′ of o.
+Protection Value and Target Types
+Let σ be a finite-memory Defender’s strategy and π an
+Attacker’s strategy. Let us fix an initial state c where the
+Defender starts patrolling. The expected damage the At-
+tacker causes by attacking τ after observing o is denoted
+as D(o, τ | σ). We will now present some examples of the
+definition of the value D(o, τ | σ).
+Hard-constrained targets
+One way of defining the dam-
+age on targets is to model a scenario where the Attacker
+needs to perform some action (e.g. picking a lock) to suc-
+cessfully complete an attack. If the target is visited in time,
+the Defender ‘catches’ the Attacker, and the damage is zero.
+Otherwise, the Attacker ‘steals’ the cost of the target. Here,
+d(τ) denotes the time it takes to complete an attack on τ
+and α(τ) its cost. The value D(o, τ | σ) is then defined as
+the probability that the Defender does not visit τ in the next
+d(τ) time units multiplied by α(τ). We call this type of tar-
+get hard-constrained. Within the context of finite-memory
+strategies, this model was first introduced by (Klaˇska et al.
+2018) and later used in (Klaˇska et al. 2021; Br´azdil et al.
+2022).
+Blind targets
+The hard-constrained model can be ex-
+tended by introducing a level of uncertainty where the on-
+going attack is discovered only with probability β(τ) upon
+each visit of the target. We call these targets blinded and ap-
+pear in (Klaˇska et al. 2021; Br´azdil et al. 2022).
+Linear targets
+Another target type models a situation
+where the actual damage depends on the time elapsed since
+initiating the attack till the Defender’s visit, e.g., a fire or
+punching a hole in a fuel tank. Here, the target τ is assigned a
+value v(τ), which denotes the damage caused for every time
+unit while the target is under attack. Hence, the expected
+damage D(o, τ | σ) equals the expected time it takes to visit
+τ multiplied by v(τ). If the probability of visiting τ after o
+is zero, then D(o, τ | σ) = ∞. We call this type of targets
+linear. It was introduced in (Klaˇska et al. 2022).
+Game Value
+The expected damage caused by the Attacker is defined as
+Val(σ, c, π) =
+X
+o∈Ω,π(o)∈T
+Pσ,c[o] · D(o, π(o) | σ).
+(2)
+The Defender/Attacker aims to minimize/maximize the
+damage, and hence, we define
+Val(σ) = min
+c∈C Val(σ, c) = min
+c∈C sup
+π Val(σ, c, π) .
+(3)
+By Val(G), we denote the limit value of the best De-
+fender’s strategy or formally Val(G) = infσ Val(σ).
+Requirements on the Patrolling Model
+For our algorithm, we require two properties of the underly-
+ing patrolling model.
+Let σ be a Defender’s strategy and let BSCC(σ) denote
+all subsets of states corresponding to bottom strongly con-
+nected components of the Markov chain determined by σ.
+For every B ∈BSCC(σ), let us denote by Val(σ | B) the
+value
+max
+τ∈T,e∈B×B,σ(e)>0 D(e, τ | σ).
+Our first requirement is that Val(σ) can be expressed as
+Val(σ) =
+min
+B∈BSCC(σ) Val(σ | B).
+(4)
+Note that if σ is irreducible, then Val(σ) = Val(σ | C).
+Secondly, given a state space C, we require that for every
+e ∈C×C and τ ∈T the value D(e, τ | σ) can be effectively
+calculated, and that D(e, τ | σ) is a differentiable function
+with respect to σ whose gradient can also be evaluated.
+The proofs that hard-constrained, blinded, and linear tar-
+gets are eligible for our general framework are provided in
+the works where they were presented. In general, it can be
+seen that a sufficient condition for (4) is that the damage to
+the targets depends only on the current state and the future.
+That is, for every observation o = (c1, . . . , cn, cn+1) and
+target τ, it holds
+D(o, τ | σ) = D
+ (cn, cn+1), τ | σ
+
+.
+(5)
+See the Extended Version for a proof.
+The Method
+Here, we describe our method for solving the problem of
+choosing a suitable memory assignment. Our method works
+with any black-box optimization tool that improves the tran-
+sitional probabilities and with any patrolling model that fits
+our general framework. Recall that the algorithms intro-
+duced in (Klaˇska et al. 2021; Br´azdil et al. 2022; Klaˇska
+et al. 2022; Klaˇska et al. 2018) are eligible instances of such
+black-boxes.
+The algorithm is initialized with the memory assignment
+mem1 that assigns 1 to each location. That is, we start with a
+
+
+Patrolling Model
+Strategy
+Optimization
+Adjust
+Memory
+mem1 ≡1
+memi+1
+σi, memi
+Figure 2: Diagram of our method. We iteratively run a strat-
+egy optimization black-box followed by our ADJUSTMEM-
+ORY procedure that updates the memory assignment.
+A
+X
+B
+(a)
+d(A) = 4
+d(B) = 4
+A
+X
+B
+pA
+pB
+(b)
+positional
+strategy
+optimal for
+pA = pB = 1
+2
+A
+B
+X
+X
+(c)
+optimal
+finite-memory
+strategy
+Figure 3: Patrolling on a graph (a) with three locations. End
+locations represent targets with costs of 1 and attack lengths
+equal to 4. Positional strategies (b) are parametrized by a
+single variable p. Due to symmetry, the optimality is reached
+for p = 0.5. The optimal strategy (b) is deterministic and
+needs two states in X.
+memoryless strategy. Then, we run the optimization tool and
+collect the resulting strategy σ1. From this, we run the core
+procedure ADJUSTMEMORY that outputs a new assignment
+mem2. The memory assignment mem2 is then used for ini-
+tialization for the tool, and we collect a new strategy σ3. This
+process continues for as long as the strategy value improves,
+see Figure 2.
+Attacks Profiles
+Now, we describe the core procedure ADJUSTMEMORY of
+our algorithm that decides how much memory should be
+added to which location. Intuitively, the procedure estimates
+the number of different ‘behaviors’ of each state that, on
+their own, could improve the current value.
+Let us illustrate the idea with a simple example. Con-
+sider a patrolling graph depicted in Figure 3 with two tar-
+gets A and B that are hard-constrained with d = 4 and
+α = 1. We start with mem = 1. The state space is C =
+{(A, 1), (X, 1), (B, 1)}. For brevity, let us write v for (v, 1)
+since the memory value is constant. In this example, from
+the end locations A and B, the Defender always returns to
+X, and hence the strategy depends only on complementary
+probabilities σ(X, A) and σ(X, B), which we denote by pA
+and pB, for short.
+The best moment to attack A is when the Defender starts
+traversing from X to B. Then the probability of not vis-
+iting A in d(A) = 4 time units is exactly pB and hence
+D((X, B), A | σ) = pB. Analogically, the best mo-
+ment to attack B is when the Defender starts traversing
+from X to A and D((X, A), B | σ) = pA. The value
+Val(σ) is then the maximum of both the attack values,
+i.e. Val(σ) = max{pA, pB} which is minimized when
+σ(X, A) = σ(X, B) = 0.5 with Val(σ) = 0.5.
+We have reached the optimal value of positional strate-
+gies, and the question is whether the Defender can do bet-
+ter. The answer is positive since a finite deterministic strat-
+egy that moves from one end to the other and back repre-
+sents a cycle of length 4. Hence, every attack is discovered
+in time, achieving the optimal value 0. This strategy can be
+represented by a finite-memory strategy on memory assign-
+ment memdet with memdet(X) = 2 and memdet(A) =
+memdet(B) = 1.
+In practice, a reasonable optimization tool should output
+a strategy close to σ. Now, the key question is how to in-
+fer memdet from σ. The idea is to consider gradients of all
+the maximal attacks w.r.t. the parameters of strategy σ. Any
+strategy σ can be modeled as Softmax of unconstrained pa-
+rameters. In our example, we need just two real parameters,
+say (xA, xB), so that
+Softmax(xA, xB) = (pA, pB).
+Using the chain rule, the partial derivatives of the maximal
+attacks w.r.t. the parameters xA, xB are
+∂D
+ (X,B),A|σ
+
+∂xA
+= −pApB
+and
+∂D
+ (X,B),A|σ
+
+∂xB
+= pApB
+and
+∂D
+ (X,A),B|σ
+
+∂xA
+= pApB
+and
+∂D
+ (X,A),B|σ
+
+∂xB
+= −pApB.
+We can see that the problem lies in the fact that for the at-
+tack on A, the gradient of the parameters is (up to a scale)
+(−1, 1), while for the attack on B it is (1, −1), which is in
+the exact opposite direction. Hence, the value can no longer
+improve since the competing gradients ‘cancel each other
+out’. This is exactly the place where we need to add a more
+memory value for X, one memory value to prioritize B (if
+the previous location was A) to cover the attack on B, and
+the second memory value to go to A (if the previous location
+was B) in order to cover the attack on A.
+Formally, we fix a set of eligible attacks E ⊆(C×C)×T,
+corresponding to the attacks with close to maximal value.
+For an attack (e, τ) ∈E and a state c ∈C, we consider
+the gradient of the attack value with respect to the outgoing
+probabilities of c
+∇σD(e, τ | σ) =
+∂D(e, τ | σ)
+∂σ(c, c1) , . . . , ∂D(e, τ | σ)
+∂σ(c, cn)
+
+,
+(6)
+where c1, . . . , cn are all the states with σ(c, ci) > 0. As-
+suming that the strategy probabilities are parametrized by
+the Softmax of x(c) = (x1, . . . , xn), the gradient of the at-
+tack value with respect to the strategy parameters is given
+by
+∇x(c)D(e, τ | σ) =
+  ∂D
+∂x1 , . . . , ∂D
+∂xn
+
+= JT ·∇σD(e, τ | σ),
+where J is the Jacobian of the Softmax. The attack profile of
+(e, τ) and c is then the sign of this vector ∇x(c)D(e, τ | σ).
+We define profiles to be a function that assigns each state c
+
+
+the set of all (different) attack profiles belonging to c from
+E. Formally,
+profiles(c) = {sign(∇x(c)D(e, τ | σ)) | (e, τ) ∈E}.
+The new memory assignment mem2 is then defined as
+mem2(v) =
+X
+1≤i≤mem1(v)
+|profiles(v, i)|.
+(7)
+The whole process is also described in the Algorithm 1.
+Theoretically, a locally optimal strategy implies the ex-
+istence of multiple maximal attacks with identical values
+(conflicting gradients). However, since numerical optimiza-
+tion tools may converge to solutions where these values dif-
+fer, the threshold ε ensures we capture all relevant attacks
+that should be driving the gradient descent. We have exper-
+imentally found that ε = 0.25 reliably incorporates all such
+maximal attacks across different patrolling graphs while sig-
+nificantly reducing computation time.
+Bounded Number of States
+We also introduce a modification of our method for the cases
+when the total number of states is bounded above by L.
+Bounding the maximal number of states of the strategy may
+be both desired by the user (memory of a robot) and the
+whole optimization process (algorithms run very slowly for
+strategies with a high number of states).
+Assume we have an upper bound L ≥|V | on the number
+of states for each σi. Let the current memory assignment
+be mem1 and σ. We run ADJUSTMEMORY and collect the
+resulting mem2 and attack profiles. If P
+v mem2(v) ≤L,
+we simply output mem2. Otherwise, for each attack profile,
+we sum the total value of the attacks with the given profile.
+That is, for each state c and an attack profile γ ∈profile(c),
+we define the value of γ as
+val(γ, c) =
+X
+(e,τ)∈E
+sign(∇x(c)D(e,τ|σ))=γ
+D(e, τ | σ).
+Then, the idea is to take L profiles with the highest value,
+ensuring every state has at least one profile. The memory is
+then calculated in the same way as in the unbounded version.
+Formally, let profiles′(c) be the set of profiles of c, ex-
+cluding one with maximal value (it does not matter which
+one). This is valid since every state must have a profile with
+an attack of maximal value. Then we flatten all the attack
+profiles into a single set P = S
+c{(γ, c) | γ ∈profiles′(c)}.
+After that, we take the L −|C| highest items from P where
+the order is given first by val and secondly by the order on
+the states (if more profiles of the same state have the same
+value, the order does not matter). Let us denote by #(c) the
+number of occurrences of a state c among the L −|C| maxi-
+mal items of P. Finally, the new memory assignment mem2
+is
+mem2(v) =
+X
+1≤i≤mem1(v)
+1 + #(v, i).
+Complexity Analysis
+Here, we describe the complexity analysis of our method, its
+bounded variation and strategy expansion.
+Algorithm 1: Core procedure of our method.
+Function AdjustMemory(σ, mem, ε):
+Define x(c)(ci) to be log(σ(c, ci))
+foreach c ∈C do
+profiles(c) ←∅
+foreach e ∈C × C, τ ∈T do
+if D(e, τ | σ) < (1 −ε) Val(σ) then
+continue
+foreach c ∈C do
+profile ←sign(∇x(c)D(e, τ | σ))
+Add profile to profiles(c)
+foreach v ∈V do
+mem′(v) ←0
+for i ←1 to mem(v) do
+mem′(v) ←mem′(v) + |profiles(v, i)|
+return mem′
+Algorithm 1
+The time complexity of Algorithm 1 is in
+O(f + |E|g + |E|2|C|2)
+where f is such that the values of all attacks are calcu-
+lated in O(f) and g is such that for each attack, the gradients
+with respect to the parameters are evaluated in O(g). Next,
+|E| denotes the number of state edges such that its traversal
+probability is positive, and finally, |E| denotes the number of
+attacks taken into account.
+Bounded case
+Let M = P
+v mem2(v). If M ≤L, then
+the algorithm is the same as the normal case. Otherwise, we
+claim that in runs in
+O (|C||E| + (M −|C|) log(L −|C|)) .
+See the Extended Version for proofs. In practice, however,
+the evaluation for hard-constrained and blinded was faster
+than for linear. This is primarily because the first algorithm’s
+core procedure is implemented in C++ with a dynamic pro-
+gram and uses a sparse representation of the strategy, unlike
+the second, which is in PyTorch and uses full matrices. In
+both cases, the actual bottleneck was in calculating the gra-
+dients.
+Warm-starting
+Some optimization tools enable us to warm-start the process
+instead of always starting from random parameters. In the
+Extended Version, we present a way to transform a strategy
+σi on memi to σi+1 on memi+1. However, we conclude that
+this does not provide a significant advantage, and we omit
+this extension from the experiments presented here.
+Experiments
+We evaluate our memory assignment method in a series of
+experiments with the best-performing algorithm for hard-
+constrained and blind targets of (Br´azdil et al. 2022) and the
+algorithm for linear targets of (Klaˇska et al. 2022). We cre-
+ated a unified Python project containing all compatible state-
+of-the-art algorithms with existing relevant benchmarks. The
+
+
+0
+20
+40
+60
+80
+time (s)
+0.00
+0.25
+0.50
+0.75
+1.00
+1.25
+1
+2
+3
+4
+5
+6
+7
+8
+deg
+auto
+Best Value ↓(normalized)
+Figure 4: Values over time of the best performing strate-
+gies (out of 200 restarts) on one-floor Offices. The values
+are normalized by the value of the best memoryless strategy,
+optimum is zero. Uniform memory below 4 cannot achieve
+optimum; higher memory gets zero but significantly later as
+the memory increases. Both Expert (deg) and Automatic
+(auto) outperform the uniform assignment.
+repository will be publicly released (preliminarily, see the
+Extended Version).
+We also test the manual assignment deg that sets mem(v)
+to the out-degree of v. This is precisely the memory needed
+when an Eulerian cycle forms the optimal strategy. This
+memory was expertly handcrafted by the authors (Klaˇska
+et al. 2022) for their experiments.
+We compare uniform memory assignments (denoted by a
+single number) with the degree assignment (deg), and our
+automatic method (auto). We ran experiments on three pa-
+trolling models/target types (hard-constrained, blind, linear)
+on over 50 different patrolling graphs (Offices, Building,
+Airports, Terrains, Stars).
+For each setting, we executed 200 runs with a timeout of
+180 seconds to get reliable statistical information. The num-
+ber of states is bounded by 300. Recall that the whole pro-
+cedure is stochastic as the optimization starts from a random
+init and may also contain non-deterministic updates.
+Here, we present only a fragment of our experiments to
+highlight our key observations and limitations. The broader
+summary is in Section . The full report, detailed setup, and
+reproducibility steps can be found in the Extended Version.
+Offices
+This benchmark comes from (Klaˇska et al. 2021).
+The goal is to patrol office buildings with 1, 2, or 3 floors.
+The offices are designed so that an Eulerian cycle is the opti-
+mal strategy. The maximum degree is 4; hence, the uniform
+memory must be at least 4 to achieve optimum. Figure 4
+shows the optimization dynamics on 1 floor and Figure 5
+reports the values of strategies for offices on 2 floors.
+Building
+(Klaˇska et al. 2021) also used the same topology
+as Offices to evaluate the synthesis of blinded targets. We
+recreate this benchmark, and the results can be found in the
+Extended Version.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Value ↓(normalized)
+Figure 5: Comparison of memory assignments on the Of-
+fices benchmark (2 floors). Statistics are over 200 restarts.
+Uniform mem = 4 is sufficient for the optimal strategy, but
+never found for any of the uniform within the timeout. Both
+Expert (deg) and Automatic (auto) memory assignments
+lead to the optimum.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto
+2
+4
+6
+8
+10
+Value ↓(normalized)
+Figure 6: Comparison of memory assignments on the Air-
+port with 19 halls. The values are normalized by the value
+of the baseline (Eulerian cycle requiring degree memory).
+Uniform memory (for mem = 4) is sufficient to meet the
+Expert (deg) assignment. This is one of the rare examples
+where the Automatic (auto) assignment lags behind.
+Airports
+This benchmark originated from (Klaˇska et al.
+2022). The goal is to patrol airport gates. An airport with n
+halls has 3n + 1 nodes, from which 2n are linear targets.
+In Figure 6, we report the distribution of strategy values for
+n = 19. We also ran the benchmark with random target val-
+ues sampled uniformly and independently between 1 and 10.
+Stars
+We introduce a new benchmark on star-shaped
+graphs, where the targets and the attack lengths are chosen
+so that the optimal strategy requires a nontrivial amount of
+memory. The graph is parametrized by a number of groups
+k ranging from 1 to 5. A graph with k groups has k + 2
+vertices. In Figure 7, we report the statistics for k = 3.
+Terrains
+Another new benchmark consists of randomly
+generated connected planar graphs that model open terrains.
+The nodes are randomly generated on a plane, triangulated,
+connected by the minimum spanning tree, and each edge
+from triangulation is added with a probability of 0.5. We
+
+
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0 Value ↓(normalized)
+Figure 7: Comparison of memory assignments for the Star
+experiment with 3 groups. The values are normalized by
+the value of the best memoryless strategy found, optimum
+is zero. The optimal strategy requires more than a degree
+amount of memory. Automatic assignment achieves opti-
+mum consistently.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto
+0.8
+1.0
+1.2
+1.4 Value ↓(normalized)
+Figure 8: Comparison of memory assignments for the Ter-
+rains experiment with size n = 33. The values are normal-
+ized by a baseline (the best deterministic strategy). Larger
+memory does not help here. Degree assignment causes the
+state space to be too large, and well-performing strategies
+are not found.
+run the experiments with the odd number of nodes n rang-
+ing from 3 to 41. Figure 8 shows the statistics for n = 33.
+Discussion
+Failure of uniform
+We observe that uniform memory as-
+signments are rarely optimal. Oftentimes, more memory is
+needed, and low values of M achieve poor results. In the-
+ory, if there is an optimal finite-memory strategy, then a high
+enough uniform assignment suffices. The authors of (Klaˇska
+et al. 2021) state that the probability of finding the optimal
+strategy increases with M in the Offices benchmark. We ver-
+ify this, but higher M also significantly increases the state
+space and the time needed to find the optimal strategy (see
+Figure 4).
+Therefore, within a fixed timeout, these two competing
+aspects (sizes of M and state space) create a convex-shaped
+dependency on M, where the lowest values may or may not
+hit the optimum (cf. Figures 6 and 5). The behavior is hard
+to predict without intensive testing, making the uniform as-
+signment impractical.
+We can conclude that the distribution of memory states
+matters. Degree assignment proved to be a simple heuris-
+tic that often yields superior results. Automatic assignment
+achieves better or comparable results than uniform in almost
+all cases.
+Limitations of degree
+For Offices and Airport bench-
+marks, degree memory assignment produced the best results.
+However, it scales poorly when it adds too much memory
+(Terrains, Building), see Figure 8. On the opposite, it may
+provide an insufficient amount of memory, see Figure 7.
+While it is a good heuristic for smaller graphs with a small
+maximal degree, it may achieve poor results on big or highly
+connected graphs or in cases when the optimal strategy re-
+quires more information than remembering the next vertex.
+Robustness of auto
+Our proposed automatic assignment
+achieves high robustness across all the experiments. This
+heuristic enables the user to fully utilize the power of the
+synthesis tool. On the one hand, we can push the tool to
+find complex strategies requiring memory (Offices, Airports,
+Stars). On the other hand, we keep memory low if it is not
+needed, enabling the tool to converge to a high-quality strat-
+egy (Terrains). Our method also scales well (Building).
+A notable exception is the slight under-performance on
+the Airport benchmark, where for larger graphs, our auto-
+matic method achieves worse results than deg, see Figure 6.
+The reason is that this benchmark uses linear targets whose
+objective function is not bounded, and the convergence of
+positional strategies is slow.
+We hypothesize that modifying the linear objective so that
+it is bounded would lead to better performance of auto,
+even for larger graphs. The advantage of our approach is that
+our heuristic would be usable for this modification as well.
+Conclusion
+An automatic and robust memory assignment tool was a
+missing part of up-to-date, promising strategy synthesis
+techniques. Our tool enables users and experts to fully utilize
+the power of the synthesis tools.
+We proposed an automatic memory assignment method
+for patrolling problems and compared it against uniform and
+expert, degree-based assignments. Our experiments across
+diverse benchmarks showed that our automatic method out-
+performed uniform memory in nearly all cases, offering ro-
+bust and scalable performance.
+Our approach provides a versatile and novel heuristic that
+is independent of the underlying optimization algorithms
+and objectives, making it applicable to a wider class of
+patrolling-type problems and new optimization techniques.
+Acknowledgments
+Vojtˇech ˇReh´ak is supported by the Czech Science Founda-
+tion, grant No. 26-23441S.
+
+
+References
+Afshani, P.; de Berg, M.; Buchin, K.; Gao, J.; L¨offler, M.;
+Nayyeri, A.; Raichel, B.; Sarkar, R.; Wang, H.; and Yang, H.
+2021. Approximation Algorithms for Multi-Robot Patrol-
+Scheduling with Min-Max Latency.
+In Proceedings of
+WAFR 2021, volume 17 of Springer Proceedings in Ad-
+vanced Robotics, 107–123. Springer.
+Agmon, N.; Kraus, S.; and Kaminka, G. A. 2008. Multi-
+robot perimeter patrol in adversarial settings. In Proceedings
+of 2008 IEEE International Conference on Robotics and Au-
+tomation, 2339–2345. IEEE.
+Agmon, N.; Kraus, S.; Kaminka, G. A.; and Sadov, V. 2009.
+Adversarial Uncertainty in Multi-Robot Patrol. In Proceed-
+ings of IJCAI 2009, 1811–1817.
+Almeida, A.; Ramalho, G. L.; Santana, H.; Tedesco, P. A.;
+Menezes, T.; Corruble, V.; and Chevaleyre, Y. 2004. Recent
+Advances on Multi-agent Patrolling. In Proceedings of SBIA
+2004, volume 3171 of Lecture Notes in Computer Science,
+474–483. Springer.
+Alpern, S.; Chleboun, P.; Katsikas, S.; and Lin, K. Y. 2022.
+Adversarial Patrolling in a Uniform. Oper. Res., 70(1): 129–
+140.
+An, B.; Shieh, E.; Tambe, M.; Yang, R.; Baldwin, C.; Di-
+Renzo, J.; Maule, B.; and Meyer, G. 2012. PROTECT - A
+Deployed Game Theoretic System for Strategic Security Al-
+location for the United States Coast Guard. AI Mag., 33(4):
+96–110.
+Basilico, N. 2022. Recent Trends in Robotic Patrolling. Cur-
+rent Robotics Reports, 3(2): 65–76.
+Basilico, N.; Gatti, N.; and Amigoni, F. 2009.
+Leader-
+follower strategies for robotic patrolling in environments
+with arbitrary topologies. In Proceedings of AAMAS 2009,
+57–64. IFAAMAS.
+Basilico, N.; Gatti, N.; and Amigoni, F. 2012. Patrolling
+security games: Definition and algorithms for solving large
+instances with single patroller and single intruder. Artif. In-
+tell., 184-185: 78–123.
+Basilico, N.; Nittis, G. D.; and Gatti, N. 2017. Adversar-
+ial patrolling with spatially uncertain alarm signals. Artif.
+Intell., 246: 220–257.
+Biswas, A.; Aggarwal, G.; Varakantham, P.; and Tambe, M.
+2021. Learn to Intervene: An Adaptive Learning Policy for
+Restless Bandits in Application to Preventive Healthcare. In
+Proceedings of IJCAI 2021, 4039–4046. ijcai.org.
+Br´azdil, T.; Klaˇska, D.; Kuˇcera, A.; Musil, V.; Novotn´y, P.;
+and ˇReh´ak, V. 2022.
+On-the-fly adaptation of patrolling
+strategies in changing environments. In Proceedings of UAI
+2022, volume 180 of Proceedings of Machine Learning Re-
+search, 244–254. PMLR.
+Collins, A.; Czyzowicz, J.; Gasieniec, L.; Kosowski, A.;
+Kranakis, E.; Krizanc, D.; Martin, R.; and Morales-Ponce,
+O. 2013. Optimal patrolling of fragmented boundaries. In
+Proceedings of SPAA 2013, 241–250. ACM.
+de Cote, E. M.; Stranders, R.; Basilico, N.; Gatti, N.; and
+Jennings, N. R. 2013. Introducing alarms in adversarial pa-
+trolling games: extended abstract. In Proceedings of AAMAS
+2013, 1275–1276. IFAAMAS.
+Farinelli, A.; Iocchi, L.; and Nardi, D. 2017. Distributed
+on-line dynamic task assignment for multi-robot patrolling.
+Autonomous Robots, 41(6): 1321–1345.
+Fave, F. M. D.; Jiang, A. X.; Yin, Z.; Zhang, C.; Tambe,
+M.; Kraus, S.; and Sullivan, J. P. 2014.
+Game-Theoretic
+Patrolling with Dynamic Execution Uncertainty and a Case
+Study on a Real Transit System. J. Artif. Intell. Res., 50:
+321–367.
+Ford, B. J.; Kar, D.; Fave, F. M. D.; Yang, R.; and Tambe, M.
+2014. PAWS: adaptive game-theoretic patrolling for wildlife
+protection.
+In Proceedings of AAMAS 2014, 1641–1642.
+IFAAMAS/ACM.
+Hari, S. K. K.; Rathinam, S.; Darbha, S.; Kalyanam, K.;
+Manyam, S. G.; and Casbeer, D. W. 2021. Optimal UAV
+Route Planning for Persistent Monitoring Missions. IEEE
+Trans. Robotics, 37(2): 550–566.
+Ho, H.; and Ouaknine, J. 2015. The Cyclic-Routing UAV
+Problem is PSPACE-Complete. In Proceedings of ETAPS
+2015, volume 9034 of Lecture Notes in Computer Science,
+328–342. Springer.
+Huang, L.; Zhou, M.; Hao, K.; and Hou, E. S. H. 2019.
+A survey of multi-robot regular and adversarial patrolling.
+IEEE CAA J. Autom. Sinica, 6(4): 894–903.
+Karwowski, J.; Mandziuk, J.; Zychowski, A.; Grajek, F.; and
+An, B. 2019. A Memetic Approach for Sequential Security
+Games on a Plane with Moving Targets. In Proceedings of
+AAAI 2019, 970–977. AAAI Press.
+Klaˇska, D.; Kuˇcera, A.; Lamser, T.; and ˇReh´ak, V. 2018. Au-
+tomatic Synthesis of Efficient Regular Strategies in Adver-
+sarial Patrolling Games. In Proceedings of AAMAS 2018,
+659–666. IFAAMAS.
+Klaˇska, D.; Kuˇcera, A.; Musil, V.; and ˇReh´ak, V. 2021.
+Regstar: efficient strategy synthesis for adversarial pa-
+trolling games. In Proceedings of UAI 2021, volume 161
+of Proceedings of Machine Learning Research, 471–481.
+AUAI Press.
+Klaˇska, D.; Kuˇcera, A.; and ˇReh´ak, V. 2020. Adversarial
+Patrolling with Drones. In Proceedings of AAMAS 2020,
+629–637. IFAAMAS.
+Klaˇska, D.; Kuˇcera, A.; Musil, V.; and ˇReh´ak, V. 2022. Min-
+imizing Expected Intrusion Detection Time in Adversarial
+Patrolling.
+In Proceedings of AAMAS 2022, 1660–1662.
+IFAAMAS.
+Kuˇcera, A.; and Lamser, T. 2016. Regular Strategies and
+Strategy Improvement: Efficient Tools for Solving Large Pa-
+trolling Problems. In Proceedings of AAMAS 2016, 1171–
+1179. ACM.
+Pita, J.; Jain, M.; Marecki, J.; Ord´o˜nez, F.; Portway, C.;
+Tambe, M.; Western, C.; Paruchuri, P.; and Kraus, S. 2008.
+Deployed ARMOR protection: the application of a game
+theoretic model for security at the Los Angeles International
+Airport. In Proceedings of AAMAS 2008, 125–132. IFAA-
+MAS.
+Portugal, D.; and Rocha, R. P. 2011. A Survey on Multi-
+robot Patrolling Algorithms.
+In Proceedings of DoCEIS
+2011, volume 349 of IFIP Advances in Information and
+Communication Technology, 139–146. Springer.
+
+
+Sinha, A.; Fang, F.; An, B.; Kiekintveld, C.; and Tambe,
+M. 2018. Stackelberg Security Games: Looking Beyond a
+Decade of Success. In Proceedings of IJCAI 2018, 5494–
+5501. ijcai.org.
+Sless, E.; Agmon, N.; and Kraus, S. 2019. Multi-robot ad-
+versarial patrolling: Handling sequential attacks. Artif. In-
+tell., 274: 1–25.
+Tambe, M. 2012. Security and Game Theory - Algorithms,
+Deployed Systems, Lessons Learned. Cambridge University
+Press. ISBN 978-1-10-709642-4.
+Tsai, J.; Rathi, S.; Kiekintveld, C.; Ord´o˜nez, F.; Tambe, M.;
+and Tambe, M. 2011. IRIS – A Tool for Strategic Security
+Allocation in Transportation Networks, 88–106. Cambridge
+University Press.
+Vorobeychik, Y.; An, B.; and Tambe, M. 2012. Adversarial
+patrolling games. In Proceedings of AAMAS 2012, 1307–
+1308. IFAAMAS.
+Wang, Y.; Shi, Z. R.; Yu, L.; Wu, Y.; Singh, R.; Joppa, L.;
+and Fang, F. 2019. Deep Reinforcement Learning for Green
+Security Games with Real-Time Information. In Proceed-
+ings of AAAI 2019, 1401–1408. AAAI Press.
+Xu, L. 2021. Learning and Planning Under Uncertainty for
+Green Security. In Proceedings of IJCAI 2021, 4927–4928.
+ijcai.org.
+Yin, Z.; Korzhyk, D.; Kiekintveld, C.; Conitzer, V.; and
+Tambe, M. 2010. Stackelberg vs. Nash in security games: in-
+terchangeability, equivalence, and uniqueness. In Proceed-
+ings of AAMAS 2010, 1139–1146. IFAAMAS.
+
+
+Appendix
+Proof of the Sufficient Condition
+Generally, it can be seen that a sufficient condition on the
+first requirement of our framework is that the damage to tar-
+gets depends only on the current state and the future. That
+is, for every observation o = (c1, . . . , cn, cn+1) and target τ
+it holds
+D(o, τ | σ) = D
+ (cn, cn+1), τ | σ
+
+.
+(8)
+Proof. For the purposes of the proof, let us denote by M the
+expression minB∈BSSC(σ) Val(σ | B). We prove that for
+every strategy σ on a set of states C it holds
+min
+c∈C sup
+π
+X
+o∈Ω
+π(o)∈T
+Pσ,c[o] · D(o, π(o) | σ) = M.
+Also
+recall
+that
+the
+left-hand
+side
+is
+Val(σ)
+=
+minc Val(σ, c) = supπ Val(σ, c, π).
+First, we will show Val(σ) ≤M. It is sufficient to show
+that there is a state c ∈C, such that Val(σ, c) ≤M. Let us
+choose any B ∈BSCC(σ) such that Val(σ | B) = M and
+c as any state in B.
+Now, we aim to show that Val(σ, c, π) ≤Val(σ | B)
+for every Attacker’s strategy π. Let π be any strategy of the
+Attacker. Using (8) we can write that Val(σ, c, π) equals
+X
+o∈Ω
+o=(c1,...,cn,cn+1)
+π(o)∈T
+Pσ,c[o] · D((cn, cn+1), π(o) | σ)
+Since c lies in a bottom strongly connected component
+B, every observation o = (c1, . . . , cn, cn+1) with positive
+Pσ,c[o] must have that each transition e = (ci, ci+1) is in
+B × B and σ(e) > 0. Namely (cn, cn+1) ∈B × B and
+σ(cn, cn+1) > 0. From that it follows D((cn, cn+1), π(o) |
+σ) ≤Val(σ | B) for all observations with positive probabil-
+ity. Using this, we can write
+Val(σ, c, π) ≤
+X
+o∈Ω
+π(o)∈T
+Pσ,c[o] · Val(σ | B)
+= Val(σ | B)
+X
+o∈Ω
+π(o)∈T
+Pσ,c[o] .
+The desired inequality follows from the fact that the sum of
+probabilities of the observations where the Attacker attacks
+is at most 1. Formally, it is true that
+X
+o∈Ω
+π(o)∈T
+Pσ,c[o] ≤1,
+which follows from the fact that the Attacker is allowed to
+attack only once in a run.
+For the second inequality Val(σ) ≥M, it is sufficient
+to show that there is a strategy of the Attacker π such that
+Val(σ, c, π) ≥M for every c ∈C.
+We now show how to construct such a strategy. For every
+bottom strongly connected component B, choose any τB ∈
+T and eB ∈B × B such that Val(σ | B) = D(eB, τB | σ)
+and σ(eB) > 0. Now, fix an observation (c1, . . . , cn, cn+1).
+Let i be the smallest index such that (ci, ci+1) is equal to
+some eB. If no index has this property or i < n, then the
+Attacker waits. Otherwise (cn, cn+1) is equal to a unique
+eB and the Attacker attacks τB.
+Let c ∈C be a state where the Defender starts patrolling.
+The proof builds on two basic properties of discrete-time
+Markov chains. No matter the starting state, the Defender
+will eventually visit some bottom strongly connected com-
+ponent B. Here, the Defender will eventually visit eB with
+probability 1 and the Attacker attacks τB. Since M is cho-
+sen as the minimum over Val(σ | B), no matter which bot-
+tom strongly connected the Defender visits, the Attacker will
+achieve value at least M, which concludes the proof.
+Strategy Expansion
+In (Klaˇska et al. 2021; Br´azdil et al. 2022; Klaˇska et al.
+2022), the parameters of the strategy are randomly initial-
+ized at the start of the optimization. However, it is also pos-
+sible to warm-start from parameters provided by the user.
+This may be useful because we add memory only to some lo-
+cations. Hence, it is possible that in the new strategy, some
+of the locations where we did not add memory could have
+the same optimal probabilities. By warm-starting, we would
+preserve these probabilities, saving time in optimization.
+For that reason, we describe how to create a new strat-
+egy σ2 from σ1 given the profile function resulting from
+ADJUSTMEMORY. For notation purposes, let copies(c) =
+|profiles(c)|. The idea is to expand the strategy σ1 such that
+every c has now exactly copies(c) copies of c that preserves
+the value of the strategy.
+If copies(c) = 1 for all but one state X which has
+copies(X) = 2, the procedure is simple. We create an iden-
+tical copy X′ of the state X. That is, we add a new state with
+the same outgoing probabilities as X. Then, every incoming
+edge to X gets halved between X and X′. In Figure 9, we
+show how this works on the positional strategy from the de-
+scription of our method.
+In general, let C′ denote the new set of states induced by
+the new memory assignment mem2. For every state c ∈C,
+let c1, . . . , ccopies(c) denote the corresponding new states in
+C′. Each ci has the same distribution over C′ equal to
+σ2(ci, xj) = σ1(c, x)
+copies(x).
+(9)
+See Figure 10 for a visual example in the general case.
+In the experiment figures, we use warm to denote the runs
+with this variant of our method.
+Complexity Analysis
+Here, we describe the complexity analysis of our method, its
+bounded variation and strategy expansion.
+Algorithm 1
+The time complexity of Algorithm 1 is in
+O(f + |E|g + |E|2|C|2)
+where f is such that the values of all attacks are calcu-
+lated in O(f) and g is such that for each attack, the gradients
+
+
+A
+X
+B
+1/2
+1/2
+original strategy σ1
+A
+X
+X
+B
+1/2
+1/2
+1/2
+1/2
+1/2
+1/2
+1/2
+1/2
+expanded strategy σ2
+Figure 9: Demonstration of strategy expansion. The original
+strategy is σ1. The location X gets two copies and is split,
+resulting in strategy σ2. The outgoing and incoming proba-
+bilities of both Xs are identical. For both Xs, the outgoing
+probabilities are preserved, but the incoming probabilities
+are halved between the two copies.
+with respect to the parameters are evaluated in O(g). Next,
+|E| denotes the number of state edges such that its traversal
+probability is positive, and finally, |E| denotes the number of
+attacks taken into account.
+Proof. In the algorithm, we keep a list of profiles for every
+state. First, we need to determine the values of all attacks in
+O(f). For every attack in the threshold, we calculate the gra-
+dients in O(g). Then, for each state, we calculate the sign of
+the vector in O(|C|) and decide if it’s already in the list. This
+gives at most |E| iterations with equality of profiles being in
+O(|C|). Determining the size of the profiles and summing
+over vertices is done in O(C).
+The time complexity of strategy expansion is evident.
+In practice, the evaluation for hard-constrained and
+blinded was faster than for linear. This is primarily because
+the first algorithm’s core procedure is implemented in C++
+with a dynamic program and uses a sparse representation of
+the strategy, unlike the second, which is in PyTorch and uses
+full matrices. In both cases, the actual bottleneck was in cal-
+culating the gradients.
+Time Complexity
+We claim that strategy expansion is in
+O(|C|2), where C is the new number of states.
+Proof. For each new state c, evaluating the new outgoing
+probabilities can be easily done in O(|C|). This consists
+of copying the old probabilities divided by the number of
+new copies. This must be done for each state, hence in total
+O(|C|2) operations.
+Bounded case
+Let M = P
+v mem2(v). If M ≤L, then
+the algorithm is the same as the normal case. Otherwise, we
+claim that in runs in
+O (|C||E| + (M −|C|) log(L −|C|))
+Proof. Evaluating the value of all profiles of a single state
+can be implemented in O(|E|). Hence, evaluating the value
+of all profiles of all states can be done in O(|C||E|). The size
+of P is exactly M −|C|. Using heaps, extracting L −|C|
+highest items of P takes (M −|C|) log(L −|C|).
+a
+b
+c
+1
+4/5
+1/5
+1
+original strategy σ1
+c
+a
+a
+b
+b
+1/2
+1/2
+1/2
+1/2
+2/5
+2/5
+2/5
+2/5
+1/5
+1/5
+1/2
+1/2
+expanded strategy σ2
+Figure 10: Demonstration of strategy expansion. The orig-
+inal strategy σ1 is memoryless. Locations a and b both get
+two copies, resulting in expanded strategy σ2. The outgoing
+probabilities from c and a to b are halved between the two bs
+(from probability 1 to 1/2). The outgoing probability from b
+to a is halved between the two as (from 4/5 to 2/5 to each
+copy).
+Experiments
+Here, we offer the full report and description of our exper-
+iments. In the code appended, we further describe how to
+recreate our experiments. Moreover, we provide CSV files
+with the results of each experiment and the code used to gen-
+erate the plots.
+Setup
+We ran our experiments on a server built on the Asus
+RS720A-E11-RS24U platform in the following configura-
+tion:
+• Two 64-core AMD EPYC 7713 2.0 GHz processors (128
+physical cores and 256 threads in total);
+• 2 TiB DDR4 RAM 3200 MHz;
+• 10 Gbps Ethernet connection;
+• 2 SATA SSDs with 960 GB capacity in RAID 1;
+• 2 6 TB NVMe drives in RAID 1;
+• Red Hat Enterprise Linux operating system.
+
+
+Every experiment was run with lowered priority by com-
+mand nice -n 10 and with a limit of 500GB on usable RAM
+by system-md scope.
+The optimization process can be thought of as a finite se-
+quence of steps, which we call a run. In each step, we per-
+form forward and backward passes, updating the parameters.
+We executed 200 different runs for every patrolling graph
+and memory (fixed memory assignment or our method). The
+parameters were initialized randomly, and each run had a
+timeout of 180 seconds. In our method, we had bounded the
+number of states by 300.
+To explain the setup, we divide the run into epochs. An
+epoch is the maximal subsequence where the memory as-
+signment stays constant. For all baseline memory assign-
+ments, the whole run was a single epoch. There were usually
+multiple epochs in the case of runs with our method.
+Terminating the optimization process
+If a single epoch
+took more than 2000 steps, the whole run was terminated.
+The run was also terminated if the value of the best strategy
+found was below 10−9 or if the run hit a plateau.
+A plateau occurs if, for n steps, the value has not im-
+proved by the relative threshold of ε. If the value of the best
+strategy found is v and after n steps, the best value is above
+(1−ε)v, the run ends. We use values n = 100 and ε = 10−5.
+Plateau detection is taken into account only after 500 steps
+of the current epoch.
+Changing the epochs
+Now, we describe how our method
+decides when to end an epoch and start a new one. Each
+epoch was given at least 200 steps. After that, we use plateau
+detection but for n = 20 (threshold is the same). If a plateau
+occurs during the epoch and the current epoch has improved
+the value by at least five percent, we change the memory
+according to the method, thus starting a new epoch.
+Since both tools use Adam optimizer and noise, we natu-
+rally include that. Starting a new epoch includes resetting the
+optimizer with the new parameters and resetting the noise.
+Hyperparameters of the tools
+The tools for solving the
+particular models also include various hyperparameters. We
+use the parameters provided by the tools. More details can
+be found in the project configuration files. We consistently
+use the same hyperparameters across all experiments.
+Offices
+We evaluate our method on a benchmark introduced in
+(Klaˇska et al. 2021) that also appeared in (Br´azdil et al.
+2022). The goal is to patrol offices in an office building.
+The goal is to patrol offices (squares). The corridors (cir-
+cles) connect the offices on the same floor. The floors are
+connected by staircases, which take 10 units of time to tra-
+verse. The traversal time between corridors is 2, and the time
+between offices and corridors is 5, as it involves opening the
+door and searching the office.
+Here, all the targets (offices) are hard-constrained, with
+an attack length precisely equal to the shortest cycle visiting
+the entire building. The offices have equal value. The build-
+ing is parametrized by the number of floors, and each floor
+has 4 corridors that join the offices. For short, we use n-floor
+to denote a building with n floors. Uniform memory assign-
+ment is used where every location is given m memory values
+and m ranges from 1 to 8. We ran the experiments for build-
+ings with one, two, and three floors. In the original paper of
+(Klaˇska et al. 2021), only a 1-floor building is evaluated.
+Building
+We continue with the second benchmark on the office build-
+ing topology, in which the targets are blinded. This setting
+comes from (Klaˇska et al. 2021). The probability of discov-
+ering an ongoing attack upon each visit is 0.9. For buildings
+with n floors, the attack lengths of all targets are equal to
+100n. This is less than what is needed for the deterministic
+cycle, and the ratio to this length gets smaller with increas-
+ing n. We ran the experiments for a number of floors running
+from 1 to 5.
+Airports
+We evaluate our method on a model with linear targets. This
+model has so far been studied only in (Klaˇska et al. 2022),
+where the authors use the following benchmark.
+The goal is to patrol gates at an airport. The airport con-
+sists of three terminals and n halls. Each hall is connected
+to two gates, and the airport forms a tree. As a baseline, the
+authors use a strategy that cycles around the graph, visiting
+each target once on the cycle. The value of such a strategy
+is then the length of this cycle (3n + 1 for the airport with
+n halls) multiplied by the maximal value of gates. The au-
+thors use the memory of the baseline strategy to run the op-
+timization tool. We denote this memory assignment as deg,
+as for each location, the memory is its degree in the graph.
+To demonstrate the need for memory, we also report results
+with memoryless assignment m = 1.
+In the setting used by the authors, all gates have the same
+unit value. In that case, it is experimentally verified that the
+optimal strategy is actually the deterministic baseline. Fol-
+lowing the authors, we generate 10 different airports, where
+the number of halls is a sequence
+3, 4, 5, 7, 9, 12, 15, 19, 25, 30.
+We evaluated the methods in two different target settings.
+One with the uniform values of gates and the second where
+each value is randomly and independently drawn from the
+interval [1, 10].
+Stars
+Here, we introduce a benchmark Stars where the goal is to
+patrol the leaves of a star. Let us denote by Sk a graph in
+the topology of a star with k leaves and internal location M.
+The benchmark for a graph with group size k is on a graph
+Sk+1, where d(v1) = 4 and d(vi) = 4k for 2 ≤i ≤k + 1.
+The defender needs to perform a cycle of length 4k of the
+form
+v1 →M →v2 →M →v1 →· · · →
+v1 →M →vk →M →v1 .
+This requires mem(v1) ≥k and mem(M) ≥2k. The other
+targets need just one memory value. We ran the experiments
+for k ranging from 1 to 5.
+The case for k = 2 is drawn in Figure 13.
+
+
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0 Value ↓(normalized)
+(a) 1 floors.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0
+Value ↓(normalized)
+(b) 2 floors.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.8
+0.9
+1.0
+1.1
+1.2
+1.3 Value ↓(normalized)
+(c) 3 floors.
+Figure 11: Statistics on the Offices benchmark with varying numbers of floors.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.6
+0.7
+0.8
+0.9
+1.0 Value ↓(normalized)
+(a) 1 floors.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.6
+0.7
+0.8
+0.9
+1.0 Value ↓(normalized)
+(b) 2 floors.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.7
+0.8
+0.9
+1.0
+1.1
+Value ↓(normalized)
+(c) 3 floors.
+1
+2
+3
+4
+5
+6
+7
+8
+deg autowarm
+0.90
+0.95
+1.00
+1.05
+1.10
+1.15
+1.20
+Value ↓(normalized)
+(d) 4 floors.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+1.0
+1.1
+1.2
+1.3 Value ↓(normalized)
+(e) 5 floors.
+Figure 12: Statistics on the Building benchmark with varying number of floors.
+Terrains
+One use of patrolling games is in guarding large terrains (see
+Related Work). Large terrains can be modeled as connected
+planar graphs, where each vertex represents a physical posi-
+tion in the terrain, and the length of edges is the time it takes
+to move between any two positions.
+We compared the methods on a dataset of randomly gen-
+erated connected planar graphs. The construction for a graph
+on n targets is as follows:
+1. Generate n points uniformly in a unit 2D-box.
+2. Find the Delaunay triangulation D.
+3. Find a minimum spanning tree T of D where the length
+of edges is the Euclidean distance between the endpoints.
+4. Add each edge from D to T with probability 1/2.
+5. Assign value to each target independently and uniformly
+from [1, 10].
+We generated 20 different graphs for n ranging from 3 to
+41 by steps of 2.
+As with the previous experiments on airports, we choose
+the strategy that cycles around the graph in the shortest pos-
+sible time as a baseline. Here, we use an approximate solu-
+tion to the Traveling salesman problem. For technical details
+on graph generation and the baseline, see the appended code.
+Effect of Strategy Expansion
+From our experiments, we conclude that warm-starting the
+optimization process with strategy expansion is not signif-
+icantly better. A notable exception is Stars for 4 groups.
+Here, expand leads to the optimal value of 0 as the only
+memory assignment. The reason for this is due to an in-
+teresting phenomenon where the value stagnates and sud-
+denly drifts away to the global minimum. We observed this
+with constant memory assignment and on different graphs
+as well. In the runs with strategy expansion, we give this
+phenomenon more steps to appear. There are 20 steps of pa-
+tience before the plateau; then, we expand the strategy, and
+a new epoch begins. Then, even if the value improves be-
+low the threshold and another begins, we are still virtually
+
+
+M
+v1
+v2
+v3
+d(v1) = 4
+d(v2) = 8
+d(v3) = 8
+M
+M
+M
+M
+v1
+v1
+v2
+v3
+optimal strategy σ
+Figure 13: Graph for Stars benchmark and k = 2 (left).
+The strategy σ achieves perfect protection since v1 is always
+visited every 4 steps, and both v2 and v3 are visited once on
+the cycle of length 8. Strategy σ2 needs 4 states in M and 2
+states in v1.
+around the same local minima, albeit in a bigger state space.
+This gives us at least 500 additional steps before terminating
+the run. Since the graph is small, they are executed before
+the timeout.
+However, in general, finding the extreme values is more
+probable without warm-starting. In cases where the memory
+needed is low, strategy expansion can lead to better conver-
+gence; this can be seen in Terrains.
+
+
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0 Value ↓(normalized)
+(a) 1 groups.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0 Value ↓(normalized)
+(b) 2 groups.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0 Value ↓(normalized)
+(c) 3 groups.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.0
+0.2
+0.4
+0.6
+0.8
+1.0 Value ↓(normalized)
+(d) 4 groups.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.7
+0.8
+0.9
+1.0 Value ↓(normalized)
+(e) 5 groups.
+Figure 14: Comparison of the methods on the Stars benchmark with varying numbers of groups.
+
+
+1
+2
+3
+4
+5
+6
+7
+8
+deg autowarm
+0.80
+0.85
+0.90
+0.95
+1.00
+1.05 Value ↓(normalized)
+(a) Size 3.
+1
+2
+3
+4
+5
+6
+7
+8
+deg autowarm
+0.75
+0.80
+0.85
+0.90
+0.95
+1.00
+Value ↓(normalized)
+(b) Size 5.
+1
+2
+3
+4
+5
+6
+7
+8
+deg autowarm
+0.75
+0.80
+0.85
+0.90
+0.95
+1.00
+Value ↓(normalized)
+(c) Size 7.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+1.0
+1.1
+1.2
+1.3
+1.4
+1.5 Value ↓(normalized)
+(d) Size 9.
+1
+2
+3
+4
+5
+6
+7
+8
+deg autowarm
+0.70
+0.75
+0.80
+0.85
+0.90
+0.95
+1.00
+Value ↓(normalized)
+(e) Size 11.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.8
+0.9
+1.0
+1.1 Value ↓(normalized)
+(f) Size 13.
+1
+2
+3
+4
+5
+6
+7
+8
+deg autowarm
+0.70
+0.75
+0.80
+0.85
+0.90
+0.95 Value ↓(normalized)
+(g) Size 15.
+1
+2
+3
+4
+5
+6
+7
+8
+deg autowarm
+0.80
+0.85
+0.90
+0.95
+1.00
+1.05
+Value ↓(normalized)
+(h) Size 17.
+1
+2
+3
+4
+5
+6
+7
+8
+deg autowarm
+0.80
+0.85
+0.90
+0.95
+1.00
+1.05
+Value ↓(normalized)
+(i) Size 19.
+1
+2
+3
+4
+5
+6
+7
+8
+deg autowarm
+0.85
+0.90
+0.95
+1.00
+1.05 Value ↓(normalized)
+(j) Size 21.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.9
+1.0
+1.1
+Value ↓(normalized)
+(k) Size 23.
+1
+2
+3
+4
+5
+6
+7
+8
+deg autowarm
+0.70
+0.75
+0.80
+0.85
+0.90
+0.95 Value ↓(normalized)
+(l) Size 25.
+Figure 15: Comparison of the method on the Terrains benchmark for varying sizes.
+
+
+1
+2
+3
+4
+5
+6
+7
+8
+deg autowarm
+0.75
+0.80
+0.85
+0.90
+0.95
+1.00
+Value ↓(normalized)
+(a) Size 27.
+1
+2
+3
+4
+5
+6
+7
+8
+deg autowarm
+0.85
+0.90
+0.95
+1.00
+1.05
+1.10
+Value ↓(normalized)
+(b) Size 29.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.8
+1.0
+1.2
+1.4
+Value ↓(normalized)
+(c) Size 31.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.8
+1.0
+1.2
+1.4 Value ↓(normalized)
+(d) Size 33.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+0.8
+1.0
+1.2
+1.4
+1.6
+1.8
+2.0
+Value ↓(normalized)
+(e) Size 35.
+1
+2
+3
+4
+5
+6
+7
+8
+deg autowarm
+1.00
+1.25
+1.50
+1.75
+2.00
+2.25
+2.50 Value ↓(normalized)
+(f) Size 37.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+1.0
+1.5
+2.0
+2.5
+Value ↓(normalized)
+(g) Size 39.
+1
+2
+3
+4
+5
+6
+7
+8
+deg auto warm
+1.0
+1.5
+2.0
+2.5
+Value ↓(normalized)
+(h) Size 41.
+Figure 16: Comparison of the method on the Terrains benchmark for varying sizes (continuation).

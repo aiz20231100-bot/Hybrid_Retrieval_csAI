@@ -1,0 +1,1148 @@
+Lazy Rearrangement Planning in Conﬁned Spaces
+Rui Wang, Kai Gao, Jingjin Yu and Kostas Bekris
+Rutgers University, The State University of New Jersey
+{rw485, kg627, jy512, kb572}@cs.rutgers.edu
+Abstract
+Object rearrangement is important for many applications but
+remains challenging, especially in conﬁned spaces, such as
+shelves, where objects cannot be accessed from above and
+they block reachability to each other. Such constraints require
+many motion planning and collision checking calls, which
+are computationally expensive. In addition, the arrangement
+space grows exponentially with the number of objects. To
+address these issues, this work introduces a lazy evaluation
+framework with a local monotone solver and a global plan-
+ner. Monotone instances are those that can be solved by mov-
+ing each object at most once. A key insight is that reachabil-
+ity constraints at the grasps for objects’ starts and goals can
+quickly reveal dependencies between objects without having
+to execute expensive motion planning queries. Given that,
+the local solver builds lazily a search tree that respects these
+reachability constraints without verifying that the arm paths
+are collision free. It only collision checks when a promising
+solution is found. If a monotone solution is not found, the
+non-monotone planner loads the lazy search tree and explores
+ways to move objects to intermediate locations from where
+monotone solutions to the goal can be found. Results show
+that the proposed framework can solve difﬁcult instances in
+conﬁned spaces with up to 16 objects, which state-of-the-art
+methods fail to solve. It also solves problems faster than alter-
+natives, when the alternatives ﬁnd a solution. It also achieves
+high-quality solutions, i.e., only 1.8 additional actions on av-
+erage are needed for non-monotone instances.
+Introduction
+Rearrangement in conﬁned spaces is a critical robot skill in
+setups such as aligning objects in shelves (Fig. 1), object re-
+trieval and part assembly. These are harder setups than the
+less constrained tabletop case, where all objects can be di-
+rectly accessed with top-down grasps and then lifted sufﬁ-
+ciently high to avoid collisions. Tabletop rearrangement al-
+lows to ignore robot-object and object-object interactions,
+which leads to faster solutions and stronger guarantees. In
+the conﬁned setup considered here, the robot arm has limited
+space to maneuver and cannot necessarily access all objects
+at any point, since top-down grasps are not available. Solv-
+ing such tasks becomes harder even for a few objects, let
+alone maintaining high efﬁciency and good solution quality.
+Copyright © 2022, Association for the Advancement of Artiﬁcial
+Intelligence (www.aaai.org). All rights reserved.
+Figure 1: Real robot application of the proposed method.
+[Left] The robot rearranging objects. [Right] Final result.
+Many existing solutions for conﬁned rearrangement us-
+ing prehensile primitives1 follow a similar high-level strat-
+egy (Stilman et al. 2007; Wang et al. 2021; Wang, Miao, and
+Bekris 2022). They build a global tree Tg = (V, E) (Fig.
+2(a)) where a node v ∈V (circles in Fig. 2(a)) represents an
+arrangement state αv of the objects and an edge e(v, u) ∈E
+(arrows in Fig. 2(a)) represents a collision-free arm path so
+as to pick-and-place an object to transition from arrange-
+ment αv to arrangement αu. The pick-and-place path can be
+computed by calling a motion planner. For non-monotone
+problems, some objects need to be moved to an intermediate
+location different from both the object’s start and goal. For
+these instances, the global tree can be built hierarchically by
+concatenating subtrees Tsub returned by a local monotone
+solver as partial solutions until the ﬁnal arrangement αF is
+connected to the initial arrangement αI, as in Fig. 2(a).
+A basic monotone Rearrangement Solver (mRS) (Stilman
+et al. 2007) explores all possible object orderings that con-
+nect αI to αF via backtracking search (Fig. 2(c)). It faces
+scaling issues due to its O(n!) time complexity. Dynamic
+programming solutions, such as DFSDP (Wang et al. 2021),
+observe that solving a subproblem from an arrangement α
+(i.e., moving the remaining objects to their goals) does not
+depend on how α is reached from αI, i.e., the ordering with
+which the objects reach α does not change the feasibility of
+the subsequent task α →αF . In the toy example of Fig.
+2(b), no solution is found from α obtained from the branch
+o1 →o2 →o3. This can also quickly invalidate the branch
+o1 →o3 →o2 (Fig. 2(d)). Therefore, an arrangement state
+is sufﬁcient to represent all orderings of objects, which re-
+1i.e., using grasping, in contrast to non-prehensile primitives,
+such as pushing (King et al. 2015; King, Ranganeni, and Srinivasa
+2017; Papallas and Dogar 2020; Vieira et al. 2022).
+arXiv:2203.10379v4  [cs.RO]  12 Oct 2022
+
+
+𝜶𝜶𝑰𝑰
+𝜶𝜶𝑭𝑭
+𝑻𝑻𝒔𝒔𝒔𝒔𝒔𝒔
+𝑻𝑻𝒔𝒔𝒔𝒔𝒔𝒔
+′
+𝑜𝑜5
+𝑜𝑜2
+𝑜𝑜4
+𝑜𝑜1
+𝑜𝑜3
+𝜶𝜶𝑰𝑰
+𝜶𝜶𝑭𝑭
+𝒐𝒐𝟏𝟏
+𝒐𝒐𝟐𝟐
+𝒐𝒐𝟑𝟑
+𝒐𝒐𝟒𝟒
+𝒐𝒐𝟒𝟒
+𝒐𝒐𝟑𝟑
+𝒐𝒐𝟑𝟑
+𝒐𝒐𝟐𝟐
+𝒐𝒐𝟒𝟒
+𝒐𝒐𝟒𝟒
+𝒐𝒐𝟐𝟐
+𝒐𝒐𝟓𝟓
+𝒐𝒐𝟐𝟐
+𝜶𝜶𝑰𝑰
+𝜶𝜶𝑭𝑭
+𝒐𝒐𝟏𝟏
+𝒐𝒐𝟐𝟐
+𝒐𝒐𝟑𝟑
+𝒐𝒐𝟒𝟒
+𝒐𝒐𝟒𝟒
+𝒐𝒐𝟑𝟑
+𝒐𝒐𝟑𝟑
+𝒐𝒐𝟐𝟐
+𝒐𝒐𝟒𝟒
+𝒐𝒐𝟐𝟐
+𝒐𝒐𝟓𝟓
+𝒐𝒐𝟐𝟐
+𝜶𝜶𝑰𝑰
+𝜶𝜶𝑭𝑭
+𝒐𝒐𝟏𝟏
+𝒐𝒐𝟐𝟐
+𝒐𝒐𝟑𝟑
+𝒐𝒐𝟐𝟐
+𝒐𝒐𝟒𝟒
+𝒐𝒐𝟐𝟐
+𝒐𝒐𝟓𝟓
+𝒐𝒐𝟐𝟐
+(a)
+(b)
+(c)
+(d)
+(e)
+Figure 2: (a) A typical tree for non-monotone rearrangement problems, which grows incrementally local trees (Tsub, T ′
+sub),
+which are monotone, i.e., an object is moved at most once and only to its goal at the ﬁnal arrangement αF . The edge connecting
+the two trees (dark blue arrow) corresponds to moving an object to an intermediate location. (b) A toy example with 5 objects
+(start positions are denoted as solid circles while goal positions as dashed circles). The goal position of o2 makes the robot arm
+unable to move o5 after the placement of o2. (c-e) The tree corresponding to mRS (c), DFSDP (d) and CIRS (e) on the toy example.
+sult in the same placements. Given this observation, DFSDP
+solves monotone problems with complexity O(2n), a signif-
+icant improvement over O(n!).
+Nevertheless, neither mRS, nor DFSDP take advantage of
+constraint reasoning to further prune the search space. As
+robot-object constraints arise often in conﬁned and cluttered
+setups, such reasoning can increase efﬁciency. In the toy ex-
+ample of Fig. 2(b), the goal position of o2 makes o5 unreach-
+able, which can be identiﬁed just by considering robot con-
+ﬁgurations for grasping o5. Therefore, moving o2 should be
+treated as an invalid action for a monotone solution at any ar-
+rangement state where o5 is still at its start. Such constraints
+can signiﬁcantly prune the search space as in Fig. 2(e). Such
+constraints were ﬁrst considered in prior related work (CIRS)
+(Wang, Miao, and Bekris 2022) but not comprehensively.
+The current work focuses on utilizing such constraints
+to reduce the computational overhead due to the most ex-
+pensive primitive, i.e., the pick-and-place motion planning
+calls for each edge of the search tree, which involve colli-
+sion checking. All the aforementioned methods call a mo-
+tion planner for every edge of the search tree during its gen-
+eration to check if the transition to the child arrangement is
+valid. Consequently, the number of motion planning queries
+is equivalent to the total number of edges in the search
+tree, which grows exponentially as the number of objects
+increase. The objective here is to avoid this combinatorial
+number of calls to motion planning, while still ﬁnding any
+solution that existing methods can discover and maintaining
+high-quality solutions, i.e., not requiring many intermediate
+locations for non-monotone problems.
+If the approach detects early that there is no way to reach
+the ﬁnal arrangement from a tree node, then signiﬁcant time
+can be saved by not performing motion planning on edges
+out of that node. And it is possible to identify the infeasibil-
+ity of arrangements quickly given only the objects’ locations
+and the robot’s grasps, i.e., if a set of objects in an arrange-
+ment blocks the grasps of another object at its start or its
+goal, then there is no arm path that can perform the pick-and-
+place at the corresponding arrangement (up to the resolution
+of grasps). These constraints are referred here as reachabil-
+ity constraints. They arise often and dominate the feasibility
+of rearrangements in conﬁned spaces. Moreover, computing
+reachability constraints is relatively easy as grasps can be
+obtained by inverse kinematic (IK) solvers in a hundredth
+of a second; much faster than a motion planning routine for
+a pick-and-place sequence. In addition, given k such grasps
+and total n objects, those IK operations are performed kn
+times (O(n)), which is much smaller than the worse case for
+the size of the search tree (O(2n)).
+Overall, this work proposes a lazy evaluation framework
+for rearrangement in conﬁned spaces. It uses reachability
+constraints to quickly reveal the dependencies between ob-
+jects without performing expensive motion planning queries
+during the search tree generation. Thus, this work:
+1. Proposes an efﬁcient, lazy local monotone solver that
+utilizes reachability constraints. Given the constraints that
+arise from grasp reachability, the method ﬁrst builds a lazy
+search tree that respects these constraints without verifying
+edge validity via motion planning. It only performs such ver-
+iﬁcation when a promising solution is found.
+2. Proposes a global planner for non-monotone problems
+with high success rate, efﬁciency and quality. The global
+planner loads the local search tree from the monotone solver
+and explores how to move objects to intermediate spots,
+from where a local solver can be called to discover mono-
+tone solutions to the goal. Edges are checked lazily only if
+needed for moving an object to an intermediate position.
+The overall framework is demonstrated to scale up to
+16-object instances in conﬁned spaces, which state-of-the-
+art alternatives fail to solve. The method signiﬁcantly im-
+proves computational efﬁciency while maintaining high so-
+lution quality, i.e., only 1.8 additional actions are needed to
+fulﬁll non-monotone tasks on average. The solution of the
+proposed method is executed on a real robotic system.
+
+
+𝒲𝒲
+𝒪𝒪
+ℳ
+(a)
+(b)
+(c)
+𝛼𝛼𝐼𝐼
+𝑞𝑞𝛼𝛼𝑜𝑜𝑖𝑖
+𝜋𝜋𝑖𝑖
+𝒐𝒐𝒊𝒊
+𝛼𝛼′[𝑜𝑜𝑖𝑖]
+𝛼𝛼𝐹𝐹
+(d)
+𝛼𝛼
+𝒫𝒫𝑇𝑇
+𝒫𝒫𝑇𝑇
+Figure 3: (a) Objects O in a workspace W, where the arm M approaches O from one side of W. (b) The arm moves object
+oi at pi = α[oi] to a new position p′
+i = α′[oi] following the arm path πi. (c) The initial arrangement αI. (d) A speciﬁed ﬁnal
+arrangement αF (e.g., objects’ goals are chosen from a set of positions PT so that same color objects are in the same column).
+Related Work
+Object retrieval in conﬁned setups requires relocating some
+objects to retrieve an object. The challenges lie in (1) par-
+tial observability (Xiao et al. 2019), (2) what and where to
+relocate obstacles (Ahn et al. 2021) and (3) which robot re-
+locates which object (Ahn, Kim, and Nam 2021). The re-
+arrangement problem considered here treats each object as
+a target to be relocated from its initial to ﬁnal position and
+tends to be harder than object retrieval of a single target.
+Rearrangement planning without violating constraints can
+be modeled as a constraint satisfaction problem (CSP),
+where a variable corresponds to a moving action at a time
+step and the value domain refers to a set of objects to move at
+that time step. The solution corresponds to an assignment of
+the variables that respects the constraints. (Haralick and El-
+liott 1980) discusses ways to increase tree efﬁciency to solve
+binary CSP while (Dechter, Cohen et al. 2003) focuses more
+on constraints processing. (Bart´ak, Salido, and Rossi 2010)
+introduces deﬁnitions and techniques of constraint satisfac-
+tion in general AI planning and scheduling, many of which
+are adopted in this work for consistency. Constraint satis-
+faction techniques are increasingly used in robot planning
+problems. (Havur et al. 2014) uses Answer Set Program-
+ming (ASP) to decompose the cluttered workspace to place
+objects. Forward state-space search algorithms are devel-
+oped to guide robotic spatial extrusion tasks (Garrett et al.
+2020) under geometric and stiffness constraints. (Krontiris
+and Bekris 2016) introduces a dependency graph describ-
+ing object constraints and compute solutions via topological
+sorting. Such an approach, however, can be computational
+expensive as it can produce many dependency graphs, each
+of which is computed for a unique combination of grasping
+conﬁgurations and arm paths for manipulating objects.
+The proposed lazy evaluation framework delays path ver-
+iﬁcation until a seemingly feasible plan is found. There is
+extensive work on lazy evaluation for robot path planning,
+where edge evaluations are expensive, such as lazy vari-
+ants of the weighted A* (Cohen, Phillips, and Likhachev
+2015) that postpone expensive operations in N-arm robot
+problems, a Lazy Receding Horizon A* (LRA*) that bal-
+ances edge evaluations and graph operations (Mandalika,
+Salzman, and Srinivasa 2018) and a lazily evaluated Life-
+long Planning A* (LPA*) that reduces excessive edge evalu-
+ations of LPA* (Lim, Srinivasa, and Tsiotras 2021). A gener-
+alized lazy search (GLS) framework is introduced to toggle
+between search and edge evaluation (Mandalika et al. 2019).
+Lazy collision checking is also used in sampling-based
+motion planners such as Probabilistic Roadmap (PRM)
+(Kavraki and Bohlin 2000; S´anchez and Latombe 2003),
+the properties of which have been examined (Hauser 2015).
+These approaches aim at reducing edge evaluation on com-
+puting a path (lazy motion planning), while the proposed
+framework aims at reducing the cost of path veriﬁcation
+when computing a task plan (lazy rearrangement planning).
+Problem Formulation
+There are n uniformly-sized cylindrical objects O
+=
+{o1, · · · , on} residing in a cuboid, bounded workspace W ⊂
+R3, each of which at a position pi ∈R2, i ∈{1, · · · , n}
+(Fig. 3(a)). Such an assignment of objects O to a set of ob-
+ject positions {p1, · · · , pn} deﬁnes an arrangement α ∈A,
+where A is the arrangement space. α[oi] = pi indicates that
+object oi is at position pi given the arrangement α.
+A robot arm M can access the objects O from only one
+side of the workspace W and can move them one at a time.
+The arm M acquires a conﬁguration q ∈Q where Q is
+the space of all possible conﬁgurations that M can acquire.
+The swept volume V (q) represents the space occupied by
+M at q. If M is grasping an object, the swept volume also
+includes the object’s volume given the grasp. q(α[oi]) repre-
+sents a conﬁguration where the arm can grasp oi at position
+pi = α[oi]. An arm path πi : [0, 1] →Q for an object oi cor-
+responds to a sequence of conﬁgurations that move object oi
+from its current position pi = α[oi] to another position p′
+i,
+resulting in a new arrangement α′ where α′[oi] = p′
+i and
+∀j ∈{1, · · · , n}, j̸ = i : α′[oj] = α[oj] (Fig. 3(b)). Such
+a path is valid if no collision arises between S1
+t=0 V (πi(t))
+and other static geometries (W and static objects in W).
+The workspace is decomposed into a set of possible po-
+sitions PT where objects can be placed (Fig. 3(c)(d)). PT
+are sampled with a resolution δr deﬁned as the distance
+between adjacent candidates in the same row (or column).
+Goal positions of objects and intermediate positions called
+buffers are chosen from PT . The rearrangement problem is
+
+
+𝑜𝑜3
+𝑜𝑜1
+𝑜𝑜2
+𝑜𝑜3
+𝑜𝑜1
+𝑜𝑜2
+𝑜𝑜3
+𝑜𝑜1
+𝑜𝑜2
+𝑜𝑜4
+(a)
+(b)
+(c)
+Figure 4: Three examples of the robot arm moving object
+o3 (gray solid circle). Start and goal positions of objects are
+denoted as solid circles and dashed circles, respectively. For
+simplicity, only relevant object positions are displayed.
+deﬁned as follows: given any possible initial arrangement
+αI (Fig. 3(c)) and a speciﬁed ﬁnal arrangement αF of n
+objects O (Fig. 3(d)), ﬁnd a sequence of valid arm paths
+Π = (π0, π1, . . . , ), which moves all objects from αI to αF .
+A problem is monotone if the sequence Π consists of at most
+one arm path for each object. Otherwise, the problem is non-
+monotone and at least one object needs to be moved to a
+buffer before being moved to its goal.
+Methodology
+This section introduces lazy rearrangement planning and de-
+scribes: (1) how reachability constraints are generated and
+used to prune the search space, (2) how the local, monotone
+solver builds a lazy search tree, and (3) how the global plan-
+ner operates over these trees for non-monotone instances.
+Reachability Constraints
+Consider Fig. 4(a) where there are two arm conﬁgurations
+for grasping o3: o3 is unreachable from one conﬁguration, if
+o2 is at its goal; while o3 is unreachable from the other, if o1
+is at its start. Deﬁne Si as the event that oi is at its start while
+Gi as the event that oi is at its goal. Then in Fig. 4(a), o3 is
+unreachable if the event G2
+T S1 occurs, which generates
+the reachability constraint:
+Don’t move o3, if o2 is at its goal and o1 is at its start. (1)
+In Fig. 4(b), o3 is unreachable if the event G2
+T G1 occurs:
+Don’t move o3, if o2 is at its goal and o1 is at its goal. (2)
+Note that when all reachability constraints arise from goal
+positions, additional constraints can be elicited for the con-
+straining objects, i.e., o2 and o1 in this example. In particu-
+lar, the additional constraints are:
+Don’t move o2, if o1 is at its goal and o3 is at its start. (3)
+Don’t move o1, if o2 is at its goal and o3 is at its start. (4)
+For generalization, one more example (Fig. 4(c)) is given
+where a grasping conﬁguration intersects with more than
+one object position (start position of o1 and goal posi-
+tion of o4). In this case, o3 is unreachable if the event
+G2
+T(S1
+S G4) occurs. The event can be decoupled as
+G2
+\
+(S1
+[
+G4) = (G2
+\
+S1)
+[
+(G2
+\
+G4)
+(5)
+Algorithm 1: Lazy Rearrangement Solver (LRS)
+Input: αS, αF , O
+Output: Tsub
+1 C = OBTAINCONSTRAINTS(αS, αF , O)
+2 return Tsub, flag = GROWLOCALTREE(∅, αS, αF , C)
+where G2
+T S1 can be handled similar to the constraint (1)
+of Fig. 4(a), while G2
+T G4 can be handled similar to con-
+straint (2) of Fig. 4(b).
+The above reachability constraints readily generalize to k
+grasping conﬁgurations and n objects. All the reachability
+constraints can be stored in a container C to indicate invalid
+actions of moving certain objects at a certain arrangement.
+Grasping conﬁgurations can be acquired via an IK solver.
+An improved version of the Samuel Buss IK library was
+used (Buss and Kim 2005). In practice, different IK solu-
+tions place the last few links close to the gripper in similar
+locations, inducing similar reachability constraints. Given
+that, it usually sufﬁces to consider only one IK per grasp.
+Monotone Instances
+A lazy rearrangement solver (LRS) is proposed to solve lo-
+cal, monotone tasks αS →αF where αS is the start ar-
+rangement. Alg. 1 summarizes the two steps of the solver:
+(1) obtain reachability constraints C from the task (Line 1);
+(2) use these constraints to grow lazily a search tree rooted
+at αS (Line 2). Two deﬁnitions are introduced here to avoid
+potential confusion: In the context of a lazy tree, a node αj
+is connected to another node αi if the edge αi →αj does
+not violate reachability constraints. In contrast, αj is acces-
+sible from αi if αi →αj is veriﬁed by a motion planner to
+exist. Connectivity is a prerequisite for accessibility.
+Step 2 of Alg. 1 is detailed in Alg. 2, which is a recur-
+sive routine to grow a local tree Tsub from αC to αF that
+respects the reachability constraints C. Here αC refers to the
+arrangement where the search process is currently at. The
+output refers to a local, monotone tree Tsub and a ﬂag indi-
+cating if a solution is found (initially set to false, Line 1).
+For each object o ∈O(αC) not yet at its goal given αC
+(Line 2), a forward-checking routine is performed (Line 3)
+to evaluate if moving o violates constraints C at αC. If it
+does, then this action is pruned at αC (Line 4, also see Fig.
+5(a)). Therefore, LRS identiﬁes dead-ends and prunes the
+search space by reducing the action space. If C are satis-
+ﬁed, the resulting node αnew is generated (Line 5) where
+αnew[o] = αF [o], αnew[O \ {o}] = αC[O \ {o}]. If αnew
+is not in the tree, it will be added to the tree lazily (Line
+6-7) without path veriﬁcation to save computation. The tree
+keeps growing lazily in a recursive manner (Line 13) until
+αF is connected to αS via a branch (Line 8, also see Fig.
+5(b)) where the path veriﬁcation will be performed on the
+edges of the branch (Line 9), which is described in Alg. 3.
+A global parameter mode is used to indicate the current
+search mode (backtracking or backjumping). It is in back-
+tracking mode when Alg. 2 is ﬁrst called in step 2 of Alg.
+1. If the branch is valid, the solution is found and it quits
+Alg. 2 with backtracking (Line 11, 13-14). If not, the search
+
+
+Algorithm 2: GROWLOCALTREE
+Input: Tsub, αC, αF , C
+Output: Tsub, flag
+1 flag = False
+2 for o ∈O(αC) do
+3
+valid = FORWARDCHECKING(o, αC, C)
+4
+if not valid then continue
+5
+αnew = GETNEWNODE(o, αC, αF )
+6
+if αnew ∈T then continue
+7
+Tsub = ADDNODE(αnew, αC, Tsub)
+8
+if αnew = αF then
+9
+Tsub, success, αlast =
+VERIFYBRANCH(αnew, Tsub)
+10
+if not success then mode = backjumping
+11
+return Tsub, success
+12
+else
+13
+Tsub, flag =
+GROWLOCALTREE(Tsub, αnew, αF , C)
+14
+if flag then return Tsub, flag
+15
+if mode = backjumping then
+16
+if αnew = αlast then mode = backtracking
+17
+else return Tsub, flag
+18 return Tsub, flag
+switches to the backjumping mode (Line 10), in which the
+search tree jumps back to the last accessible node αlast to
+continue (Line 15-17, also see Fig. 5(e)). The tree is returned
+when all alternatives have been exhausted (Line 18).
+Alg. 3. veriﬁes the branch that connects αF from αS. It
+ﬁrst traces back to the nearest node α′ that is accessible from
+the root (Line 1) to avoid duplicate edge veriﬁcation. From
+there, it checks the validity of each edge (Line 3-4). If an
+edge α′ →αchild is valid (Line 5), it marks αchild as acces-
+sible from α′ (Line 6) and moves on to the next edge (Line
+7). If not (Line 8), the branch veriﬁcation stops at the edge
+α′ →αchild (see Fig. 5(d)) and deletes any subtree rooted at
+(a)
+(b)
+(c)
+(d)
+(e)
+𝜶𝜶𝑺𝑺
+𝜶𝜶𝑪𝑪
+𝜶𝜶𝑭𝑭
+𝜶𝜶𝑺𝑺
+𝜶𝜶𝑪𝑪
+𝜶𝜶𝑭𝑭
+𝜶𝜶𝑺𝑺
+𝜶𝜶𝑪𝑪
+𝜶𝜶𝑭𝑭
+𝜶𝜶′
+𝜶𝜶𝒄𝒄𝒄𝒄𝒄𝒄𝒄𝒄𝒄𝒄
+𝜶𝜶𝑺𝑺
+𝜶𝜶𝑪𝑪
+𝜶𝜶𝒍𝒍𝒍𝒍𝒍𝒍𝒍𝒍
+𝜶𝜶𝑺𝑺
+𝜶𝜶𝑪𝑪
+Figure 5: Lazy tree in LRS. Black dashed circles and arrows
+represents nodes and edges without path veriﬁcation while
+green solid ones represents those with path veriﬁcation. Here
+αC indicates the current stage of the search. (a) Forward-
+checking phase (Alg. 2, Line 3-4). A tree cannot expand
+upon αC due to constraint violation. (b) The tree connects
+αS to αF lazily (Alg. 2, Line 8). (c) The branch pass path
+veriﬁcation (Alg. 3, Line 11). (d) Path veriﬁcation fails at the
+edge α′ →αchild and is terminated. (e) The subtree rooted
+at αchild is trimmed (Alg. 3, Line 9-10) and the search jumps
+back to the last accessible node αlast and backtracks to grow
+the tree lazily (Alg. 2, Line 15-17).
+Algorithm 3: VERIFYBRANCH
+Input: αC, Tsub
+Output: Tsub, success, αlast
+1 α′ = NEARESTNODE(αC, Tsub)
+2 while α′̸ = αC do
+3
+αchild = α′.child
+4
+success = PATHVERIFICATION(α′, αchild)
+5
+if success then
+6
+Tsub = ADDEDGE(α′, αchild, Tsub)
+7
+α′ = αchild
+8
+else
+9
+DELETETREE(αchild, Tsub)
+10
+return Tsub, success, α′
+11 return Tsub, success, α′
+αchild (Line 9) as αchild is not accessible from α′. It returns
+the trimmed lazy tree Tsub and records the last accessible
+node αlast = α′ (Line 10, also see Fig. 5(e)). If all the edges
+are valid, the task is solved and the branch on Tsub is the
+solution (Line 11, also see Fig. 5(c)).
+Theorem 1 (Completeness of LRS). LRS achieves the same
+completeness properties as the underlying motion planner.
+Proof. Assume there is a monotone solution Π′ but LRS fails
+to ﬁnd it. Since Π′ is monotone, each object moves directly
+from its start to its goal. Following the order, there is a cor-
+responding path P ′ in the state space of LRS, which is a se-
+quence of states with the ﬁrst state being αS and the others
+being the resulting states of actions in Π′ in the order. Given
+the failure assumption, let the ﬁrst edge in P ′ that is not in
+Tsub be α1 →α2. Since α1 →α2 is a valid edge that re-
+spects constraints C, it should be eventually discovered by a
+motion planner (e.g., assuming probabilistic completeness).
+Therefore, the only reason that α2 is not linked to α1 when
+LRS explores α1 is that α2 corresponds to a node that has
+been considered already (with a different parent than α1)
+and deemed as a “dead end”, i.e., can’t be connected to αF .
+If α2 = αF , then it means LRS ﬁnds a path from αI to
+αF and the path succeeds in the branch veriﬁcation process,
+which contradicts the failure assumption. Otherwise, since
+the search tree is developed in a depth ﬁrst manner, it sug-
+gests that LRS cannot ﬁnd a path in the state space from α2
+to αF . But there is a sub-path P ′′ in P ′ from α2 to αF . Re-
+cursively, all the edges in P ′ are in Tsub or there is another
+path from αI to αF in Tsub.
+Thus, given a monotone rearrangement instance, whether
+LRS is able to ﬁnd a solution depends on whether the under-
+lying motion planner can ﬁnd one. In other words, the pro-
+posed LRS does not degrade the properties of the underlying
+motion planner (e.g., probabilistic/resolution completeness).
+For instance, if a solution has not been found but exists, a
+straightforward iterative strategy can provide to the motion
+planner additional resources (more sampled conﬁgurations,
+object position candidates, grasps and IK solutions) and then
+the task planner is called again.
+The motion planner used is the asympt. optimal Proba-
+bilistic Roadmap (PRM*) (Karaman and Frazzoli 2011).
+
+
+Non-Monotone Instances
+For non-monotone problems where some objects need to be
+moved to buffers ﬁrst to admit a feasible solution, a global
+planner is needed, as the local solver only examines the
+monotonicity of a local task. The global planner assigns a
+local task to the local solver and concatenates the local tree
+Tsub returned by the local solver to build a global tree Tg.
+If the resulting Tg does not lead to a solution, an action is
+needed to move an object to a buffer at an arrangement. Such
+actions are called perturbations in the context of the global
+planner. A new tree node αpert (the blue node in Fig. 2(a))
+will be generated upon perturbation, from which a new local
+task αpert →αF is assigned to the local planner.
+Consider a lazy local tree Tsub in Fig. 6(a). There are dif-
+ferent ways of concatenating Tsub to the global tree Tg. A
+greedy global planner concatenates only the part of the tree
+which has been path veriﬁed (Fig. 6(b)), while a conserva-
+tive global planner ﬁrst veriﬁes all unveriﬁed edges in the
+lazy tree and then concatenates the veriﬁed tree (Fig. 6(c)).
+In the greedy case, the planner operates lazily by only ac-
+cepting the veriﬁed part of the tree to avoid performing any
+expensive path veriﬁcation. As a result, it quickly concate-
+nates the tree but giving up unveriﬁed nodes which could
+lead to a solution given a proper perturbation. In the ex-
+treme cases where no nodes except the root of the local tree
+is accepted, the only way the tree can grow in the greedy
+case is through perturbation at the root. But a perturbation is
+both slow (just extends one edge) and unpredictable (the ob-
+ject is moved to a random buffer). In the conservative case,
+the planner performs additional work to verify the unveriﬁed
+part of the tree, thus maintaining those nodes in the global
+tree. This, however, undermines the utility of lazy evaluation
+as the global planner takes time to make up the laziness of
+the local planner. The only advantage lies in the last itera-
+tion if a solution is found (in that case, the global planner
+only needs to concatenate the veriﬁed branch).
+To leverage the beneﬁts of both the greedy and the con-
+servative planner, this work introduces a global planner
+LRShybrid, which concatenates the lazy local tree as it is and
+only performs path veriﬁcation if the node being selected
+for perturbation is unveriﬁed. In this manner, the global
+tree maintains both veriﬁed and unveriﬁed edges (hybrid)
+throughout the search. LRShybrid is described in Alg. 4. It
+solves a global task αI →αF with n objects and all possi-
+ble positions PT and outputs a path sequence Π. The global
+task is ﬁrst assigned to the local solver, from where the
+(a)
+(b)
+(c)
+𝜶𝜶𝑺𝑺
+𝜶𝜶𝑺𝑺
+𝜶𝜶𝑺𝑺
+Figure 6: (a) A lazy search tree returned by the local solver
+LRS with both veriﬁed (green solid arrows) and unveriﬁed
+(black dashed arrows) edges. (b) The tree concatenated by a
+greedy global planner. (c) The tree concatenated by a con-
+servative global planner.
+Algorithm 4: LRShybrid
+Input: αI, αF , O, PT
+Output: Π
+1 Tg = ∅, Π = ∅
+2 Tsub = LRS(αI, αF , O)
+3 Tg = Tg + Tsub
+4 while αF /∈Tg and TIMEPERMITTED do
+5
+αC = SELECTNODE(Tg)
+6
+Tg, success, αlast = VERIFYBRANCH(αC, Tg)
+7
+if success then
+8
+αpert = PERTURBNODE(αC, αF , PT )
+9
+if αpert̸ = ∅then
+10
+Tg = ADDNODE(αpert, αC, Tg)
+11
+Tg = Tg + LRS(αpert, αF , O)
+12 if αF ∈T then
+13
+Π = TRACEBACKPATH(Tg, αF , αI)
+14 return Π
+solver tests the monotonicity of the problem (Line 1-3). If
+the problem is non-monotone (Line 4), a node αC is selected
+to perform a perturbation (Line 5, also see Fig. 7(a)). Before
+perturbation, αC is checked to see if it is accessible from
+the root αI (Line 6). If not, the perturbation terminates and
+restarts (Fig. 7(c)(d)). If αC is accessible from αI (Line 7),
+the perturbation is performed on αC by randomly selecting
+an object to be placed in a buffer, which is randomly selected
+from PT (Line 8). If the perturbation is not successful, it ter-
+minates and restarts (Line 4). Otherwise (Line 9), a pertur-
+bation node αpert is added to the tree (Line 10, also see Fig.
+7(b)), from where the local solver is called to solve a local
+task αpert →αF . The local solver call and the perturbation
+alternate until a solution is found (Line 12-13) or the time
+exceeds a threshold (Line 4).
+Despite different ways (greedy, conservative or hybrid) of
+tree concatenation, the planner generally follows the struc-
+ture of alternating between random perturbations and sub-
+tree concatenation. The high-level structure is referred to as
+Perturbation Search (PERTS). The following discussion pro-
+vides a proof that PERTS guarantees probabilistic complete-
+ness, regardless of how local trees are concatenated or the
+type of monotone solver used. The only requirement is that
+the clearance of paths δ in the rearrangement plan is lower
+bounded by a constant. Here δ is measured as the minimum
+distance between the robot arm and the obstacles in the plan.
+(a)
+(b)
+(c)
+𝜶𝜶𝑰𝑰
+𝜶𝜶𝒑𝒑𝒑𝒑𝒑𝒑𝒑𝒑
+𝜶𝜶𝑰𝑰
+𝜶𝜶𝒑𝒑𝒑𝒑𝒑𝒑𝒑𝒑
+𝜶𝜶𝑰𝑰
+𝜶𝜶𝒑𝒑𝒑𝒑𝒑𝒑𝒑𝒑
+𝜶𝜶𝑰𝑰
+(d)
+𝜶𝜶𝑪𝑪
+𝜶𝜶𝑪𝑪
+𝜶𝜶𝑪𝑪
+Figure 7: (a) A node αC is selected to perform perturbation
+on a tree in Fig. 6(a). (b) A perturbation succeeds only if
+(1)αC is accessible from the root (green arrows) and (2) the
+perturbation node αpert is accessible from αC (blue arrow).
+(c) An unsuccessful perturbation given that αC is not acces-
+sible. (d) The tree after trimming the subtree rooted at αC.
+
+
+A lemma for the completeness theorem is proved as follows.
+Lemma 1. Given the set of position candidates PT with res-
+olution δr and a complete motion planner, if there is a fea-
+sible rearrangement plan Π from αI to αF with clearance
+δΠ >
+√
+2δr, then there is a feasible path P from αI to αF
+in the state space of the proposed global planner.
+Proof. The lemma can be proven by moving all the placing
+positions in Π (goal and buffer positions) to their nearest
+neighbors in PT . Given the resolution δr, each point in the
+rectangular region is at most
+√
+2
+2 δr away from its nearest
+neighbor in PT . With a complete motion planner, there is a
+feasible path P in the state space S of the proposed global
+planner given clearance: δΠ ≥δ −2 ∗
+√
+2
+2 δr > 0.
+Theorem 2 (Probabilistic Completeness of PERTS). Given
+a complete motion planner and a constant δ∗, if there is a
+rearrangement plan with clearance δ ≥δ∗, then the proba-
+bility of the global planner to ﬁnd a feasible rearrangement
+plan approaches 1 as the number of perturbations increase,
+regardless of which monotone solver is used.
+Proof. Given the tolerating clearance δ∗, generate PT with
+resolution
+√
+2
+3 δ∗. Assume that there is a feasible rearrange-
+ment plan Π for a rearrangement instance. According to the
+Lemma above, there is a feasible path P from αI to αF in
+the state space S of PERTS.
+To prove the probabilistic completeness, regardless of
+which monotone solver is used, it sufﬁces to prove that the
+probability of ﬁnding αF via perturbations approaches 1 as
+the perturbation number m goes to inﬁnity.
+In each perturbation, PERTS moves a randomly selected
+object from a random state to a randomly selected position
+in PT . Since the size of the state space S is upper bounded
+by (|PT | + n)n, for all 2 ≤i ≤|P|, when P[i −1] is in
+the search tree, the probability that P[i] can be added into
+the search tree in the next perturbation is lower bounded by
+p > 1/(|S| ∗n ∗(|PT | + n)) > 1/(n ∗(|PT | + n)n+1).
+Similar to the probabilistic completeness for RRT (Klein-
+bort et al. 2018), consider m Bernoulli trials with success
+prob. p. Let Xm be the number of successes in m trials, then:
+Pr[αF cannot be found in m perturbations] ≤Pr[Xm < |P|]
+≤
+|P |−1
+X
+i=0
+
+m
+i
+
+pi(1 −p)m−i ≤
+|P |−1
+X
+i=0
+
+m
+|P| −1
+
+pi(1 −p)m−i
+≤
+
+m
+|P| −1
+ |P |−1
+X
+i=0
+(1 −p)m ≤
+
+m
+|P| −1
+ |P |−1
+X
+i=0
+(e−p)m
+=
+
+m
+|P| −1
+
+|P|(e−p)m ≤
+|P|
+(|P| −1)!m|P |−1e−pm
+→0(m →∞)
+The transitions rely on p < 1/2, which trivially holds
+when |PT | > 1. Therefore, the probability of ﬁnding Π ap-
+proaches 1 as the number of perturbations increases.
+Figure 8: [Left] The robotic simulation environment where
+the experiments are performed. [Right] Monotone or non-
+monotone problem distribution per number of objects.
+Experiments
+This section demonstrates the effectiveness of the proposed
+monotone solver LRS on monotone problems and the global
+planner LRShybrid on non-monotone problems. The experi-
+ments are performed in a robotic simulator Pybullet, with a
+Motoman SDA10F robot tasked to rearrange objects in the
+conﬁned setup (Fig. 8, left) and solutions of the proposed
+method are executed on a real robot system (Fig. 1) 2.
+The problems are generated by randomly sampling start
+positions of the objects and assigning goal locations to these
+objects from a discretized set of locations in the shelf simi-
+larly to Fig. 3(c) and 3(d). Fig. 8 (right) shows the distribu-
+tion of monotone and non-monotone problems for different
+number of objects. Given this distribution, monotone prob-
+lems are selected with 8-14 objects, while non-monotone
+problems with 12-16 objects. 80 experiments are performed
+for each number of objects. The metrics for monotone and
+non-monotone solutions involve success rate and computa-
+tion time. The computation time is separated into (1) the to-
+tal computation time, and (2) the motion planning/collision
+checking (path veriﬁcation) time. The computation time is
+plotted in the logarithmic scale for better visualization.
+Evaluation on Monotone Problems: The proposed LRS
+is compared to the aforementioned alternatives (mRS, DFSDP,
+CIRS). A limitation of 100 seconds is given to solve a mono-
+tone problem. Fig. 9 (left column) demonstrates that the suc-
+cess rate for LRS stays 100% even in harder problems (12,
+14 objects) while that for mRS and DFSDP drops signiﬁcantly
+(16.7%, 4.2% for mRS and 46.7%, 8.3% for DFSDP). CIRS
+shows relatively high success rate (83.3% for 14 objects)
+2Codes and Videos are available online at https://github.com/
+Rui1223/conﬁned-space-rearrangement.
+8
+10
+12
+14
+100
+102
+MRS
+DFS-DP
+CIRS
+LRS
+8
+10
+12
+14
+0
+1
+Figure 9: Algorithm comparisons in monotone instances.
+[left] Success rate (%). [right] Computation time (plotted in
+logarithm) presented as two components: the colored part is
+the path veriﬁcation time and the white part is the other.
+
+
+12
+13
+14
+15
+16
+100
+102
+MRS
+DFS-DP
+CIRS
+LRS-HYBRID
+12
+13
+14
+15
+16
+0
+1
+Figure 10: Algorithm comparisons in non-monotone in-
+stances. [left] Success rate (%). [right] Computation time
+(logarithm) presented as two components: the colored part
+is the path veriﬁcation time and the white part is the other.
+but LRS outperforms CIRS (Fig. 9 (right column)) with faster
+computation time (10.2 and 16.8 seconds for 12 and 14 ob-
+jects, compared to 28.3 and 47.3 seconds for CIRS). The lazy
+evaluation structure of LRS signiﬁcantly reduces the path
+veriﬁcation time. For 14 objects, LRS spends 16.2 seconds
+(96.4% of the total time) on path veriﬁcation, while the time
+is 46.9 (99.2%), 93.9 (99.3%) and 97.3 (99.3%) seconds for
+CIRS, DFSDP and mRS, respectively (Fig. 9 (right column),
+colored part of the bars). It also conﬁrms the observation
+that path veriﬁcation is the computational overhead.
+Evaluation on Non-monotone Problems: The proposed
+global planner LRShybrid is compared to global planners
+which use the alternatives (mRS, DFSDP, CIRS) as the inte-
+grated local solver. For simplicity, the names mRS, DFSDP,
+CIRS are still used to represent the corresponding global
+planner. A limitation of 240 seconds is given to solve a
+non-monotone problem. Fig. 10 (left) indicates that mRS and
+DFSDP fail in every instance for 13-16 objects and CIRS
+shows a stable decrease of success rate (44.1%, 37.9% and
+25.8% for 14, 15 and 16 objects, respectively). In contrast,
+LRShybrid has 100% success rate for 12-14 objects and stays
+high for harder problems (85.7% for 15 objects and 82.4%
+for 16 objects). LRShybrid solves non-monotone problems
+61% faster than alternatives, as it lazily loads the local tree
+and only performs path veriﬁcation if the node selected for
+perturbation is unveriﬁed. Moreover, the time used other
+than path veriﬁcation (Fig. 10 (right), white part of the bars)
+for LRShybrid is higher than other methods (e.g., for 16 ob-
+jects, that time is 23.2 seconds for LRShybrid, compared to
+1.9 seconds for other methods), as LRShybrid requires steps
+such as obtaining constraints (Alg. 1, Line 1) and trimming
+inaccessible subtrees (Alg. 3, Line 9). However, the path ver-
+iﬁcation time for LRShybrid is 98.8 seconds, much smaller
+than that of other methods (231.6 seconds on average). In
+12
+13
+14
+15
+16
+100
+102
+LRS-GREEDY
+LRS-CONSERVATIVE
+LRS-HYBRID
+12
+13
+14
+15
+16
+0
+1
+Figure 11: Ablation study in non-monotone instances. [left]
+Success rate (%). [right] Computation time (logarithm) pre-
+sented as two components: the colored part is the path veri-
+ﬁcation time and the white part is the other.
+# objects
+12
+13
+14
+15
+16
+LRShybrid
+1.4
+1.5
+1.9
+2.2
+2.3
+LRSgreedy
+1.3
+1.5
+1.2
+2.2
+2.4
+LRSconservative
+1.2
+1.5
+1.8
+1.4
+1.5
+Table 1: Average number of buffers needed to solve non-
+monotone problems.
+that regard, LRShybrid trades heavy path veriﬁcation time for
+some moderate increase in task planning time.
+Ablation Study: An ablation study is also performed to
+reveal the impact of different versions of the global plan-
+ner (greedy, conservative, hybrid) on non-monotone prob-
+lems. Fig. 11 (left column) shows that the success rate for
+LRShybrid is higher than LRSgreedy and LRSconservative. The
+two alternatives suffer from relatively low success rates for
+different reasons. LRSgreedy only accepts the veriﬁed part of
+tree to avoid path veriﬁcation, giving up potential nodes. As
+a result, it involves more perturbation steps to grow the tree,
+which can be slow. LRSconservative further veriﬁes the un-
+veriﬁed part of the local lazy tree before concatenating it
+to the global tree. As a result, it has more path veriﬁcation
+steps, which is also slow. Fig. 11 (right column) also con-
+ﬁrms these reasons. LRSgreedy has a smaller path veriﬁcation
+time (colored part of the bars) but a higher other time (white
+part of the bars) and LRSconservative is on the opposite. The
+proposed LRShybrid has both time in the middle compared to
+the other two, achieving the fastest computation time.
+The number of buffers needed to solve non-monotone
+problems is provided in Table. 1. With the PERTS structure,
+the problems can be mostly solved with one or two buffers.
+Conclusion and Future Work
+This work introduces a lazy evaluation framework, which in-
+volves a local monotone solver and a global planner for solv-
+ing rearrangement in conﬁned spaces. The proposed frame-
+work is capable of solving hard instances up to 16 objects
+with high-quality by improving computational efﬁciency.
+This paper argues the completeness of the local solver and
+the probabilistic completeness of the global planner. The so-
+lutions are also demonstrated on a real robotic system.
+The conﬁned setup does not only pose reachability chal-
+lenges, but also visibility challenges. As the objects cannot
+be accessed from above by the robot arm, they cannot be al-
+ways detected from above by a camera. This results in partial
+observability where the rearrangement objective changes,
+i.e., rearranging objects which improve the visibility of oth-
+ers. Not all objects may be known initially and replanning
+is needed as the scene is updated. The proposed techniques
+can be modiﬁed to be deployed in these setups. For instance,
+building a stochastic tree where the edge incorporates the
+probability the object is movable given uncertainty.
+Acknowledgements
+The work is partially supported by an NSF HDR TRIPODS
+award 1934924.
+
+
+References
+Ahn, J.; Kim, C.; and Nam, C. 2021. Coordination of two
+robotic manipulators for object retrieval in clutter.
+arXiv
+preprint arXiv:2109.15220.
+Ahn, J.; Lee, J.; Cheong, S. H.; Kim, C.; and Nam, C. 2021.
+An integrated approach for determining objects to be relo-
+cated and their goal positions inside clutter for object re-
+trieval. In 2021 IEEE International Conference on Robotics
+and Automation (ICRA), 6408–6414. IEEE.
+Bart´ak, R.; Salido, M. A.; and Rossi, F. 2010. Constraint
+satisfaction techniques in planning and scheduling. Journal
+of Intelligent Manufacturing, 21(1): 5–15.
+Buss, S. R.; and Kim, J.-S. 2005. Selectively damped least
+squares for inverse kinematics. Journal of Graphics tools,
+10(3): 37–49.
+Cohen, B. J.; Phillips, M.; and Likhachev, M. 2015. Planning
+Single-Arm Manipulations with N-Arm Robots. In SOCS.
+Dechter, R.; Cohen, D.; et al. 2003. Constraint processing.
+Morgan Kaufmann.
+Garrett, C. R.; Huang, Y.; Lozano-P´erez, T.; and Mueller,
+C. T. 2020. Scalable and Probabilistically Complete Plan-
+ning for Robotic Spatial Extrusion.
+In Robotics: Science
+and Systems.
+Haralick, R. M.; and Elliott, G. L. 1980.
+Increasing tree
+search efﬁciency for constraint satisfaction problems. Arti-
+ﬁcial intelligence, 14(3): 263–313.
+Hauser, K. K. 2015.
+Lazy collision checking in
+asymptotically-optimal motion planning. 2015 IEEE Inter-
+national Conference on Robotics and Automation (ICRA),
+2951–2957.
+Havur, G.; Ozbilgin, G.; Erdem, E.; and Patoglu, V. 2014.
+Geometric rearrangement of multiple movable objects on
+cluttered surfaces: A hybrid reasoning approach. In 2014
+IEEE International Conference on Robotics and Automation
+(ICRA), 445–452. IEEE.
+Karaman, S.; and Frazzoli, E. 2011. Sampling-based algo-
+rithms for optimal motion planning. The international jour-
+nal of robotics research, 30(7): 846–894.
+Kavraki, L.; and Bohlin, R. 2000. Path planning using lazy
+PRM. In Proc. IEEE Int. Conference on Robotics and Au-
+tomation. San Francisco.
+King, J. E.; Haustein, J. A.; Srinivasa, S. S.; and Asfour, T.
+2015. Nonprehensile whole arm rearrangement planning on
+physics manifolds. In 2015 IEEE International Conference
+on Robotics and Automation (ICRA), 2508–2515. IEEE.
+King, J. E.; Ranganeni, V.; and Srinivasa, S. S. 2017. Unob-
+servable monte carlo planning for nonprehensile rearrange-
+ment tasks.
+In 2017 IEEE International Conference on
+Robotics and Automation (ICRA), 4681–4688. IEEE.
+Kleinbort, M.; Solovey, K.; Littleﬁeld, Z.; Bekris, K. E.; and
+Halperin, D. 2018. Probabilistic completeness of RRT for
+geometric and kinodynamic planning with forward propa-
+gation. IEEE Robotics and Automation Letters, 4(2): x–xvi.
+Krontiris, A.; and Bekris, K. E. 2016. Efﬁciently solving
+general rearrangement tasks: A fast extension primitive for
+an incremental sampling-based planner. In 2016 IEEE Inter-
+national Conference on Robotics and Automation (ICRA),
+3924–3931. IEEE.
+Lim, J.; Srinivasa, S.; and Tsiotras, P. 2021. Lazy Lifelong
+Planning for Efﬁcient Replanning in Graphs with Expensive
+Edge Evaluation. arXiv preprint arXiv:2105.12076.
+Mandalika, A.; Choudhury, S.; Salzman, O.; and Srinivasa,
+S. 2019. Generalized lazy search for robot motion planning:
+Interleaving search and edge evaluation via event-based tog-
+gles. In Proceedings of the International Conference on Au-
+tomated Planning and Scheduling, volume 29, 745–753.
+Mandalika, A.; Salzman, O.; and Srinivasa, S. 2018. Lazy
+receding horizon A* for efﬁcient path planning in graphs
+with expensive-to-evaluate edges.
+In Proceedings of
+the International Conference on Automated Planning and
+Scheduling, volume 28.
+Papallas, R.; and Dogar, M. R. 2020.
+Non-prehensile
+manipulation in clutter with human-in-the-loop.
+In 2020
+IEEE International Conference on Robotics and Automation
+(ICRA), 6723–6729. IEEE.
+S´anchez, G.; and Latombe, J.-C. 2003. A single-query bi-
+directional probabilistic roadmap planner with lazy collision
+checking. In Robotics research, 403–417. Springer.
+Stilman, M.; Schamburek, J.-U.; Kuffner, J.; and Asfour,
+T. 2007.
+Manipulation planning among movable obsta-
+cles. In Proceedings 2007 IEEE international conference
+on robotics and automation, 3327–3332. IEEE.
+Vieira, E. R.; Nakhimovich, D.; Gao, K.; Wang, R.; Yu, J.;
+and Bekris, K. E. 2022. Persistent Homology for Effective
+Non-Prehensile Manipulation. In 2022 IEEE International
+Conference on Robotics and Automation (ICRA). IEEE.
+Wang, R.; Gao, K.; Nakhimovich, D.; Yu, J.; and Bekris,
+K. E. 2021. Uniform Object Rearrangement: From Com-
+plete Monotone Primitives to Efﬁcient Non-Monotone In-
+formed Search.
+In IEEE International Conference on
+Robotics and Automation.
+Wang, R.; Miao, Y.; and Bekris, K. E. 2022. Efﬁcient and
+high-quality prehensile rearrangement in cluttered and con-
+ﬁned spaces. In 2022 International Conference on Robotics
+and Automation (ICRA), 1968–1975. IEEE.
+Xiao, Y.; Katt, S.; ten Pas, A.; Chen, S.; and Amato, C.
+2019. Online planning for target object search in clutter un-
+der partial observability. In 2019 International Conference
+on Robotics and Automation (ICRA), 8241–8247. IEEE.

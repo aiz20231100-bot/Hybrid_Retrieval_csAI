@@ -1,0 +1,3753 @@
+ASC me to Do Anything:
+Multi-task Training for Embodied AI
+Jiasen Lu
+Jordi Salvador
+Roozbeh Mottaghi
+Aniruddha Kembhavi
+PRIOR @ Allen Institute for AI
+{jiasenl, jordis, roozbehm, anik}@allenai.org
+Abstract
+Embodied AI has seen steady progress across a diverse
+set of independent tasks. While these varied tasks have dif-
+ferent end goals, the basic skills required to complete them
+successfully overlap signiﬁcantly. In this paper, our goal is
+to leverage these shared skills to learn to perform multiple
+tasks jointly. We propose Atomic Skill Completion (ASC),
+an approach for multi-task training for Embodied AI, where
+a set of atomic skills shared across multiple tasks are com-
+posed together to perform the tasks. The key to the success
+of this approach is a pre-training scheme that decouples
+learning of the skills from the high-level tasks making joint
+training effective. We use ASC to train agents within the
+AI2-THOR environment to perform four interactive tasks
+jointly, and ﬁnd it to be remarkably effective. In a multi-task
+setting, ASC improves success rates by a factor of 2x on Seen
+scenes and 4x on Unseen scenes compared to no pre-training.
+Importantly, ASC enables us to train a multi-task agent that
+has a 52% higher Success Rate than training 4 independent
+single task agents. Finally, our hierarchical agents are more
+interpretable than traditional black box architectures.
+1. Introduction
+Embodied AI (E-AI) researchers have long sought to
+develop agents that can perform complex tasks within vi-
+sual environments – tasks that require navigating around
+an environment [1,5], interacting [4,59,66,72,74] and ma-
+nipulating [14,71] with objects that lie within it, following
+instructions [2,60] and engaging with other agents [27,28]
+or humans via QA [10,24]. While steady progress has been
+made towards this ambitious goal, particularly in simulated
+worlds [19,33,54,59,71], most work today focuses on train-
+ing agents to perform a single task.
+Evidence across this large body of research suggests that:
+(a) Present day learning algorithms are very inefﬁcient –
+perfecting simpler tasks such as point goal navigation can
+require more than a billion frames of experience [68], (b)
+The best performing methods are not as effective for long
+horizon tasks as well as tasks that involve rich interactions
+with the world and larger action spaces [66], and (c) As
+tasks get more complex, the generalization capability of
+these methods to unseen environments is quite poor [60].
+How do we move towards developing effective multi-task
+E-AI agents, when training single task ones continues to be
+challenging?
+In this paper, we propose an approach to jointly train mul-
+tiple embodied tasks speciﬁed by natural language. Train-
+ing these tasks directly is quite challenging. However, the
+compositional nature of natural language allows us to de-
+compose the tasks into smaller easy-to-train parts that are
+shared across multiple tasks. For example, given two differ-
+ent tasks “put a plunger in cabinet.” and “what is the color
+of plunger?”, the agent must execute “ﬁnd plunger” ﬁrst,
+which is essentially an object navigation task. Our central
+idea is to pre-train such smaller tasks, referred to as atomic
+skills and later compose them to perform the more complex
+downstream task. More speciﬁcally, we pre-train a low-level
+skill executing policy on a set of atomic skills applicable to
+diverse downstream tasks, and then, train a high-level skill
+invocator on downstream tasks.
+Our method, referred to as Atomic Skill Completion
+(ASC), has several advantages: (1) Since ASC pre-trains
+on atomic skills instead of long-horizon downstream tasks,
+it pre-trains fairly quickly. (2) These skills are short hori-
+zon and relatively simple to learn and thus generalize better
+to unseen environments. (3) The atomic skills are chosen
+to be generic and can be chained to perform many down-
+stream E-AI tasks. (4) Since high-level task invocation is
+now decoupled from low-level skill execution, the learning
+of high-level policies is hugely simpliﬁed, leading to the
+creation of effective multi-task embodied agents.
+We pre-train our agent within the AI2-THOR environ-
+ment with 110 object classes, 13 actions and continuous
+parameterization of the interaction skills. We consider 9
+atomic skills common across a wide range of higher level
+arXiv:2202.06987v1  [cs.CV]  14 Feb 2022
+
+
+Short-Horizon 
+Instruction Following
+(SHIF)
+Long-Horizon 
+Instruction Following
+(LHIF)
+Interactive
+Question Answering
+(IQA)
+Exploratory
+Interaction
+(EXIN)
+Find [x]
+Pick up [x]
+Put [x]
+Toggle [x]
+High-level Tasks
+Shared Pre-trained Skills
+Start:
+Sub-goal:
+pick up plunger
+Sub-goal:
+open cabinet
+Sub-goal:
+place plunger
+Task1: put a
+plunger in cabinet
+t=0
+t=22, t=23
+t=30
+t=32
+Task2: what color 
+is the plunger?
+find plunger
+t=22
+Sub-goal: answer
+Figure 1. We consider four high-level tasks that require navigation and object interaction. Skills are meaningful short sequences of primitive
+actions that are pre-trained and shared among tasks. On the right, we show an example of an episode by our multi-task agent for the
+long-horizon instruction following task of put a plunger in cabinet. and an interactive question answering task of what color is plunger?
+tasks. They range from navigation skills such as find X
+to interactive skills such as slice X and the answering
+skill answer. We then jointly train the agent to perform 4
+challenging tasks (Figure 1) – (1) Short Horizon Instruction
+Following (SHIF), (2) Long Horizon Instruction Following
+(LHIF), (3) Interactive Question Answering (IQA) and (4)
+Exploratory Interaction (EXIN) and measure performance on
+Seen and Unseen environments. Given the interaction-heavy
+nature of these tasks, we consider two interaction modes –
+Standard whereby the agent must predict a bounding box
+that overlaps with the target object, and Hard which requires
+the agent to accurately predict a point within the object that
+it wishes to interact it.
+Our results show that pre-training the agent via ASC leads
+to large improvements across all four tasks. In the Standard
+setting for multi-task training, ASC improves Success Rates
+(averaged across all tasks) from 15.1 →41.9 for Seen and 4.3
+→16.2 for Unseen; in the Hard setting, the improvements
+are as dramatic – from 20.3 →39.8 for Seen and 4.0 →
+19.3 for Unseen. In the absence of pre-training, multi-task
+training results in a drop as compared to single task training
+for Unseen scenes (5.0 →4.0), but when using ASC, multi-
+task training provides a large boost (10.9 →19.3). We also
+ﬁnd that our multi-task agent with ASC performs comparably
+in the Hard setting vs the Standard setting – 41.9 vs 39.8 Seen
+and 16.2 vs 19.3 Unseen, reﬂecting the ability of our agent to
+precisely predict the locations of target objects that it needs
+to interact with in the scenes. Finally, we ﬁnd our model
+more interpretable than traditional Embodied AI solutions,
+since we can observe the sub-goals, target object and pixel
+locations for interaction output at each time step, enabling us
+to monitor progress and explain some successes and errors.
+2. Related Work
+Multi-task learning. An ultimate goal of AI research is
+to build systems that can perform multiple tasks simulta-
+neously. There are several previous works in computer vi-
+sion [15,32,37,42,45,53,58], natural language understanding
+[8,9,31,38,39,43] and vision & language [25,26,30,40,50]
+domains that aim to handle multiple tasks simultaneously
+and address the issues that arise when tackling different tasks
+together. However, the visual embodied research works pri-
+marily focus only on a single speciﬁc task [10, 68, 69, 74].
+There are a few previous works that consider multi-task sce-
+narios in the E-AI domain. For example, [7] transfer the
+knowledge of words and their grounding across two naviga-
+tion tasks and [65] share parameters for language encoding
+and policy between two vision and language navigation tasks.
+Prior work in training multi-task agents is either operate in
+a grid-world environment [3], or environments with limited
+complexities, such as mine-craft to stack blocks [61] or ViZ-
+Doom with a single room including 5 objects [7]. We focus
+on long-horizon tasks that involve object interaction and
+state changes in addition to navigation. Furthermore, we
+show the effectiveness of pre-training of skills for learning
+different tasks jointly.
+Pre-training. Pre-training strategies using supervised or un-
+supervised methods have proven to be effective in terms of
+learning efﬁciency and performance for downstream tasks in
+computer vision [20,21,41,62] and NLP [6,12,49,51]. Re-
+cently, pre-training methods have become popular in the E-
+AI domain. [13] jointly learn a policy and visual representa-
+tions and show transfer to downstream navigation tasks. [68]
+propose a pre-training scenario that provides massive per-
+formance gains for the task of point navigation. [55,56] use
+mid-level tasks such as depth and room layout estimation
+for learning representations that enable fast and more gen-
+
+
+eralizable learning of downstream tasks. [52,64] have used
+contrastive predictive coding ideas to pre-train networks
+for downstream navigation tasks. [23] explore pre-training
+using auxiliary tasks. [36] learn skills for navigation via
+meta-reinforcement learning. Most of these works consider
+navigation as the downstream task. In contrast we consider
+tasks that involve object interaction. Moreover, we propose
+a pre-training strategy for a set of atomic skills that are com-
+posed in a hierarchical fashion.
+Hierarchical planning.
+There is a rich history of hier-
+archical planning for performing different types of tasks
+[18,22,34,35,44]. Here, we mention a few approaches that
+are most relevant to ours. [11, 24] propose a hierarchical
+architecture for embodied question answering. [70] address
+the problem of sub-goal generation and ﬁnding a sequence
+of actions to reach the sub-goal. [29] use language as an
+abstraction to break down a complex task. [46] generate
+image sub-goals conditioned on an image goal and use the
+sub-goals for planning. [17] learn skills using intrinsic mo-
+tivation to speed up learning downstream tasks that share
+a common structure. [63] address the problem of reusing
+and transferring knowledge from one task to another. [47]
+propose an analogy-making objective to generalize to unseen
+tasks and also a method for estimating the time-scale of sub-
+tasks. [16] address the problem of learning skills without a
+reward. These approaches have one or more of the following
+limitations: they do not train for multiple distinct tasks, they
+focus on simple tasks that do not require simultaneous navi-
+gation and object interaction, they use the same environment
+for train and test, or they do not consider high-dimensional
+visual input.
+3. Problem Statement
+An important goal of Embodied AI research is to develop
+agents that can perform a wide variety of diverse tasks. How-
+ever, training multiple tasks at once is quite challenging since
+each task has a different success criteria, tasks often have
+different output structures, and training time becomes insur-
+mountable. We propose pre-training agents on a shared set
+of skills that are core components of the target downstream
+tasks. As we show in our experiments, this improves training
+for complex interactive tasks and enables us to jointly train
+for multiple tasks.
+Skills. The skills used to pre-train our agent are deﬁned
+manually and correspond to semantically meaningful interac-
+tions with the environment that require very short sequences
+of primitive actions. We consider nine skills that involve nav-
+igation, interaction and answering questions. For example,
+go to and turn on are two example skills that we consider.
+These skills are part of a wide variety of interactive tasks.
+Tasks. We consider four target tasks: (1) short-horizon
+instruction following; these tasks typically require a few
+skills (e.g., clean tomato, which requires putting the tomato
+in a sink and turning on the faucet). (2) long-horizon instruc-
+tion following; these tasks span a longer horizon compared
+to short-horizon tasks and are inspired by the seven tasks
+deﬁned in ALFRED [60], where only the high-level goal is
+available to the agent (as opposed to step-by-step instruc-
+tions). An example is put the fork in the cup and move them
+to the kitchen counter. (3) interactive question answering,
+which is inspired by previous works of [10,24]. The goal is
+to answer questions that require interaction with a scene. In
+this paper, the questions query the visual state or quantity of
+objects (e.g., Is the fridge open?, How many eggs are in the
+fridge?). (4) exploratory interaction; this task requires a long
+exploration phase until it ﬁnds the target object with which
+it needs to interact. This task shares similarities with the ﬁrst
+two tasks, but it is more navigation-heavy compared to those.
+An example task is pickup the apple, which requires invok-
+ing the navigation skill multiple times (in case of failures) to
+reach the apple and then invoking the interaction skill pick
+up to pick up the apple).
+Environment. We use AI2-THOR [33], a visually rich
+interactive framework, for performing our tasks. Follow-
+ing [60], no prior knowledge about the environment (e.g.,
+a map) or additional sensors (e.g., depth cameras and GPS
+sensors) are available to the agent. We consider 110 object
+classes (37 of which are receptacle object classes) across 112
+different indoor scenes. The environments provide multiple
+variations of each object class with different shapes, textures
+and colors.
+Agent. To complete a task instance T, at each time step
+t, the agent observes an egocentric RGB image vt as input
+and takes action at, which can be a navigation action (e.g.,
+move ahead, rotate right), an object interaction action (e.g.,
+pick up, slice) or an answer action (e.g., yes, 3). The full list
+of actions is provided in the appendix. At each time step the
+agent also produces a coordinate p = (x, y) on the image
+plane to indicate the object that will be interacted with. For
+instance, if the agent wishes to pick up a bowl, it issues the
+action pick up along with the coordinates of a pixel within the
+segment corresponding to the bowl. The agent’s objective is
+to learn a policy that can successfully complete task T. We
+consider a hierarchical policy πθ, which decomposes a task
+T into multiple skills and dynamically selects sub-policies
+πθs (corresponding to the desired skills) to execute.
+Continuous Interaction Parameterization. A common
+practice for specifying target objects for interaction is to pre-
+dict the target segmentation mask [60] or bounding box [24],
+then compare this to the ground truth segmentation masks
+provided by the simulator, select the interactable object with
+the most overlap and then use that as the target object. We
+name this setting Standard and also explore a more challeng-
+ing continuous interaction parameterization, named Hard, a
+more realistic setting that no knowledge of the groundtruth
+is available to the agent. We interact with the environment
+
+
+Task Instruction
+Prev. Subgoal
+Prev. Action
+Embedding
+Embedding
+GRU
+replicated
+replicated
+replicated
+MLP
+concate
++
+reshape
+GRU
+Sample
+State 
+Encoder
+History Encoder
+Language Encoder
+time
+𝑔!!"#, 𝑔"!"#
+𝑔!!"#, 𝑔"!"#
+𝑔!!#, 𝑔"!#
+…
+…
+…
+Prev. Action
+Embedding
+Target. Skill
+Target. Object
+Embedding
+Embedding
+History Encoder
+Sub-goal Encoder
+replicated
+replicated
+replicated concate
++
+reshape
+MLP
+GRU
+State 
+Encoder
+RGB Frame
+CNN
+Vision Encoder
+RGB Frame
+CNN
+Vision Encoder
+Sample
+Conv +
+Up-Sampling
+MLP
+Index
+Point
+Estimator
+𝜋!
+𝜋!!
+~ 𝑎""
+~̅ 𝑝""
+𝒩( 𝜇$, 𝜐)
+Δ𝑝""
+~
+Figure 2. Hierarchical Interactive Network (HINT). The high-level policy πθ generates a sub-goal gt at each time t (shown in grey at the
+bottom of the ﬁgure). The right panel shows a sub-policy πθs for an interaction skill. Each sub-policy outputs a primitive action and a point
+on the image for interacting with objects.
+by predicting a point p = (x, y) on the RGB image. If the
+point is on an object and the object is within the range of
+interaction, the agent can interact with the object. Otherwise,
+the interaction action will fail.
+4. Multi-task Training
+Given a task instance T speciﬁed by language, our agent
+predicts a sequence of skills and executes them to achieve the
+desired goal. Our aim is to train for multiple different tasks
+jointly. The tasks might have conﬂicting goals. For example,
+some tasks heavily rely on navigation within a scene, while
+others require long sequences of object interaction actions.
+Furthermore, the span of the tasks can vary signiﬁcantly.
+Some tasks can be performed by executing a short sequence
+of actions, while others require a longer sequence. This
+imbalance makes joint training unstable. To tackle these
+challenges, we propose a hierarchical policy, which relies
+on a pre-training strategy for a set of skills. In this paper,
+we focus on instruction following, question answering, and
+exploration tasks, but our proposed framework is applicable
+to a larger set of tasks that can be speciﬁed using language
+and that can be accomplished using a shared set of skills.
+We ﬁrst present our hierarchical policy with continuous
+interaction parameterization, as shown in Fig. 2. Then, we
+describe the pre-training strategy for the skills. Finally, we
+describe how the various modules are combined and trained
+with a recovery planner.
+4.1. Hierarchical Policy
+Our hierarchical policy, which we name Hierarchical In-
+teractive Network (HINT), decomposes the task instance T
+into multiple sub-goals. Let vt and at denote the observation
+and a primitive action (e.g., turn right) at time t, respec-
+tively, and gt = ⟨gst, got⟩denote a sub-goal, where st is
+the skill required to achieve the sub-goal g and ot is the
+object required (if any) for that skill. The learning problem
+can be formulated as joint learning of a high-level policy
+πθ : (T, at−1, gt−1, It) →gt parameterized by θ and sub-
+policies πθs : (gt, at−1, vt) →(at, pt) parameterized by θs ,
+where pt is an interaction point on the image or None if the
+sub-policy does not require to interact with an object. For
+example, T can be “Heat potato”. One of the sub-goals, gt,
+will be “Open Microwave”, where gst is the “Open” skill and
+got is “Microwave”. pt should be a point on the microwave
+so the agent can interact with it.
+High-level Policy. The high-level policy is implemented
+as a single layer Gated Recurrent Unit (GRU). Given the
+task instance T, we ﬁrst use a single layer GRU to extract
+the task embedding zT . We pass the current visual observa-
+tion vt into a pre-trained ResNet18, producing an encoded
+convolutional image feature zimg
+t
+∈Rd×w×h, where d is
+the feature dimension, w and h is the size of covolutional
+feature map.
+Besides the image feature and task feature, we also
+encode the last primitive action at−1 and last sub-goal
+gt−1 = ⟨gst−1, got−1⟩into embeddings zact
+t−1, zgs
+t−1 and zgo
+t−1
+by linear projection. Following [67], we use a multi-layer
+embedding network to encode [zT , zact
+t−1, zgs
+t−1, zgo
+t−1] into a
+compressed embedding zc
+t ∈Rd. We further replicate zc
+t
+into Rd×w×h and concatenate with zimg
+t
+. This information
+is reshaped into a 1-d vector and used to update the hidden
+states ht of the GRU. The policy then produces a probability
+distribution over all the possible skills and target objects.
+gst, got ∼π([zc
+t, zimg
+t
+])
+(1)
+In recent hierarchical models (e.g., [11]), the high-level pol-
+icy typically updates its hidden states and sub-goals only
+when the previous sub-goal is ﬁnished or after a ﬁxed num-
+ber of steps. In contrast, our high-level policy updates its
+hidden states and the sub-goal after each primitive action
+
+
+is taken. This enables the high-level policy to observe the
+whole trajectory. The left panel of Figure 2 shows the high-
+level policy structure.
+Sub-Policies. We have three distinct sub-polices in our
+experiments: navigation πnav, interaction πact and question
+answering πqa. The navigation and interaction sub-policies
+are distributions over primitive actions at. We concatenate
+the last primitive action embedding zact
+t−1 with sub-goal em-
+bedding sampled from the high-level policy zgs
+t , zgo
+t
+to
+generate ˆzc
+t.
+at ∼πnav/act([ˆzc
+t, ˆzimg
+t
+]),
+(2)
+where ˆzimg
+t
+is the covolutional image feature from a separate
+ResNet18 network.
+To interact with the target object got, the interaction sub-
+policy πact should point to a region of got in the current
+observation. We treat the pointing process as an additional
+action to sample from the πact. However, the action space
+for pointing is enormous – the number of pixels in the im-
+age are often 10000+ and training with this action space is
+infeasible. Therefore, we use a combination of discrete and
+continuous action parameterization to effectively represent
+the pointing action.
+We ﬁrst discretize the image into a B×B grid – which is a
+smaller action space – to obtain a rough estimate of the object
+location ¯p. Then, the discretization error can be recovered
+by sampling a continuous offset ∆p from a multivariate
+normal distribution with mean µp and variance ν. We feed
+ˆzimg
+t
+into three {3 × 3 Conv, BatchNorm, ReLU, 3 × 3
+Conv, BatchNorm} blocks, producing the augmented feature
+ˆzaug
+t
+∈Rd×w×h. We feed ˆzaug
+t
+into three 1 × 1 Convs to
+produce the discrete location of the target point and the mean
+and the variance of multivariate normal distribution.
+The target point can be estimated as p = ¯p + ∆p:
+¯p ∼πact
+p
+(ˆzaug),
+∆p ∼N(µp, ν)
+(3)
+For the question answering sub-policy, we use a standard
+VQA model that encodes the question with a single-layer
+GRU and performs dot product-based attention between the
+question encoding and the convolutional image feature. The
+answer can be sampled from the distribution produced by
+πqa.
+4.2. Skill Pre-training
+Learning a general policy to perform multiple tasks jointly
+is quite challenging. Moreover, the common benchmarks
+for interactive tasks (e.g., ALFRED [60]) are typically small
+compared to passive, static tasks (e.g., ImageNet classiﬁca-
+tion), which adds to the challenges of learning a generaliz-
+able model. One beneﬁt of using a hierarchical policy is
+that the high-level policy can be disentangled from the skill
+sub-policies, which enables skill pre-training. In general, our
+deﬁnition of skill is meaningful interactions with minimal
+sequences of primitive actions.
+Our skills span a range of activities such as navigation
+(e.g., ⟨GoTo, X⟩), interaction (e.g., ⟨Open, X⟩) and generat-
+ing an answer (e.g., ⟨Answer, None⟩). The full list of skills,
+except the VQA skill, is shown in the header of Table 1. For
+interaction, we assume the agent is already close to the tar-
+get thus requiring minimum primitive navigation. During
+pre-training, we put an agent into an environment and task
+the agent to complete atomic skills (e.g., GoTo Apple,
+Open Fridge, etc). We continuously sample plausible
+skill-object pairs and train the agent using the losses deﬁned
+below. As an agent interacts with a scene, objects get pushed
+and moved around. As a result, we need to periodically reset
+and shufﬂe the environment after a ﬁxed number of episodes.
+We train the model with a combination of teacher forcing
+(TF), student forcing (SF) and Proximal Policy Optimization
+(PPO) [57] algorithms. For TF and SF, the expert trajectories
+can be obtained by the shortest path trajectory, which is
+obtained using a planner that has access to the full state of
+the environment. The loss for πnav/act (for TF and SF) is
+deﬁned as:
+Lnav/act = 1
+N
+N
+X
+t=1
+[Lc(at, a∗
+t ) + Lc( ¯pt, ¯pt
+∗)+
+Lg + Laux
+focal + Laux
+1
+],
+(4)
+where N is the number of steps, Lc is the cross-entropy loss,
+Lg is a weighted Gaussian log-likelihood loss for continuous
+policy gradient, and a and ¯p denote the primitive action and
+discretized interaction point. a∗
+t and ¯p∗
+t are the expert action
+at step t. Motivated by [73], we also add two auxiliary losses:
+Laux
+focal – penalty-reduced pixelwise logistic regression with
+focal loss and Laux
+1
+– L1 loss for offset prediction over all
+the visible objects. More details about the loss functions are
+given in the appendix.
+Training with PPO is challenging even for atomic skills,
+given the large space of actions and sparse reward setting.
+Hence, in addition to the goal success reward, we add a
+few auxiliary rewards to help the agent learn correct ac-
+tions. More speciﬁcally, the reward vector is deﬁned as
+r = [rsuccess, rvisible, ract, rpoint] and the correspond-
+ing weights are deﬁned in the appendix. In the reward vector,
+rsuccess = 1 if the sub-goal has achieved. rvisible = 1 if
+the target object is visible. ract = 1 if the agent takes the
+correct primitive action (compared to the expert planner).
+rpoint is a 2-d Normal distribution where the mean is the
+ground truth point on the object. The agent can obtain partial
+rewards even if it is not successful in accomplishing the sub-
+goal. Note that rpoint will be equal to zero for skills that do
+not require object interaction. We ﬁnd that these auxiliary
+rewards greatly benﬁt training with PPO.
+
+
+Model
+Training
+Goto
+Pickup
+Put
+ToggleOn ToggleOff
+Open
+Close
+Slice
+seen unseen seen unseen seen unseen seen unseen seen unseen seen unseen seen unseen seen unseen
+1 Interact
+TF
+-
+-
+8.3
+5.0
+25.0
+20.0
+54.2
+41.9
+53.5
+36.2
+44.0
+19.4
+55.6
+31.2
+22.2
+12.5
+2 Interact
+SF
+-
+-
+16.7
+10.0
+29.9
+19.4
+66.7
+49.6
+53.6
+49.6
+48.6
+42.5
+64.6
+49.4
+27.8
+15.0
+3 Interact
+MIX
+-
+-
+22.2
+10.6
+42.4
+23.7
+69.4
+51.9
+66.6
+43.8
+61.1
+31.2
+71.5
+45.0
+33.3
+32.5
+4 Navigate
+TF
+32.6
+18.4
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+5 Navigate
+SF
+31.9
+16.9
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+6 Navigate
+MIX
+61.1
+48.6
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+7 Joint
+MIX
+47.9
+25.6
+22.9
+11.9
+40.3
+30.6
+72.2
+57.5
+74.3
+47.5
+59.7
+41.2
+71.5
+54.4
+44.4
+22.5
+Table 1. Skill Pre-training Results. Success Rates for Test-Seen and Test-Unseen at the 8 skills used in pre-training.
+4.3. Joint Multi-Task Training
+The pre-training stage trains sub-policies to perform
+atomic skills in the environment but not how to commu-
+nicate with the high-level policy to accomplish the tasks. We
+now train the high level policy and ﬁnetune the sub-policies
+jointly for multiple high-level tasks. The overall loss for the
+high-level policy πθ and sub-policies πθs is deﬁned as:
+L = 1
+N
+N
+X
+t=1
+
+Lc(gst, g∗
+st) + Lc(got, g∗
+ot) + 1gstLgst
+,
+(5)
+where 1gst is an indicator function and Lgst is the corre-
+sponding sub-policy loss for skill gst.
+We use a recovery planner to supervise the learning pro-
+cess of the high-level policy. This planner is deﬁned as a
+dynamic planner for the high-level policy that can guide the
+agent to recover from any previous wrong actions. For ex-
+ample, for a given sub-goal “pick up apple”, the agent might
+pick up a nearby “orange" by mistake. The agent cannot pick
+up the apple unless the agent drops the orange ﬁrst. During
+training, we monitor the expert plan for the sub-goal that
+is being executed and the actual action the agent took. If
+the agent performs a wrong interactive action, the recovery
+planner inserts a new sub-goal to reverse the effect of the
+previous wrong action. The ability to recover from failed
+actions is essential for high-level tasks, especially for long-
+horizon tasks. The use of a recovery planner is critical when
+training with student forcing.
+During multi-task training, we randomly sample the
+episodes in proportion to the original task distribution and up-
+date the high-level policy and the corresponding sub-policies
+simultaneously. See appendix for more details on training
+the high level policy.
+5. Experiments
+Dataset.
+We train and evaluate our embodied agent
+within the AI2-THOR environment. We use 112 scenes
+across 4 scene types (kitchen, living rooms, bedrooms and
+bathrooms), and train our agent to complete four types of
+tasks – (1) short-horizon instruction following (SHIF), (2)
+long-horizon instruction following (LHIF), (3) interactive
+question answering (IQA), and (4) exploratory interaction
+(EXIN). All tasks require the agent to interact with objects
+in the environment. The variety of scenes (112), task types
+(4) and target object categories (110) make the dataset very
+challenging.
+The
+dataset
+contains
+42,037
+episodes
+split
+into
+33,487/1,391/1,358/3,217/2,584 for Training/Val-Seen/Val-
+Unseen/Test-Seen/Test-Unseen, respectively. At the start
+of each episode, the agent’s starting location is randomized
+and objects in a scene are automatically placed at random
+locations following a set of commonsense rules provided
+by AI2-THOR. Hence, no two episodes share the same con-
+ﬁguration of objects. The Val-Seen and Test-Seen episodes
+are performed in the same scenes as Train (hence the sufﬁx
+Seen), but the conﬁgurations of the agent and objects are
+novel. In the Unseen splits, both the environments and ob-
+ject conﬁgurations are new to the agent. Please refer to the
+appendix for dataset and tasks details – some crucial ones
+are presented below.
+SHIF. These tasks are decomposed into a sequence
+of skills. E.g., “clean the apple" is decomposed into
+⟨GoTo, Sink⟩–⟨Put, Sink⟩–⟨ToggleOn, Faucet⟩–
+⟨ToggleOff, Faucet⟩–⟨Pickup, Apple⟩. We initial-
+ize the episodes with fulﬁlled pre-conditions i.e. apple is
+already in hand in this example.
+LHIF. We follow the setting of ALFRED [60] which
+consists of 7 different task types parameterized by 84 object
+classes. Crucially, we differ from ALFRED in that we only
+use the goal instruction and not the step-by-step details.
+This results in a signiﬁcantly harder setting as also noted
+in [60].
+IQA. For IQA, we follow the setting of the IQA
+dataset [24]. Given a question (e.g., “How many bottles are
+in the fridge?"), the agent needs to navigate to the fridge and
+open it to answer the question. There are three different
+question types – state questions, existence questions and
+counting questions, and the answer vocabulary is {Yes, No,
+0, 1, 2, 3}. For each question type, we sample episodes with
+
+
+Interaction
+Pretrain
+Train
+SHIF
+LHIF
+IQA
+EXIN
+Averages
+Seen
+Unseen
+Seen
+Unseen
+Seen
+Unseen
+Seen
+Unseen
+Seen
+Unseen
+Model: Hierarchical Interactive Network (HINT)
+Standard
+No
+1 Single
+75.9
+7.1
+5.1
+0.1
+45.8
+12.8
+21.6
+8.1
+37.0
+7.0
+2 Multi
+42.4
+3.0
+2.8
+0.0
+14.6
+14.4
+0.8
+0.0
+15.1
+4.3
+Uses
+Yes
+3 Single
+77.4
+25.7
+10.5
+0.8
+46.2
+18.0
+16.9
+5.2
+37.7
+12.4
+Detector
+4 Multi
+72.3
+29.8
+9.4
+1.3
+55.0
+20.3
+31.2
+13.6
+41.9
+16.2
+Hard
+No
+5 Single
+83.1
+2.1
+1.1
+0.1
+45.3
+12.9
+12.7
+4.8
+35.6
+5.0
+6 Multi
+38.4
+1.3
+0.1
+0.1
+42.5
+14.4
+0.4
+0.0
+20.3
+4.0
+Predicts
+Yes
+7 Single
+80.8
+20.0
+6.0
+0.3
+46.4
+17.8
+14.1
+5.7
+36.8
+10.9
+Point
+8 Multi
+71.7
+42.7
+5.4
+0.6
+55.4
+22.3
+26.7
+11.4
+39.8
+19.3
+Model: Flat
+Hard
+No
+9 Single
+1.0
+0.0
+0.7
+0.0
+14.2
+9.2
+1.9
+0.8
+4.5
+2.5
+10 Multi
+22.5
+0.5
+0.3
+0.0
+11.9
+6.7
+0.4
+0.0
+8.8
+1.8
+Table 2. Multi-task Results. Success Rates for Test-Seen and Test-Unseen for the 4 tasks. We evaluate 2 models, in single and multi-task
+settings in 2 interaction modes and also compare ASC pre-training to no-pretraining. Average metrics across all 4 tasks are also reported.
+different scene conﬁgurations to make sure there is no bias
+that can be trivially exploited.
+EXIN. The EXIN task requires the agent to navigate to a
+target object, often very far away, and interact with it (e.g.,
+pickup the apple, close the fridge, etc). To create the episode,
+we randomly initialize the agent in the room and randomly
+sample a target object and skill. For object-state-change
+skills, we ensure that the target object’s state differs from
+its goal state. For skills that require additional objects as
+pre-conditions (e.g., “slice the apple” requires the knife in
+agent’s hand), the pre-condition is fulﬁlled at the beginning
+of the episode.
+Evaluating Pre-training. Table 1 details performance
+at the 8 navigation and interaction atomic skills used for
+pre-training. We compare sub-policies trained with teacher
+forcing (TF), student forcing (SF) and a progression of TF
+→SF →reinforcement learning with PPO (MIX). We also
+compare training a joint sub-policy for all 8 skills vs 2 sub-
+policies, one for navigation (Navigate) and one for inter-
+action (Interact) skills. We report the Success Rate on the
+test-seen and test-unseen sets.
+We observe that: (1) For many skills, TF →SF →PPO
+provides gains over TF and SF; in some cases the gains are
+very large (18.4 to 48.6 for GoTo – Row4 vs Row6). (2)
+Joint training improves over Interact (Row3 vs Row7) but
+it is much worse than Navigate (Row6 vs Row7) – likely
+because properties of the navigation skill (such as length) are
+vastly different from others. (3) Skills that require interacting
+with very small objects (PickUp often picks up objects such
+as a pencil or knife) tend to be very challenging, since the
+target object is difﬁcult to pin point. (4) The skill Success
+rates in Seen and Unseen rooms are encouraging, given the
+challenging environment, and useful for downstream tasks.
+The 9th skill (providing an answer), not shown in Table 1,
+uses the last image from the expert policy. Here, we obtain
+an accuracy of 76.0 on Seen and 52.5 on Unseen scenes.
+Evaluating Multi-task Training. Table 2 details Suc-
+cess Rates in the Test scenes of several single and multi-task
+agents at the 4 tasks and also reports averages across all
+4, separated by the Seen and Unseen splits. We report per-
+formance for 2 models: our proposed HINT and a baseline,
+FLAT– which is not hierarchical, and identical to our inter-
+active sub-policy except the model takes task embedding
+instead of sub-goal embedding as input. We train both mod-
+els in a single and multi-task setup. Further, HINT is trained
+with and without ASC pre-training in the Standard and Hard
+interactive settings. When trained without ASC, the sub-
+policy is initialized from scratch.
+Given the large set of results, we refer to the Averages
+columns in the text below but encourage the reader to look
+at all columns in Table 2. We observe that: (1) Pre-training
+the agent with ASC provides very large gains across all 4
+tasks when compared to no pre-training. For the multi-task
+training setup, these large gains are seen for both Standard
+(Row2 vs Row4) and Hard (Row6 vs Row8) settings. The
+Average columns show that the improvements are on the
+order of 2x for Seen and 4x for Unseen scenes. (2) ASC
+enables us to train effective multi-task agents. In the absence
+of pre-training, multi-task training results in a drop over
+single task training (Row6 vs Row5), but with ASC, we see
+gains in going to multi-task (Row8 vs Row7). (3) Our agent
+performs comparably well in the Hard setting (Row4 vs
+Row8) indicating that the network is effective at localizing
+points on target objects. (4) HINT outperforms FLAT by
+huge margins (Row8 vs Row10).
+Ablation Study. Table 3 presents an ablation study. We
+ablate the effects of student forcing, random initialization
+of scenes, usage of the recovery planner and pre-training
+with ASC. As seen, removing each of these components
+provides a drop in the Seen and Unseen success rates on
+
+
+Start
+t=0
+Open fridge
+t=14
+Put fridge
+t=16
+Close fridge
+t=18
+Open fridge
+t=20
+Pick up pot
+t=22
+Close fridge
+t=24
+Goal: cool pot
+t=25
+Start
+Confuses ball
+for lamp
+Finds desk lamp
+Goal: toggle on
+desk lamp
+t=0
+t=16
+t=31
+t=32
+Start
+t=0
+Question: is any candle
+in or on the box?
+Answer: Yes
+t=14
+(a)
+(b)
+(c)
+(d)
+Start
+t=0
+Subgoal:
+pick up towel
+t=22, 23
+t=35
+t=36
+Subgoal:
+put sink
+Goal: put some hand
+towel on sink basin
+Figure 3. Qualitative Results. HINT trajectories for validation episodes in Hard setting allow us to better interpret the observations and
+actions of the agent. (a) SHIF, with a large amount of interactions in a kitchen, (b) LHIF with multiple interaction and navigation sub-goals
+in a bathroom, (c) IQA for a binary question in a living room, and (d) EXIN with exploration, incorrect identiﬁcation of the target object and
+posterior correction in a bedroom.
+Student
+Random
+Recovery
+Pre-
+SHIF
+LHIF
+IQA
+EXIN
+Averages
+Forcing
+init
+Planner
+training
+seen
+unseen
+seen
+unseen
+seen
+unseen
+seen
+unseen
+seen
+unseen
+-
+
+
+
+69.13
+24.53
+4.09
+0.29
+54.10
+32.10
+21.66
+10.96
+37.24
+16.97
+
+-
+
+
+72.90
+22.13
+4.58
+0.43
+54.40
+26.03
+26.45
+12.85
+39.58
+15.36
+
+
+-
+
+64.10
+22.77
+3.81
+0.64
+49.43
+18.33
+21.83
+11.43
+34.79
+13.29
+
+
+
+-
+38.40
+1.31
+0.10
+0.14
+42.47
+14.43
+0.40
+0.00
+20.34
+3.97
+
+
+
+
+71.70
+42.70
+5.43
+0.64
+55.43
+22.33
+26.66
+11.42
+39.80
+19.27
+Table 3. Ablation Study for HINT on the Test sets.
+average across all four tasks. The largest drop is observed if
+pre-training is switched off indicating the immense beneﬁt
+of pre-training. Random initialization is expectedly useful
+for generalization.
+Interpretability. Figure 3 shows trajectories for Val-
+Seen episodes in the Hard interaction setting for each of the
+four task types. As observed, our hierarchical agent is able
+to solve them effectively. Importantly, our method is more
+interpretable than past approaches that directly output an
+action based on the current observation and the language
+speciﬁcation of the task (e.g., [48]). At each time step, one
+can observe the sub-goals and pixel locations output by the
+high level policy. The sub-goals allow us to interpret the
+progress of the agent along its episode and its current sub-
+goal of interest, and the pixel heatmaps and object types
+allow us to interpret which object the agent is presently
+interested in interacting with, and where it thinks the object
+resides in the scene. For instance, in (b) one can notice
+sub-goals like Pick up towel and Put sink that are
+correctly executed. Also notice an error in (d) where the
+high level policy confuses a ball by the desk lamp, but the
+agent eventually recovers to ﬁnd the correct desk lamp and
+then switch it on.
+6. Conclusion
+Solving Embodied AI tasks requires tackling unique chal-
+lenges due to the long-horizon nature of the tasks, partial
+observability of the states and high-dimensional inputs such
+as images. While there has been signiﬁcant progress in multi-
+task training in vision and NLP, less progress has been seen
+in Embodied AI, where models usually target an individual
+task. As a step towards multi-task training for Embodied AI,
+we propose ASC, a method that proves effective in training
+multiple tasks jointly. A key element of this approach is a
+pre-training strategy and a training regime for handling multi-
+ple embodied tasks. Our experimental evaluations show that
+our multi-task training approach provides better results com-
+pared to training each task individually, while the amortized
+amount of data for each task is signiﬁcantly lower.
+Limitations: The proposed approach has certain limi-
+tations. We discuss a few important ones here. First, the
+pre-training strategy relies on supervision from the environ-
+ment. While the use of simulated environments makes this
+plausible, pre-training skills using only self supervision is
+an interesting area of research that we will address in fu-
+ture work. Second, the set of skills are manually deﬁned.
+Automatic learning of the required skills is an interesting
+direction to explore. Finally, this work abstracts away a lot
+of challenges involved in physical robot interactions. Given
+the numerous challenges, even in simulation, transfer to the
+physical world will be considered in future work. Having
+said that, we have tried to minimize the assumptions that are
+only valid in simulation.
+Negative societal impact: The scope of our contribu-
+
+
+tions do not have a direct negative societal impact. Research
+in the Embodied AI domain might lead to creating robots
+that can be used for malicious applications. While important
+to consider, we do not posit any imminent concern given
+the numerous challenges that remain in our quest to build
+autonomous and intelligent agents.
+References
+[1] Peter Anderson, Angel X. Chang, Devendra Singh Chaplot, A.
+Dosovitskiy, Saurabh Gupta, V. Koltun, J. Kosecka, Jitendra
+Malik, R. Mottaghi, M. Savva, and A. Zamir. On evaluation
+of embodied navigation agents. arXiv, 2018. 1
+[2] Peter Anderson, Qi Wu, Damien Teney, Jake Bruce, Mark
+Johnson, Niko Sünderhauf, Ian Reid, Stephen Gould, and
+Anton Van Den Hengel. Vision-and-language navigation:
+Interpreting visually-grounded navigation instructions in real
+environments. In CVPR, 2018. 1
+[3] Jacob Andreas, Dan Klein, and Sergey Levine. Modular
+multitask reinforcement learning with policy sketches. In
+International Conference on Machine Learning, pages 166–
+175. PMLR, 2017. 2
+[4] Dhruv Batra, Angel X Chang, Sonia Chernova, Andrew J
+Davison, Jia Deng, Vladlen Koltun, Sergey Levine, Jitendra
+Malik, Igor Mordatch, Roozbeh Mottaghi, Manolis Savva,
+and Hao Su. Rearrangement: A challenge for embodied ai.
+arXiv, 2020. 1
+[5] Dhruv Batra, Aaron Gokaslan, Aniruddha Kembhavi, Olek-
+sandr Maksymets, R. Mottaghi, M. Savva, A. Toshev, and Erik
+Wijmans. Objectnav revisited: On evaluation of embodied
+agents navigating to objects. arXiv, 2020. 1
+[6] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Sub-
+biah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakan-
+tan, Pranav Shyam, Girish Sastry, Amanda Askell, Sand-
+hini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom
+Henighan, Rewon Child, Aditya Ramesh, Daniel Ziegler, Jef-
+frey Wu, Clemens Winter, Chris Hesse, Mark Chen, Eric
+Sigler, Mateusz Litwin, Scott Gray, Benjamin Chess, Jack
+Clark, Christopher Berner, Sam McCandlish, Alec Radford,
+Ilya Sutskever, and Dario Amodei. Language models are
+few-shot learners. In NeurIPS, 2020. 2
+[7] Devendra Singh Chaplot, Lisa Lee, Ruslan Salakhutdinov,
+Devi Parikh, and Dhruv Batra. Embodied multimodal multi-
+task learning. In IJCAI, 2020. 2
+[8] Kevin Clark, Minh-Thang Luong, Urvashi Khandelwal,
+Christopher D. Manning, and Quoc V. Le. BAM! born-again
+multi-task networks for natural language understanding. In
+ACL, 2019. 2
+[9] Ronan Collobert and Jason Weston. A uniﬁed architecture
+for natural language processing: Deep neural networks with
+multitask learning. In ICML, 2008. 2
+[10] Abhishek Das, Samyak Datta, Georgia Gkioxari, Stefan Lee,
+Devi Parikh, and Dhruv Batra. Embodied Question Answer-
+ing. In CVPR, 2018. 1, 2, 3
+[11] Abhishek Das, Georgia Gkioxari, Stefan Lee, Devi Parikh,
+and Dhruv Batra. Neural modular control for embodied ques-
+tion answering. In CoRL, 2018. 3, 4
+[12] Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina
+Toutanova. Bert: Pre-training of deep bidirectional transform-
+ers for language understanding. In NAACL, 2019. 2
+[13] Yilun Du, Chuang Gan, and Phillip Isola. Curious repre-
+sentation learning for embodied intelligence. arXiv, 2021.
+2
+[14] Kiana Ehsani, Winson Han, Alvaro Herrasti, Eli VanderBilt,
+Luca Weihs, Eric Kolve, Aniruddha Kembhavi, and Roozbeh
+Mottaghi. ManipulaTHOR: A Framework for Visual Object
+Manipulation. In CVPR, 2021. 1
+[15] David Eigen and Rob Fergus. Predicting depth, surface nor-
+mals and semantic labels with a common multi-scale convo-
+lutional architecture. In ICCV, 2015. 2
+[16] Benjamin Eysenbach, Abhishek Gupta, Julian Ibarz, and
+Sergey Levine. Diversity is all you need: Learning skills
+without a reward function. In ICLR, 2019. 3
+[17] Carlos Florensa, Yan Duan, and Pieter Abbeel. Stochastic
+neural networks for hierarchical reinforcement learning. In
+ICLR, 2017. 3
+[18] Ronan Fruit and Alessandro Lazaric.
+Exploration-
+Exploitation in MDPs with Options. In AISTATS, 2017. 3
+[19] Chuang Gan, Jeremy Schwartz, S. Alter, Martin Schrimpf,
+James Traer, Julian De Freitas, J. Kubilius, Abhishek Bhand-
+waldar, N. Haber, Megumi Sano, Kuno Kim, Elias Wang,
+Damian Mrowca, Michael Lingelbach, Aidan Curtis, Kevin T.
+Feigelis, Daniel Bear, Dan Gutfreund, David Cox, J. DiCarlo,
+Josh H. McDermott, J. Tenenbaum, and D. Yamins. Threed-
+world: A platform for interactive multi-modal physical simu-
+lation. arXiv, 2020. 1
+[20] Deepti Ghadiyaram, Du Tran, and Dhruv Mahajan. Large-
+scale weakly-supervised pre-training for video action recog-
+nition. In CVPR, 2019. 2
+[21] Ross Girshick, Jeff Donahue, Trevor Darrell, and Jitendra
+Malik. Rich feature hierarchies for accurate object detection
+and semantic segmentation. In CVPR, 2014. 2
+[22] Sandeep Goel and Manfred Huber. Subgoal discovery for
+hierarchical reinforcement learning using learned policies. In
+FLAIRS conference, 2003. 3
+[23] Daniel Gordon, Abhishek Kadian, Devi Parikh, Judy Hoff-
+man, and Dhruv Batra. Splitnet: Sim2sim and task2task
+transfer for embodied visual navigation. In ICCV, 2019. 3
+[24] Daniel Gordon, Aniruddha Kembhavi, Mohammad Rastegari,
+Joseph Redmon, Dieter Fox, and Ali Farhadi. Iqa: Visual
+question answering in interactive environments. In CVPR,
+2018. 1, 3, 6
+[25] Tanmay Gupta, Amita Kamath, Aniruddha Kembhavi, and
+Derek Hoiem. Towards general purpose vision systems. arXiv,
+2021. 2
+[26] Ronghang Hu and Amanpreet Singh. Transformer is all you
+need: Multimodal multitask learning with a uniﬁed trans-
+former. arXiv, 2021. 2
+[27] Unnat Jain, Luca Weihs, Eric Kolve, Ali Farhadi, Svetlana
+Lazebnik, Aniruddha Kembhavi, and Alexander G. Schwing.
+A cordial sync: Going beyond marginal policies for multi-
+agent embodied tasks. In ECCV, 2020. 1
+[28] Unnat Jain, Luca Weihs, Eric Kolve, Mohammad Rastegari,
+Svetlana Lazebnik, Ali Farhadi, Alexander Schwing, and
+
+
+Aniruddha Kembhavi. Two Body Problem: Collaborative
+Visual Task Completion. In CVPR, 2019. 1
+[29] Yiding Jiang, Shixiang Gu, Kevin Murphy, and Chelsea Finn.
+Language as an abstraction for hierarchical deep reinforce-
+ment learning. In NeurIPS, 2019. 3
+[30] Lukasz Kaiser, Aidan N. Gomez, Noam Shazeer, Ashish
+Vaswani, Niki Parmar, Llion Jones, and Jakob Uszkoreit. One
+model to learn them all. arXiv, 2017. 2
+[31] Daniel Khashabi, Sewon Min, Tushar Khot, Ashish Sabhar-
+wal, Oyvind Tafjord, Peter Clark, and Hannaneh Hajishirzi.
+Uniﬁedqa: Crossing format boundaries with a single qa sys-
+tem. arXiv, 2020. 2
+[32] Iasonas Kokkinos. Ubernet: Training a universal convolu-
+tional neural network for low-, mid-, and high-level vision
+using diverse datasets and limited memory. In CVPR, 2017. 2
+[33] Eric Kolve, Roozbeh Mottaghi, Winson Han, Eli VanderBilt,
+Luca Weihs, Alvaro Herrasti, Daniel Gordon, Yuke Zhu, Ab-
+hinav Gupta, and Ali Farhadi. Ai2-thor: An interactive 3d
+environment for visual ai. arXiv, 2017. 1, 3
+[34] Tejas D Kulkarni, Karthik Narasimhan, Ardavan Saeedi, and
+Josh Tenenbaum. Hierarchical deep reinforcement learning:
+Integrating temporal abstraction and intrinsic motivation. In
+NeurIPS, 2016. 3
+[35] Hoang Le, Nan Jiang, Alekh Agarwal, Miroslav Dudík,
+Yisong Yue, and Hal Daumé. Hierarchical imitation and
+reinforcement learning. In ICML, 2018. 3
+[36] Juncheng Li, Xin Wang, Siliang Tang, Haizhou Shi, Fei Wu,
+Yueting Zhuang, and William Yang Wang. Unsupervised re-
+inforcement learning of transferable meta-skills for embodied
+navigation. In CVPR, 2020. 3
+[37] Shikun Liu, Edward Johns, and Andrew Davison. End-to-end
+multi-task learning with attention. In CVPR, 2019. 2
+[38] Xiaodong Liu, Jianfeng Gao, Xiaodong He, Li Deng, Kevin
+Duh, and Ye-yi Wang. Representation learning using multi-
+task deep neural networks for semantic classiﬁcation and
+information retrieval. In NAACL, 2015. 2
+[39] Xiaodong Liu, Pengcheng He, Weizhu Chen, and Jianfeng
+Gao. Multi-task deep neural networks for natural language
+understanding. In ACL, 2019. 2
+[40] Jiasen Lu, Vedanuj Goswami, Marcus Rohrbach, Devi Parikh,
+and Stefan Lee. 12-in-1: Multi-task vision and language
+representation learning. In CVPR, 2020. 2
+[41] Dhruv Mahajan, Ross Girshick, Vignesh Ramanathan, Kaim-
+ing He, Manohar Paluri, Yixuan Li, Ashwin Bharambe, and
+Laurens Van Der Maaten. Exploring the limits of weakly
+supervised pretraining. In ECCV, 2018. 2
+[42] Arun Mallya and Svetlana Lazebnik. Packnet: Adding multi-
+ple tasks to a single network by iterative pruning. In CVPR,
+2018. 2
+[43] Bryan McCann, Nitish Shirish Keskar, Caiming Xiong, and
+Richard Socher. The natural language decathlon: Multitask
+learning as question answering. arXiv, 2018. 2
+[44] Amy Mcgovern and Andrew G. Barto. Automatic discovery
+of subgoals in reinforcement learning using diverse density.
+In ICML, 2001. 3
+[45] Ishan Misra, Abhinav Shrivastava, Abhinav Gupta, and Mar-
+tial Hebert. Cross-stitch networks for multi-task learning. In
+CVPR, 2016. 2
+[46] Suraj Nair and Chelsea Finn. Hierarchical foresight: Self-
+supervised learning of long-horizon tasks via visual subgoal
+generation. In ICLR, 2020. 3
+[47] Junhyuk Oh, Satinder Singh, Honglak Lee, and Pushmeet
+Kohli. Zero-shot task generalization with multi-task deep
+reinforcement learning. In ICML, 2017. 3
+[48] Alexander Pashevich, Cordelia Schmid, and Chen Sun.
+Episodic transformer for vision-and-language navigation. In
+ICCV, 2021. 8
+[49] Matthew E Peters, Mark Neumann, Mohit Iyyer, Matt Gard-
+ner, Christopher Clark, Kenton Lee, and Luke Zettlemoyer.
+Deep contextualized word representations. In NAACL, 2018.
+2
+[50] Subhojeet Pramanik, Priyanka Agrawal, and Aman Hussain.
+Omninet: A uniﬁed architecture for multi-modal multi-task
+learning. arXiv, 2019. 2
+[51] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario
+Amodei, and Ilya Sutskever. Language models are unsuper-
+vised multitask learners. OpenAI blog, 1(8), 2019. 2
+[52] Santhosh K. Ramakrishnan, Tushar Nagarajan, Ziad Al-Halah,
+and Kristen Grauman. Environment predictive coding for
+embodied agents. arXiv, 2021. 3
+[53] Zhongzheng Ren and Yong Jae Lee.
+Cross-domain self-
+supervised multi-task feature learning using synthetic imagery.
+In CVPR, 2018. 2
+[54] Manolis Savva, Abhishek Kadian, Oleksandr Maksymets,
+Yili Zhao, Erik Wijmans, Bhavana Jain, Julian Straub, Jia
+Liu, Vladlen Koltun, Jitendra Malik, Devi Parikh, and Dhruv
+Batra. Habitat: A platform for embodied ai research. In ICCV,
+2019. 1
+[55] Alexander Sax, Bradley Emi, Amir R. Zamir, Leonidas J.
+Guibas, Silvio Savarese, and Jitendra Malik. Mid-level visual
+representations improve generalization and sample efﬁciency
+for learning visuomotor policies. In CoRL, 2019. 2
+[56] Alexander Sax, Jeffrey O. Zhang, Bradley Emi, Amir Zamir,
+Silvio Savarese, Leonidas Guibas, and Jitendra Malik. Learn-
+ing to navigate using mid-level visual priors. In CoRL, 2020.
+2
+[57] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Rad-
+ford, and Oleg Klimov. Proximal policy optimization algo-
+rithms. arXiv, 2017. 5
+[58] Ozan Sener and Vladlen Koltun. Multi-task learning as multi-
+objective optimization. In NeurIPS, 2018. 2
+[59] Bokui Shen, Fei Xia, Chengshu Li, Roberto Mart’in-Mart’in,
+Linxi Fan, Guanzhi Wang, S. Buch, C. D’Arpino, Sanjana
+Srivastava, Lyne P. Tchapmi, M. Tchapmi, Kent Vainio, Li
+Fei-Fei, and S. Savarese. igibson, a simulation environment
+for interactive tasks in large realistic scenes. arXiv, 2020. 1
+[60] Mohit Shridhar, Jesse Thomason, Daniel Gordon, Yonatan
+Bisk, Winson Han, Roozbeh Mottaghi, Luke Zettlemoyer, and
+Dieter Fox. Alfred: A benchmark for interpreting grounded
+instructions for everyday tasks. In CVPR, 2020. 1, 3, 5, 6
+[61] Tianmin Shu, Caiming Xiong, and Richard Socher. Hierar-
+chical and interpretable skill acquisition in multi-task rein-
+forcement learning. arXiv preprint arXiv:1712.07294, 2017.
+2
+
+
+[62] Chen Sun, Abhinav Shrivastava, Saurabh Singh, and Abhinav
+Gupta. Revisiting unreasonable effectiveness of data in deep
+learning era. In ICCV, 2017. 2
+[63] Chen Tessler, Shahar Givony, Tom Zahavy, Daniel J.
+Mankowitz, and Shie Mannor. A deep hierarchical approach
+to lifelong learning in minecraft. In AAAI, 2017. 3
+[64] Aaron van den Oord, Yazhe Li, and Oriol Vinyals. Repre-
+sentation learning with contrastive predictive coding. arXiv,
+2019. 3
+[65] Xin Wang, Vihan Jain, Eugene Ie, William Yang Wang, Zor-
+nitsa Kozareva, and Sujith Ravi. Environment-agnostic mul-
+titask learning for natural language grounded navigation. In
+ECCV, 2020. 2
+[66] Luca Weihs, Matt Deitke, Aniruddha Kembhavi, and Roozbeh
+Mottaghi. Visual room rearrangement. In CVPR, 2021. 1
+[67] Luca Weihs, Jordi Salvador, Klemen Kotar, Unnat Jain, Kuo-
+Hao Zeng, Roozbeh Mottaghi, and Aniruddha Kembhavi.
+Allenact: A framework for embodied ai research. arXiv, 2020.
+4
+[68] Erik Wijmans, Abhishek Kadian, Ari S. Morcos, Stefan Lee,
+Irfan Essa, Devi Parikh, Manolis Savva, and Dhruv Batra.
+Dd-ppo: Learning near-perfect pointgoal navigators from 2.5
+billion frames. In ICLR, 2020. 1, 2
+[69] Mitchell Wortsman, Kiana Ehsani, Mohammad Rastegari, Ali
+Farhadi, and Roozbeh Mottaghi. Learning to learn how to
+learn: Self-adaptive visual navigation using meta-learning. In
+CVPR, 2019. 2
+[70] Fei Xia, Chengshu Li, Roberto Martín-Martín, Or Litany,
+Alexander Toshev, and Silvio Savarese. Relmogen: Leverag-
+ing motion generation in reinforcement learning for mobile
+manipulation. In ICRA, 2021. 3
+[71] Fanbo Xiang, Yuzhe Qin, Kaichun Mo, Yikuan Xia, Hao Zhu,
+Fangchen Liu, Minghua Liu, H. Jiang, Y. Yuan, H. Wang, Li
+Yi, A. Chang, L. Guibas, and Hao Su. Sapien: A simulated
+part-based interactive environment. In CVPR, 2020. 1
+[72] Kuo-Hao Zeng, Luca Weihs, A. Farhadi, and R. Mottaghi.
+Pushing it out of the way: Interactive visual navigation. In
+CVPR, 2021. 1
+[73] Xingyi Zhou, Dequan Wang, and Philipp Krähenbühl. Objects
+as points. arXiv, 2019. 5, 12
+[74] Yuke Zhu, Daniel Gordon, Eric Kolve, Dieter Fox, Li Fei-Fei,
+Abhinav Gupta, Roozbeh Mottaghi, and Ali Farhadi. Visual
+semantic planning using deep successor representations. In
+ICCV, 2017. 1, 2
+Appendix
+A. Implementation Details
+Here we provide the implementation details of our full
+model. There are two stages:
+Stage 1: Skill Pre-training. For interaction, navigation
+and question answering sub-policies, we use a ResNet18
+model pre-trained on ImageNet as the backbone. The ﬁrst
+two residual blocks in the backbone are ﬁxed during training.
+We periodically reset and randomly initialize the objects in
+the room every 10 rollout steps. We use Adam with learn-
+ing rate of 3 · 10−4., and train with teacher forcing (20M
+steps), student forcing (20M steps) and proximal policy opti-
+mization (60M steps). For student forcing, the agent alter-
+nates between choosing actions from ground-truth planner
+or from the current learned policy with some probability
+ϵ. We use a linear decay schedule (ϵ = 1.0 →0.0) in our
+experiment. The corresponding weight for the reward vector
+r = [rsuccess, rvisible, ract, rpoint] is [20.0, 1.0, 1.0, 0.5].
+Our model can be trained with 8 Titan X GPU with 72 pro-
+cesses in 5 days.
+Stage 2: Multi-Task Training. For multi-task training,
+we initialize the sub-policies with the pre-trained model. We
+use the same ResNet18 model pre-trained on ImageNet as the
+backbone, and all residual blocks in the backbone are ﬁxed
+during training. We use Adam with learning rate of 3e-4
+to train the high-level policy and 3e-5 to ﬁnetune the sub-
+policies. For long horizon tasks such as LHIF, it is very hard
+to successfully accomplish the task by random exploration
+of the environment. Thus we only train with teacher forcing
+and student forcing and do not use PPO. For all models, we
+train with teacher forcing (10M steps) and student forcing
+(10M steps). Similar to skill pre-training, we use a linear
+decay schedule (ϵ = 1.0 →0.6) in our experiment. For
+multi-task training, our model can be trained with 8 Titan X
+GPU with 40 processes in 2 days.
+B. Action Space
+Here we provide the details of our action space:
+High-level policy. Our high-level policy predicts the
+skills and target object type for the sub-policies. There are
+10 skills including <End> (indicating the end of the ex-
+ecution) and 110 target objects. The skills are <Goto>,
+<Pickup>,
+<Put>,
+<ToogleOn>,
+<ToogleOff>,
+<Open>, <Close>, <Slice>, <Answer> and <End>.
+Since <Answer> and <End> do not take any target object,
+there are 8 × 110 + 2 = 882 possible choices at each time
+step for the high-level policy.
+Navigation sub-policy.
+The agents navigate through
+the environment via 6 different actions MoveAhead,
+RotateLeft, RotateRight, LookUp, LookDown
+and Done.
+
+
+Interaction sub-policy. For interaction sub-policy, we
+assume the agent is close to the target, thus needs to nav-
+igate and perform the interaction action. Thus the action
+space is MoveAhead, RotateLeft, RotateRight,
+LookUp, LookDown, OpenObject, CloseObject,
+PickupObject,
+PutObject,
+ToggleObjectOn,
+ToggleObjectOff, SliceObject and Done. For in-
+teractive actions, the interaction sub-policy also needs to
+predict an interaction point on the image plane which is spec-
+iﬁed by a discrete location on a grid and a continuous offset
+from the point on the grid. We consider an 8 × 8 grid, the
+continuous offset is sampled from a 2-d multivariate normal
+distribution.
+Question answering sub-policy. The action space for
+question answering sub-policy is Yes, No, 0, 1, 2 and 3.
+C. Auxiliary Loss Functions
+We add two auxiliary losses during skill pre-training:
+Laux
+focal and Laux
+1
+. Following [73], we smooth out all ground
+truth object centers Y ∈[0, 1]
+W
+R × H
+R ×C using a Gaussian
+kernel Yxyc = exp (−((x−px)2+(y−py)2)
+2σ2pc
+), where σpc is the
+standard deviation and depends on the object size. The train-
+ing objective is penalty-reduced pixelwise logistic regression
+with focal loss:
+Laux
+focal = −1
+M
+X
+xyc
+ (1 −ˆYxyc)α log( ˆYxyc)
+if Yxyc = 1
+(1 −Y β
+xyc)( ˆYxyc)α log(1 −ˆYxyc)
+otherwise
+where α and β are hyper-parameters of the focal loss (α = 2,
+β = 4). M is the number of object centers in image. The offset
+mean is shared across all classes and can be trained with an L1 loss:
+Laux
+1
+= 1
+M
+X
+p
+|µp −µ∗
+p|,
+(6)
+where µp is the predicted mean of the offset and µ∗
+p is the target
+offset.
+D. Results of task sub-categories
+Table 2 shows the average performance. Here we show the
+detailed results for sub-categories of each task in Table 4, Table 5
+and Table 6.
+E. Dataset
+We describe the details of our datasets as mentioned in Sec-
+tion 5 (line 289). Table 7 shows the text templates used to generate
+the instructions for different tasks. {obj}, {recep} and {mrecep}
+correspond to target object, receptacle and movable receptacle, re-
+spectively. Table 8 shows the splits for the four task types, including
+seen (novel conﬁgurations) and unseen (novel scenes) splits for val-
+idation and testing. Fig. 4 shows the distribution of sub-categories
+for each task type (3 for SHIF and IQA and 7 for LHIF and EXIN).
+In general, the distributions are balanced across sub-categories,
+but IQA has roughly twice the number of object state questions
+than for existence or counting. The reason is that there are various
+types of object states (open/closed, toggled on/off, dirty/clean, or
+empty/full).
+In order to illustrate the richness in terms of target object types
+and receptacles in our datasets, Fig. 5 shows the respective distribu-
+tions across all ﬁve splits in LHIF and IQA. The other two tasks
+share a similar distribution.
+F. More Qualitative Examples
+Figs. 6, 7, 8, 9, and 10 show several validation seen trajectories
+for all four task types. We only include interaction actions (besides
+start and end observations) for all tasks.
+Failures. Some of the included trajectories show failures that natu-
+rally and often occur across all task types and whose accumulation
+leads to the achieved success rates. Fig. 6 (“heat bread” and “clean
+cloth”) show a wrong target object for the pickup skill (plate instead
+of bread) issued by the high-level policy, which is recovered by the
+sub-policy, and failure to pickup an object with a small footprint
+in the given observation (cloth) by the sub-policy. Fig. 8 (“put a
+hot cup from microwave in diningtable”) shows two failed inter-
+actions with a Cabinet. Fig. 9 (“is any soap bottle in or on the
+toilet?”) again shows a failed interaction, which is eventually ren-
+dered irrelevant since the answer in this episode could be provided
+by observing the object lying on the surface of the toilet. Fig. 11
+shows trajectories for failed episodes, where interaction with small
+or partially occluded objects is a common failure mode.
+G. Dataset Terms of Service
+We use AI2-THOR to create our dataset which is under Apache
+License 2.0.
+
+
+Interaction Pretrain Train
+Heat
+Clean
+Cool
+Averages
+Existing
+Counting
+State
+Averages
+Seen
+Unseen
+Seen Unseen
+Seen Unseen
+Seen
+Unseen
+Seen
+Unseen
+Seen
+Unseen
+Seen
+Unseen
+Seen
+Unseen
+Model: Hierarchical Interactive Network (HINT)
+Standard
+No
+1 Single
+88.0
+2.3 54.0
+6.2 85.7
+12.7 75.9
+7.1 55.2
+18.5 36.2
+8.8 46.0
+11.1 45.8
+12.8
+2 Multi
+41.0
+4.7 29.9
+1.2 56.2
+3.2 42.4
+3.0 17.5
+16.3 10.5
+10.2 15.9
+16.7 14.6
+14.4
+Uses
+Yes
+3 Single
+87.5
+23.3 54.7
+17.3 90.0
+36.5 77.4
+25.7 54.0
+20.0 32.5
+11.0 52.1
+22.9 46.2
+18.0
+Detector
+4 Multi
+81.0
+25.6 55.5
+32.1 80.4
+31.7 72.3
+29.8 66.5
+25.0 39.3
+12.0 59.3
+23.8 55.0
+20.3
+Hard
+No
+5 Single
+94.0
+0.0 59.9
+0.0 95.5
+6.4 83.1
+2.1 54.2
+18.8 36.0
+8.8 45.8
+11.1 45.3
+12.9
+6 Multi
+40.0
+2.3 19.0
+0.0 56.2
+1.6 38.4
+1.3 17.5
+16.3 10.5
+10.2 15.9
+16.7 14.6
+14.4
+Predicts
+Yes
+7 Single
+90.0
+23.3 56.9
+4.9 95.5
+31.7 80.8
+20.0 54.2
+20.0 32.5
+11.0 52.7
+22.2 46.5
+17.7
+Point
+8 Multi
+84.0
+23.3 40.9
+52.4 90.2
+52.4 71.7
+42.7 67.5
+25.5 39.5
+11.7 59.3
+23.8 55.4
+20.3
+Model: Flat
+Hard
+No
+9 Single
+0.0
+0.0
+0.0
+0.0
+3.1
+0.0
+1.0
+0.0 14.2
+8.3
+6.8
+2.3 21.6
+17.1 14.2
+9.2
+10 Multi 21.0
+0.0 23.4
+0.0 23.2
+1.59 22.5
+0.5 13.8
+5.5
+9.3
+5.5 12.5
+9.2 11.9
+6.7
+Table 4. Short Horizon Instruction Following (SHIF) and Interactive QA (IQA) results.
+Interaction Pretrain Train
+Pick
+Stack
+Pick Two
+Clean
+Heat
+Cool
+Examine
+Averages
+& Place
+& Place
+& Place
+& Place
+& Place
+& Place
+in Light
+Seen
+Unseen
+Seen
+Unseen
+Seen
+Unseen Seen Unseen
+Seen
+Unseen
+Seen
+Unseen
+Seen
+Unseen
+Seen
+Unseen
+Model: Hierarchical Interactive Network (HINT)
+Standard
+No
+1 Single
+16.7
+1.0
+4.0
+0.0 1.3
+0.0 0.0
+0.0 1.3
+0.0 5.3
+0.0
+6.7
+0.0
+5.1
+0.1
+2 Multi
+10.0
+0.0
+0.7
+0.0 0.7
+0.0 0.0
+0.0 1.3
+0.0 2.7
+0.0
+4.0
+0.0
+2.8
+0.0
+Uses
+Yes
+3 Single
+22.0
+1.0
+8.7
+0.0 6.7
+0.0 2.0
+0.0 6.0
+0.0 9.3
+0.0 18.7
+4.4 10.5
+0.8
+Detector
+4 Multi
+22.7
+5.0 10.7
+0.0 4.0
+0.0 2.7
+0.0 2.0
+1.4 6.7
+1.0 17.3
+1.5
+9.4
+1.3
+Hard
+No
+5 Single
+4.0
+1.0
+2.7
+0.0 0.0
+0.0 0.0
+0.0 0.0
+0.0 0.0
+0.0
+1.3
+0.0
+1.1
+0.1
+6 Multi
+0.7
+1.0
+0.0
+0.0 0.0
+0.0 0.0
+0.0 0.0
+0.0 0.0
+0.0
+0.0
+0.0
+0.1
+0.1
+Predicts
+Yes
+7 Single
+12.7
+2.0 10.0
+0.0 1.3
+0.0 4.0
+0.0 1.3
+0.0 4.7
+0.0
+8.0
+0.0
+6.0
+0.3
+Point
+8 Multi
+15.3
+3.0 10.7
+0.0 1.3
+0.0 0.7
+0.0 0.0
+0.0 2.7
+0.0
+7.3
+1.5
+5.4
+0.6
+Model: Flat
+Hard
+No
+9 Single
+2.0
+0.0
+2.7
+0.0 0.0
+0.0 0.0
+0.0 0.0
+0.0 0.0
+0.0
+0.0
+0.0
+0.7
+0.0
+10 Multi
+2.0
+0.0
+0.0
+0.0 0.0
+0.0 0.0
+0.0 0.0
+0.0 0.0
+0.0
+0.0
+0.0
+0.3
+0.0
+Table 5. Long Horizon Instruction Following (LHIF) results.
+
+
+Interaction Pretrain Train
+Pickup
+Put
+ToggleOn ToggleOff
+Open
+Close
+Slice
+Averages
+Seen
+Unseen
+Seen Unseen
+Seen
+Unseen
+Seen
+Unseen
+Seen
+Unseen
+Seen
+Unseen
+Seen
+Unseen
+Seen
+Unseen
+Model: Hierarchical Interactive Network (HINT)
+Standard
+No
+1 Single
+11.0
+6.7
+0.0
+0.0 11.1
+6.7 38.9
+20.0 22.0
+0.0 27.8
+6.67 40.0
+16.7 21.6
+8.1
+2 Multi
+0.0
+0.0
+0.0
+0.0
+0.0
+0.0
+2.8
+0.0
+0.0
+0.0
+2.8
+0.0
+0.0
+0.0
+0.8
+0.0
+Uses
+Yes
+3 Single
+5.6
+6.7 11.1
+0.0 27.8
+6.7 30.6
+6.7 13.9
+6.7 19.4
+10.0 10.0
+0.0 16.9
+5.2
+Detector
+4 Multi
+27.8
+3.3 25.0
+20.0 44.4
+13.3 50.0
+20.0 33.3
+13.3 27.8
+16.7 10.0
+8.3 31.2
+13.6
+Hard
+No
+5 Single
+5.6
+6.7
+0.0
+6.7
+5.6
+0.0 33.0
+13.3 11.1
+0.0 22.2
+6.7 11.1
+0.0 12.7
+4.8
+6 Multi
+0.0
+0.0
+0.0
+0.0
+0.0
+0.0
+0.0
+0.0
+0.0
+0.0
+2.8
+0.0
+0.0
+0.0
+0.4
+0.0
+Predicts
+Yes
+7 Single
+5.6
+0.0 11.1
+0.0 19.4
+6.7 22.2
+13.3 13.9
+6.7 16.7
+13.3 10.0
+0.0 14.1
+5.7
+Point
+8 Multi
+13.9
+6.7 22.2
+10.0 33.3
+13.3 38.9
+16.7 33.3
+10.0 25.0
+23.3 20.0
+0.0 26.7
+11.4
+Model: Flat
+Hard
+No
+9 Single
+0.0
+0.0
+0.0
+0.0
+5.6
+6.7
+0.0
+0.0
+0.0
+0.0
+0.0
+6.7
+0.0
+0.0
+0.8
+1.9
+10 Multi
+0.0
+0.0
+0.0
+0.0
+2.8
+0.0
+0.0
+0.0
+0.0
+0.0
+2.8
+0.0
+0.0
+0.0
+0.8
+0.0
+Table 6. Exploratory Interaction (EXIN) Results.
+Task
+Instruction Templates
+SHIF
+clean {obj}; cool {obj}; heat {obj}
+LHIF
+put a {obj} in {recep}, put some {obj} on {recep};
+put a clean {obj} in {recep}, clean some {obj} and put it in {recep};
+put a hot {obj} in {recep}, heat some {obj} and put it in {recep};
+put a cold {obj} in {recep}, cool some {obj} and put it in {recep};
+put two {obj} in {recep},ﬁnd two {obj} and put them in {recep};
+look at {obj} under the {toggle}, examine the {obj} with the {toggle};
+put {obj} in a {mrecep} and then put them in {recep},
+put a {mrecep} of {obj} in {recep}, put {obj} {mrecep} in {recep};
+IQA
+is the {obj} {state}?; is any {obj} in or on the {recep}?,
+does the {recep} contain or support at least one {obj}?;
+how many {obj} are in or on the {recep}?,
+count the number of {obj} in or on the {recep};
+EXIN
+pick up {obj}; put {obj}; toggle on {obj}; toggle off {obj};
+open {obj}; close {obj}; slice {obj}
+Table 7. Instruction templates for SHIF, LHIF, IQA and EXIN.
+SHIF
+LHIF
+IQA
+EXIN
+episodes
+scenes
+episodes
+scenes
+episodes
+scenes
+episodes
+scenes
+Training
+2739
+36
+8763
+72
+19728
+72
+2257
+18
+Valid seen
+130
+32
+350
+72
+798
+72
+113
+18
+Valid unseen
+118
+9
+350
+20
+794
+20
+96
+5
+Test seen
+349
+35
+1050
+72
+1592
+72
+226
+18
+Test unseen
+187
+10
+640
+20
+1565
+20
+192
+5
+Table 8. Dataset splits.
+
+
+SHIF
+LHIF
+train
+valid seen
+valid unseen
+test seen
+test unseen
+1131
+48
+38
+137
+81
+684
+35
+40
+100
+43
+924
+47
+40
+112
+63
+clean object
+heat object
+cool object
+train
+valid seen
+valid unseen
+test seen
+test unseen
+1303
+50
+50
+150
+100
+1080
+50
+50
+150
+69
+1302
+50
+50
+150
+100
+1176
+50
+50
+150
+71
+1301
+50
+50
+150
+100
+1300
+50
+50
+150
+100
+1301
+50
+50
+150
+100
+pick and place with movable recep
+look at obj in light
+pick clean then place in recep
+pick heat then place in recep
+pick two obj and place
+pick and place simple
+pick cool then place in recep
+IQA
+EXIN
+train
+valid seen
+valid unseen
+test seen
+test unseen
+9724
+398
+394
+792
+765
+5001
+200
+200
+400
+400
+5003
+200
+200
+400
+400
+unique obj state
+unique recep contains
+count obj in recep
+train
+valid seen
+valid unseen
+test seen
+test unseen
+360
+18
+15
+36
+30
+100
+5
+6
+10
+12
+360
+18
+15
+36
+30
+358
+18
+15
+36
+30
+360
+18
+15
+36
+30
+359
+18
+15
+36
+30
+360
+18
+15
+36
+30
+PutObject
+SliceObject
+PickupObject
+ToggleObjectOff
+OpenObject
+ToggleObjectOn
+CloseObject
+IQA state types
+train
+valid seen
+valid unseen
+test seen
+test unseen
+3522
+133
+166
+306
+259
+1955
+90
+62
+129
+125
+2260
+93
+95
+217
+210
+1987
+82
+71
+140
+171
+Openable
+Toggleable
+Dirty
+Fillable
+Figure 4. Distribution of task sub-categories across different splits.
+
+
+LHIF target objects
+LHIF target receptacles
+train
+valid seen
+valid unseen
+test seen
+test unseen
+Apple
+Apple
+Apple
+Apple
+Apple
+Towel
+Towel
+Towel
+Towel
+Tomato
+Tomato
+Tomato
+Tomato
+Tomato
+BaseballBat
+BaseballBat
+BaseballBat
+BaseballBat
+BaseballBat
+CreditCard
+CreditCard
+CreditCard
+CreditCard
+CreditCard
+Plunger
+Plunger
+Plunger
+Plunger
+Potato
+Potato
+Potato
+Potato
+Potato
+TennisRacket
+TennisRacket
+TennisRacket
+TennisRacket
+KeyChain
+KeyChain
+KeyChain
+KeyChain
+KeyChain
+BasketBall
+BasketBall
+BasketBall
+BasketBall
+Bread
+Bread
+Bread
+Bread
+Bread
+WateringCan
+WateringCan
+WateringCan
+WateringCan
+WateringCan
+Lettuce
+Lettuce
+Lettuce
+Lettuce
+Lettuce
+PepperShaker
+PepperShaker
+PepperShaker
+Cup
+Cup
+Cup
+Cup
+Cup
+SaltShaker
+SaltShaker
+SaltShaker
+Cloth
+Cloth
+Cloth
+Cloth
+Cloth
+Kettle
+Kettle
+Kettle
+Kettle
+SoapBar
+SoapBar
+SoapBar
+SoapBar
+SoapBar
+WineBottle
+WineBottle
+WineBottle
+Mug
+Mug
+Mug
+Mug
+Mug
+ButterKnife
+ButterKnife
+ButterKnife
+ButterKnife
+ButterKnife
+RemoteControl
+RemoteControl
+RemoteControl
+RemoteControl
+RemoteControl
+Pot
+Pot
+Pot
+Pot
+Pot
+Pencil
+Pencil
+Pencil
+Pencil
+Pencil
+Knife
+Knife
+Knife
+Knife
+Knife
+Pen
+Pen
+Pen
+Pen
+Pen
+Pan
+Pan
+Pan
+Pan
+Pan
+CellPhone
+CellPhone
+CellPhone
+CellPhone
+CellPhone
+Spoon
+Spoon
+Spoon
+Spoon
+Spoon
+Plate
+Plate
+Plate
+Plate
+Plate
+TissueBox
+TissueBox
+TissueBox
+TissueBox
+TissueBox
+Bowl
+Bowl
+Bowl
+Bowl
+Bowl
+Fork
+Fork
+Fork
+Fork
+Fork
+SoapBottle
+SoapBottle
+SoapBottle
+SoapBottle
+SoapBottle
+Spatula
+Spatula
+Spatula
+Spatula
+Spatula
+CD
+CD
+CD
+CD
+CD
+Vase
+Vase
+Vase
+Vase
+Vase
+AlarmClock
+AlarmClock
+AlarmClock
+AlarmClock
+AlarmClock
+Box
+Box
+Box
+Box
+Box
+Watch
+Watch
+Watch
+Watch
+Watch
+DishSponge
+DishSponge
+DishSponge
+DishSponge
+DishSponge
+Book
+Book
+Book
+Book
+Book
+Newspaper
+Newspaper
+Newspaper
+Newspaper
+Newspaper
+Laptop
+Laptop
+Laptop
+Laptop
+Laptop
+Pillow
+Pillow
+Pillow
+Pillow
+Pillow
+Egg
+Egg
+Egg
+Egg
+Egg
+Statue
+Statue
+Statue
+Statue
+Statue
+SprayBottle
+SprayBottle
+SprayBottle
+SprayBottle
+SprayBottle
+Candle
+Candle
+Candle
+Candle
+Candle
+HandTowel
+HandTowel
+HandTowel
+HandTowel
+HandTowel
+ToiletPaper
+ToiletPaper
+ToiletPaper
+ToiletPaper
+ToiletPaper
+Ladle
+Ladle
+Ladle
+Ladle
+Ladle
+train
+valid seen
+valid unseen
+test seen
+test unseen
+CounterTop
+CounterTop
+CounterTop
+CounterTop
+CounterTop
+Safe
+Safe
+Safe
+GarbageCan
+GarbageCan
+GarbageCan
+GarbageCan
+GarbageCan
+TowelHolder
+TowelHolder
+TowelHolder
+TowelHolder
+DiningTable
+DiningTable
+DiningTable
+DiningTable
+DiningTable
+HandTowelHolder
+Cabinet
+Cabinet
+Cabinet
+Cabinet
+Cabinet
+ToiletPaperHanger
+ToiletPaperHanger
+ToiletPaperHanger
+ToiletPaperHanger
+ToiletPaperHanger
+SinkBasin
+SinkBasin
+SinkBasin
+SinkBasin
+SinkBasin
+Ottoman
+Ottoman
+Ottoman
+SideTable
+SideTable
+SideTable
+SideTable
+SideTable
+Bed
+Bed
+Bed
+Bed
+Bed
+Fridge
+Fridge
+Fridge
+Fridge
+Fridge
+CoffeeMachine
+CoffeeMachine
+CoffeeMachine
+CoffeeMachine
+CoffeeMachine
+Desk
+Desk
+Desk
+Desk
+Desk
+StoveBurner
+StoveBurner
+StoveBurner
+StoveBurner
+StoveBurner
+Microwave
+Microwave
+Microwave
+Microwave
+Microwave
+Toilet
+Toilet
+Toilet
+Toilet
+Shelf
+Shelf
+Shelf
+Shelf
+Shelf
+BathtubBasin
+BathtubBasin
+BathtubBasin
+BathtubBasin
+BathtubBasin
+Drawer
+Drawer
+Drawer
+Drawer
+Drawer
+ArmChair
+ArmChair
+ArmChair
+ArmChair
+ArmChair
+CoffeeTable
+CoffeeTable
+CoffeeTable
+CoffeeTable
+CoffeeTable
+Dresser
+Dresser
+Dresser
+Dresser
+Dresser
+Sofa
+Sofa
+Sofa
+Sofa
+Sofa
+IQA target objects
+IQA target receptacles
+train
+valid seen
+valid unseen
+test seen
+test unseen
+Bowl
+Bowl
+Bowl
+Bowl
+Bowl
+Kettle
+Kettle
+Kettle
+Kettle
+Laptop
+Laptop
+Laptop
+Laptop
+Laptop
+WateringCan
+WateringCan
+WateringCan
+Candle
+Candle
+Candle
+Candle
+Candle
+WineBottle
+WineBottle
+WineBottle
+WineBottle
+WineBottle
+Mug
+Mug
+Mug
+Mug
+Mug
+Lettuce
+Lettuce
+Lettuce
+Lettuce
+Lettuce
+Book
+Book
+Book
+Book
+Book
+Towel
+Towel
+Towel
+Towel
+Mirror
+Mirror
+Mirror
+Mirror
+Mirror
+Spoon
+Spoon
+Spoon
+Spoon
+Spoon
+Box
+Box
+Box
+Box
+Box
+Tomato
+Tomato
+Tomato
+Tomato
+Tomato
+KeyChain
+KeyChain
+KeyChain
+KeyChain
+KeyChain
+Ladle
+Ladle
+Ladle
+Ladle
+Ladle
+DeskLamp
+DeskLamp
+DeskLamp
+DeskLamp
+DeskLamp
+SaltShaker
+SaltShaker
+SaltShaker
+SaltShaker
+SaltShaker
+CreditCard
+CreditCard
+CreditCard
+CreditCard
+CreditCard
+Pencil
+Pencil
+Pencil
+Pencil
+Pencil
+Cup
+Cup
+Cup
+Cup
+Cup
+Spatula
+Spatula
+Spatula
+Spatula
+Spatula
+Cloth
+Cloth
+Cloth
+Cloth
+Cloth
+TissueBox
+TissueBox
+TissueBox
+TissueBox
+TissueBox
+RemoteControl
+RemoteControl
+RemoteControl
+RemoteControl
+RemoteControl
+Cabinet
+Cabinet
+Cabinet
+Cabinet
+Television
+Television
+Television
+Television
+Television
+Safe
+Safe
+Safe
+Safe
+Pot
+Pot
+Pot
+Pot
+Pot
+Fork
+Fork
+Fork
+Fork
+Fork
+Plate
+Plate
+Plate
+Plate
+Plate
+Pen
+Pen
+Pen
+Pen
+Pen
+FloorLamp
+FloorLamp
+FloorLamp
+FloorLamp
+FloorLamp
+Watch
+Watch
+Watch
+Watch
+Watch
+Toilet
+Toilet
+Toilet
+Toilet
+Toilet
+ButterKnife
+ButterKnife
+ButterKnife
+ButterKnife
+ButterKnife
+SprayBottle
+SprayBottle
+SprayBottle
+SprayBottle
+SprayBottle
+Newspaper
+Newspaper
+Newspaper
+Newspaper
+Newspaper
+Pan
+Pan
+Pan
+Pan
+Pan
+Potato
+Potato
+Potato
+Potato
+Potato
+ToiletPaper
+ToiletPaper
+ToiletPaper
+ToiletPaper
+ToiletPaper
+Bread
+Bread
+Bread
+Bread
+Bread
+Microwave
+Microwave
+Microwave
+Microwave
+Microwave
+PepperShaker
+PepperShaker
+PepperShaker
+PepperShaker
+PepperShaker
+Bed
+Bed
+Bed
+Bed
+Bed
+Drawer
+Drawer
+Drawer
+Drawer
+Drawer
+CellPhone
+CellPhone
+CellPhone
+CellPhone
+CellPhone
+PaperTowelRoll
+PaperTowelRoll
+PaperTowelRoll
+PaperTowelRoll
+AlarmClock
+AlarmClock
+AlarmClock
+AlarmClock
+AlarmClock
+Vase
+Vase
+Vase
+Vase
+Vase
+SoapBottle
+SoapBottle
+SoapBottle
+SoapBottle
+SoapBottle
+Knife
+Knife
+Knife
+Knife
+Knife
+Fridge
+Fridge
+Fridge
+Fridge
+Fridge
+ShowerDoor
+ShowerDoor
+ShowerDoor
+ShowerDoor
+ShowerDoor
+Apple
+Apple
+Apple
+Apple
+Apple
+Pillow
+Pillow
+Pillow
+Pillow
+Pillow
+Egg
+Egg
+Egg
+Egg
+Egg
+Statue
+Statue
+Statue
+Statue
+Statue
+SoapBar
+SoapBar
+SoapBar
+SoapBar
+SoapBar
+DishSponge
+DishSponge
+DishSponge
+DishSponge
+DishSponge
+HandTowel
+HandTowel
+HandTowel
+HandTowel
+HandTowel
+CD
+CD
+CD
+CD
+CD
+train
+valid seen
+valid unseen
+test seen
+test unseen
+Bed
+Bed
+Bed
+Bed
+Bed
+Bowl
+Bowl
+Fridge
+Fridge
+Fridge
+Fridge
+Fridge
+Plate
+Plate
+Plate
+Plate
+Plate
+DiningTable
+DiningTable
+DiningTable
+DiningTable
+DiningTable
+Pot
+Pot
+Pot
+Pot
+CounterTop
+CounterTop
+CounterTop
+CounterTop
+CounterTop
+Pan
+Pan
+Pan
+Pan
+CoffeeTable
+CoffeeTable
+CoffeeTable
+CoffeeTable
+CoffeeTable
+Safe
+Safe
+ArmChair
+ArmChair
+ArmChair
+ArmChair
+ArmChair
+LaundryHamper
+Toilet
+Toilet
+Toilet
+Toilet
+Toilet
+Ottoman
+Ottoman
+Ottoman
+GarbageCan
+GarbageCan
+GarbageCan
+GarbageCan
+GarbageCan
+Cabinet
+Cabinet
+Cabinet
+Box
+Box
+Box
+Box
+Box
+Shelf
+Shelf
+Shelf
+Shelf
+SideTable
+SideTable
+SideTable
+SideTable
+SideTable
+Microwave
+Microwave
+Microwave
+Microwave
+Microwave
+Dresser
+Dresser
+Dresser
+Dresser
+Dresser
+Sofa
+Sofa
+Sofa
+Sofa
+Sofa
+Desk
+Desk
+Desk
+Desk
+Desk
+Figure 5. Target object and receptacle distributions for LHIF and IQA splits.
+
+
+Task: heat apple
+0
+16
+18
+20
+22
+24
+26
+28
+Start
+Open
+Put
+Close
+ToggleOn
+ToggleOff
+Open
+Pickup
+Microwave
+Microwave
+Microwave
+Microwave
+Microwave
+Microwave
+Apple
+30
+32
+Close
+End
+Microwave
+Task: heat bread
+0
+29
+31
+33
+35
+37
+39
+41
+Start
+Open
+Put
+Close
+ToggleOn
+ToggleOff
+Open
+Pickup
+Microwave
+Microwave
+Microwave
+Microwave
+Microwave
+Microwave
+Plate
+43
+45
+Close
+End
+Microwave
+Task: clean cloth
+0
+21
+23
+25
+27
+28
+29
+30
+Start
+Put
+ToggleOn
+ToggleOff
+Pickup
+Pickup
+Pickup
+Pickup
+Sink
+Faucet
+Faucet
+Cloth
+Cloth
+Cloth
+Cloth
+31
+33
+Pickup
+End
+Cloth
+Figure 6. Qualitative results of SHIF. Valid-Seen trajectories for SHIF (part 1), including examples for heating and cleaning in kitchen and
+bathroom environments. For each example, we show the task instruction, the time step for each frame, overlaid interaction point heat maps
+for the interaction actions, invoked skill, and the target object for the current skill. Frames not shown correspond to navigation steps.
+
+
+Task: clean cloth
+0
+48
+50
+52
+54
+56
+Start
+Put
+ToggleOn
+ToggleOff
+Pickup
+End
+Sink
+Faucet
+Faucet
+Cloth
+Task: clean dishsponge
+0
+10
+12
+14
+16
+18
+Start
+Put
+ToggleOn
+ToggleOff
+Pickup
+End
+Sink
+Faucet
+Faucet
+DishSponge
+Task: clean potato
+0
+9
+11
+13
+15
+17
+Start
+Put
+ToggleOn
+ToggleOff
+Pickup
+End
+Sink
+Faucet
+Faucet
+Potato
+Task: cool pan
+0
+30
+32
+34
+36
+38
+40
+42
+Start
+Open
+Put
+Close
+Open
+Pickup
+Close
+End
+Fridge
+Fridge
+Fridge
+Fridge
+Pan
+Fridge
+Task: cool tomato
+0
+22
+24
+26
+28
+30
+32
+34
+Start
+Open
+Put
+Close
+Open
+Pickup
+Close
+End
+Fridge
+Fridge
+Fridge
+Fridge
+Pot
+Fridge
+Figure 7. Qualitative results of SHIF. Valid-Seen trajectories for SHIF (part 2), including examples for heating and cleaning in kitchen and
+bathroom environments. For each example, we show the task instruction, the time step for each frame, overlaid interaction point heat maps
+for the interaction actions, invoked skill, and the target object for the current skill. Frames not shown correspond to navigation steps.
+
+
+Task: put a hot cup from microwave in diningtable
+0
+16
+18
+20
+32
+34
+36
+38
+Start
+Open
+Pickup
+Close
+Open
+Put
+Close
+ToggleOn
+Cabinet
+Cup
+Cabinet
+Microwave
+Microwave
+Microwave
+Microwave
+40
+42
+44
+46
+66
+68
+ToggleOff
+Open
+Pickup
+Close
+Put
+End
+Microwave
+Microwave
+Cup
+Microwave
+DiningTable
+Task: put a baseballbat in bed
+0
+17
+29
+31
+Start
+Pickup
+Put
+End
+BaseballBat
+Bed
+Task: put a basketball in desk
+0
+14
+58
+60
+Start
+Pickup
+Put
+End
+BasketBall
+Desk
+Task: put a cd in sidetable
+0
+20
+21
+56
+58
+Start
+Pickup
+Pickup
+Put
+End
+CD
+CD
+SideTable
+Task: examine the creditcard with the desklamp
+0
+10
+19
+21
+Start
+Pickup
+ToggleOn
+End
+CreditCard
+DeskLamp
+Figure 8. Qualitative results of LHIF. Valid-Seen trajectories for LHIF, including examples for picking up, heating and placing on
+receptacle; as well as shorter tasks involving picking up and placing in receptacle or picking up and examining under (toggled on) light. The
+environments include kitchen, bedroom, and living room. For each task, we show the task instruction, the time step for each frame, overlaid
+interaction point heat maps for interactive actions, invoked skill, and the target object for the current skill. Frames not shown correspond to
+navigation steps.
+
+
+Task: is the bed dirty
+0
+30
+Start
+Answer
+No
+Task: is the bed dirty
+0
+8
+Start
+Answer
+No
+Task: is the book open
+0
+71
+Start
+Answer
+No
+Task: is the box open
+0
+97
+Start
+Answer
+No
+Task: is the box open
+0
+39
+Start
+Answer
+Yes
+Task: does the fridge contain or support at least one mug
+0
+25
+27
+Start
+Open
+Answer
+Fridge
+No
+Task: is any soap bottle in or on the toilet
+0
+35
+43
+Start
+Open
+Answer
+Toilet
+Yes
+Task: is any toilet paper sheet in or on the toilet
+0
+31
+35
+Start
+Open
+Answer
+Toilet
+No
+Task: count the number of toilet paper sheets in or on the toilet
+0
+91
+110
+Start
+Open
+Answer
+Toilet
+0
+Task: how many potatoes are in or on the fridge
+0
+27
+29
+Start
+Open
+Answer
+Fridge
+3
+Figure 9. Qualitative results of IQA. Valid-Seen trajectories for IQA, including examples for object state questions, existence and counting
+in bedrooms, living rooms, kitchens and bathrooms. For each example, we show the question, the time step for each frame, overlaid
+interaction point heat maps for interaction actions, invoked skill, and the target object for the current skill or the ﬁnal answer. The two “is
+the bed dirty” examples show two different episode setups for the same question and target object states (note the different initialization).
+Frames not shown correspond to navigation steps.
+
+
+1
+2
+3
+4
+5
+6
+Put
+Put
+Put
+Put
+Put
+Put
+GarbageCan
+GarbageCan
+GarbageCan
+GarbageCan
+GarbageCan
+GarbageCan
+10
+8
+10
+Put
+End
+GarbageCan
+7
+Put
+GarbageCan
+Task: Close Laptop
+0
+0
+1
+2
+3
+4
+5
+7
+Start
+Close
+Close
+Close
+Close
+Close
+Close
+End
+Laptop
+Laptop
+Laptop
+Laptop
+Laptop
+Laptop
+Task: Close Blinds
+0
+0
+1
+2
+3
+4
+5
+7
+Start
+Close
+Close
+Close
+Close
+Close
+Close
+End
+Blinds
+Blinds
+Blinds
+Blinds
+Blinds
+Blinds
+Task: Close Microwave
+0
+0
+1
+2
+3
+4
+5
+6
+Start
+Close
+Close
+Close
+Close
+Close
+Close
+Close
+Microwave
+Microwave
+Microwave
+Microwave
+Microwave
+Microwave
+Microwave
+1
+2
+3
+4
+5
+7
+Close
+Close
+Close
+Close
+Close
+End
+Laptop
+Laptop
+Laptop
+Laptop
+Laptop
+1
+2
+3
+4
+5
+7
+Close
+Close
+Close
+Close
+Close
+End
+Blinds
+Blinds
+Blinds
+Blinds
+Blinds
+1
+2
+3
+4
+5
+6
+Close
+Close
+Close
+Close
+Close
+Close
+Microwave
+Microwave
+Microwave
+Microwave
+Microwave
+Microwave
+8
+End
+Task: Put GarbageCan
+0
+Start
+Figure 10. Qualitative results of EXIN. Valid-Seen trajectories for EXIN, including examples for closing objects of several scales and
+placement of an object in a relatively small receptacle in living room, kitchen and bedroom environments. For each example, we show the
+task instruction, the time step for each frame, overlaid interaction point heat maps for interaction actions, the unique invoked skill, and the
+corresponding target object.
+
+
+Instruction: pickup pencil
+Question: how many credit cards
+are in or on the dining table
+Instruction: heat some bread from
+microwave and put it in fridge
+Instruction: clean cloth
+(a)
+(b)
+(c)
+(d)
+Figure 11. Failed episodes in validation-seen. (a) Picking up small objects like the pencil in this EXIN episode can lead to multiple failed
+interaction attempts. (b) The model produces its answer in IQA by looking at a side table instead of a dining table. (c) In this LHIF episode,
+the agent keeps exploring the upper part of the kitchen plan and never manages to reach the microwave. (d) Similar to (a), we observe a
+failed interaction with a small object like the faucet in a SHIF episode.

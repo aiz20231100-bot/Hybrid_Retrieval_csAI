@@ -1,0 +1,1130 @@
+Reactive Knowledge Representation and Asynchronous Reasoning
+SIMON KOHAUT∗, Artificial Intelligence and Machine Learning Group, TU Darmstadt, Germany
+BENEDICT FLADE, Honda Research Institute EU, Germany
+JULIAN EGGERT, Honda Research Institute EU, Germany
+KRISTIAN KERSTING†‡§, Artificial Intelligence and Machine Learning Group, TU Darmstadt, Germany
+DEVENDRA SINGH DHAMI, Uncertainty in Artificial Intelligence Group, TU Eindhoven, Netherlands
+Exact inference in complex probabilistic models often incurs prohibitive computational costs. This challenge is particularly
+acute for autonomous agents in dynamic environments that require frequent, real-time belief updates. Existing methods are
+often inefficient for ongoing reasoning, as they re-evaluate the entire model upon any change, failing to exploit that real-world
+information streams have heterogeneous update rates. To address this, we approach the problem from a reactive, asynchronous,
+probabilistic reasoning perspective. We first introduce Resin (Reactive Signal Inference), a probabilistic programming language
+that merges probabilistic logic with reactive programming. Furthermore, to provide efficient and exact semantics for Resin, we
+propose Reactive Circuits (RCs). Formulated as a meta-structure over Algebraic Circuits and asynchronous data streams, RCs
+are time-dynamic Directed Acyclic Graphs that autonomously adapt themselves based on the volatility of input signals. In
+high-fidelity drone swarm simulations, our approach achieves several orders of magnitude of speedup over frequency-agnostic
+inference. We demonstrate that RCs’ structural adaptations successfully capture environmental dynamics, significantly
+reducing latency and facilitating reactive real-time reasoning. By partitioning computations based on the estimated Frequency
+of Change in the asynchronous inputs, large inference tasks can be decomposed into individually memoized sub-problems.
+This ensures that only the specific components of a model affected by new information are re-evaluated, drastically reducing
+redundant computation in streaming contexts.
+∗Also with Konrad Zuse School of Excellence in Learning and Intelligent Systems (ELIZA).
+†Also with Hessian Center for Artificial Intelligence (hessian.AI).
+‡Also with Centre for Cognitive Science, TU Darmstadt.
+§Also with German Center for Artificial Intelligence (DFKI).
+Authors’ Contact Information: Simon Kohaut, orcid: 0000-0002-0855-6316, Artificial Intelligence and Machine Learning Group, TU Darmstadt,
+Darmstadt, Hesse, Germany, simon.kohaut@cs.tu-darmstadt.de; Benedict Flade, orcid: 0000-0002-0636-955X, Honda Research Institute EU,
+Offenbach am Main, Hesse, Germany, benedict.flade@honda-ri.de; Julian Eggert, orcid: 0000-0003-4437-6133, Honda Research Institute EU,
+Offenbach am Main, Hesse, Germany, julian.eggert@honda-ri.de; Kristian Kersting, orcid: 000-0002-2873-9152, Artificial Intelligence and
+Machine Learning Group, TU Darmstadt, Darmstadt, Hesse, Germany, kristian.kersting@cs.tu-darmstadt.de; Devendra Singh Dhami, orcid:
+0000-0002-4331-7193, Uncertainty in Artificial Intelligence Group, TU Eindhoven, Eindhoven, North Brabant, Netherlands, d.s.dhami@tue.nl.
+This work is licensed under a Creative Commons Attribution International 4.0 License.
+arXiv:2602.05625v2  [cs.AI]  8 Feb 2026
+
+
+1:2
+•
+Kohaut, Flade, Eggert, Kersting & Dhami
+1
+Introduction
+Autonomous systems, ranging from self-driving cars to robotic assistants, operate in dynamic environments where
+safety and reliability depend on the ability to continually reason about changing states. Although probabilistic
+reasoning methods offer the necessary formal guarantees for such safety-critical applications (Pearl 1989; Skryagin,
+Ochs, et al. 2023; Yang et al. 2020), they are predominantly designed for one-shot inference. In real-time settings,
+where beliefs must be continuously updated against asynchronous streams of information, these methods often
+incur prohibitive computational costs for every input change, regardless of its scope.
+While specialized models for temporal data, such as Dynamic Bayesian Networks (Murphy 2002), exist, they
+typically assume synchronous updates at fixed time steps and are not designed to exploit the heterogeneous,
+asynchronous nature of data streams found in many real-world systems. Instead, our work builds on the key
+insight that information in real-world scenarios rarely changes uniformly. For instance, an autonomous vehicle’s
+position changes continuously, whereas traffic lights change intermittently, and road network data remains static
+for hours or longer. Existing tractable models, such as Probabilistic Circuits (Choi et al. 2020), typically fail to
+exploit this temporal structure, redundantly re-evaluating stable parts of the model alongside volatile ones.
+To address this inefficiency, we propose a novel approach that dynamically adapts the inference process to
+the rate of information change, treating the data channels between soft- and hardware components as first-
+class citizens. We introduce Reactive Circuits (RCs), a time-dynamic inference framework built on top of
+Algebraic Circuits (Kimmig et al. 2017) that serves as an efficient, exact, and asynchronous inference engine.
+RCs automatically track the Frequency of Change (FoC) of their input signals and partition their computational
+structure accordingly. By grouping inputs by volatility and memoizing intermediate results, RCs eliminate
+redundant calculations, re-evaluating only the model components affected by new information. This dynamic
+restructuring endows the circuits with computational plasticity, allowing them to adapt their complexity to
+mirror the environment’s dynamics. The resulting reactive evaluation can yield speedups of several orders of
+magnitude, enabling continuous exact inference in time-critical applications.
+As a high-level, declarative modeling approach of such systems, we present Resin (Reactive Signal Inference).
+Resin is a first asynchronous probabilistic programming language that bridges the gap between the expressivity
+of Answer Set Programming (ASP) and the practical requirements of robotics, such as handling asynchronous
+data streams from sensors or deep learning models. Resin allows users to declaratively specify source signals for
+exchanging information with separate processes as well as logical target signals, which are then compiled into
+RCs for efficient, continual evaluation. In summary, our contributions are two-fold:
+Resin A high-level probabilistic logic language designed for modeling continual inference tasks in distributed
+systems. It bridges the gap between the expressivity of Answer Set Programming and the requirements of
+reactive systems, allowing for the joint specification of asynchronous data flows and logic constraints.
+Reactive Circuits A novel, adaptive inference structure for asynchronous reasoning that generalizes over
+any commutative semiring. By dynamically restructuring themselves based on signal frequency, RCs
+minimize redundant operations through strategic memoization, enabling real-time exact inference.
+Together, these components enable the development of reactive, trustworthy autonomous agents. Complementary
+to these contributions, we provide an open source implementation available at github.com/simon-kohaut/resin.
+The remainder of this paper is structured as follows. Sec. 2 formalizes Resin, detailing its syntax for probabilistic
+modeling, its data model for handling asynchronous signals, and the compilation process into RCs. Sec. 3 introduces
+Reactive Circuits, establishing the algebraic foundations and defining the operational semantics for frequency-
+based adaptation and reactive evaluation. We then present our experimental evaluation in Sec. 4, where we
+investigate tracking accuracy, circuit plasticity, and performance gains in both synthetic benchmarks and high-
+fidelity drone simulations. Finally, Sec. 5 discusses related work in neuro-symbolic AI and tractable inference
+before concluding with a summary and outlook in Sec. 6.
+
+
+Reactive Knowledge Representation and Asynchronous Reasoning
+•
+1:3
+Resin Compiler
+Parser
+ASP Solver
+Models
+Formula
+Datastreams
+Resin Program
+Reactive
+Circuit
+Reactive Agent
+Inference
+Actions
+Observations
+Frequencies
+# Incoming streams of data
+rain <- source("/rain", Probability).
+clearance <- source("/lidar", Density).
+speed <- source("/imu", Number).
+# Probabilistic First-Order logic
+safe if clearance > 10.0 and
+not rain and speed < 20.0.
+safe if clearance > 10.0 and
+    rain and speed < 10.0.
+# Target signal of continual interest
+safe -> target("/safety").
+Datastreams
+Partitioning
+Fig. 1. The Asynchronous Reasoning architecture: For each target of a Resin program, the compiler parses the program
+into a constrained Answer Set Program and generates the respective stable models. This causes an initial Reactive Circuit
+(RC) to be created and connected to datastreams, which is then, over time, adapted to reflect the volatility of its inputs.
+2
+The Resin Programming Language
+Probabilistic logic is an excellent tool for modeling constrained decisions and motion planning. To this end, Resin
+draws inspiration from works such as ProbLog (Manhaeve et al. 2018; Raedt, Kimmig, et al. 2007), NeurASP (Yang
+et al. 2020), and SLASH (Skryagin, Stammer, et al. 2022), which blend probabilistic inference with first-order
+logic and integrate ASP, respectively. Resin extends these concepts to integrate inter-process communication
+with probabilistic first-order logic, targeting settings where asynchronously updated parameters in an uncertain
+domain knowledge are critical for ensuring ongoing safety constraints.
+While Sec. 3 discusses RCs as an online, self-adapting reasoning framework that provides efficient semantics for
+Resin, here we discuss the Resin programming language itself as a high-level reactive knowledge representation.
+Hence, the following discusses the structure and internals of Resin programs, their data model and data exchange
+via Data Distribution Service (DDS) channels (Pardo-Castellote 2003), and how we obtain initial RCs from a Resin
+program and target.
+2.1
+Asynchronous Probabilistic Logic
+Resin couples inter-process communication and first-order logic into a single framework suitable for modeling
+continual inference processes and their embedding into networks of (neural) sensors and arbitrary computational
+models. Asynchronous data channels carry Resin’s parameter updates and inference results during runtime, i.e.,
+continually distributing input and output data.
+Definition 2.1. A signal 𝑠is defined by the tuple (𝑎,𝑐,𝑇), where 𝑎is an atom, 𝑐is a communication channel
+identifier, and 𝑇is a data type. At time 𝑡∈R≥0, 𝑠is associated with a value 𝑠(𝑡) ∈R which updates at a rate 𝜆𝑠(𝑡).
+That is, we assume a non-stationary Poisson process dictating the arrival of updates to 𝑠(𝑡).
+One can further distinguish signals according to their direction within a network of data distributors. Signals
+are designated as sources or targets of a Resin program. While source signals capture incoming data with
+unknown temporal behavior, target signals are computed using RCs and shared across the network.
+Let us now take a look at how to build an entire Resin program.
+Definition 2.2. A Resin program is a first-order theory T that exchanges data via source signals 𝑠𝑛∈S,
+|𝑆| = 𝑁and target signals 𝑑𝑚∈D, |𝐷| = 𝑀. Hereby, theory T is defined over a set K = S ∪D ∪A of atoms. In
+addition to the signals, A captures background knowledge, connecting sources to targets.
+The syntax of a Resin program is provided in Backus-Naur form in Appendix A, showing how sources, targets,
+and first-order logic concepts are formalized. Fig. 1 provides an overview of the Asynchronous Reasoning
+architecture enabled by Resin in tandem with RCs, illustrating the process of translating a Resin program into
+RCs, which in turn provide continual updates to the target signals.
+
+
+1:4
+•
+Kohaut, Flade, Eggert, Kersting & Dhami
+2.2
+Data Model
+Resin’s data model is designed to bridge the gap between continuous, asynchronous data streams and discrete
+probabilistic logic. Signals in Resin are typed, ensuring that data from external processes is correctly interpreted
+within the logical framework. We distinguish four core data types:
+• Boolean: Represents binary states (⊤, ⊥), typically derived from logical sensors or switches.
+• Number: Represents continuous values 𝑥∈R, such as sensor readings (e.g., velocity, altitude).
+• Probability: Represents a degree of belief 𝑃(𝑥) ∈[0, 1], often the output of an upstream classifier.
+• Density: Represents a probability density function 𝑝(𝑥) over a continuous variable, capturing uncertainty
+in measurements like location or object distance.
+While Resin’s syntax is grounded in untyped first-order logic, these types dictate how signal values are coerced
+into the weights of the underlying reasoning task. Depending on the reasoning task at hand, different semirings
+and coercions may be employed. For example, in the context of Weighted Model Counting (WMC), where the
+semiring of interest is ([0, 1], +, ×, 0, 1), this coercion is handled as follows:
+Direct Mapping Signals of type Probability are directly assigned to the corresponding atom.
+Determinism Boolean signals are assigned a probability of 1.0 if true and 0.0 otherwise.
+Integration Comparison operators are used to bridge the gap between continuous values and discrete logic.
+For Number signals, comparisons (e.g., speed < 20.0) are treated analogously to Booleans. Similarly, a
+Density involved in a comparison (e.g., clearance > 10.0) is coerced into a probability via its Cumulative
+Distribution Function (CDF).
+This type system not only facilitates the integration of heterogeneous data sources but also plays a role in
+Resin’s reactive runtime. That is, the chosen domain of the source signals has implications on the volatility of
+the signals’ runtime behaviour (and by extension, the structure of the Reactive Circuits). For instance, while a
+Density signal representing a drone’s position may change continuously, a derived Probability of it being in
+an unsafe region may remain constant for long periods (see Sec. 4).
+2.3
+Compiling Resin
+Resin programs are translated into Answer Set Programs (ASP). Specifically, sources are mapped to choices
+and rules are syntactically translated (e.g., substituting an and in Resin with a comma in ASP). For each target
+signal, a constrained ASP is generated that ensures the respective target holds in all answer sets. We employ the
+off-the-shelf ASP solver Clingo (Gebser et al. 2019) to exhaustively search for the stable models of these programs.
+Let J𝑚be the set of stable models yielded by the ASP solver given the Resin program’s theory T constrained
+on the respective ground atom of target signal 𝑑𝑚∈D. The probability of a stable model is computed as the
+product of the probabilities of the probabilistic facts as they appear in the model (Skryagin, Stammer, et al. 2022).
+Consequently, the probability of a target signal is obtained as the sum of the probabilities of its stable models.
+𝑃(𝑑𝑚) =
+∑︁
+𝑗∈J𝑚
+Ö
+𝑠∈S 𝑃(𝑠= 𝑗(𝑠))
+(1)
+This problem, known as Weighted Model Counting (WMC), is traditionally subject to additional knowledge
+compilation steps. That is, although the formula is correct, one can often represent the problem in much smaller
+forms than Eq. 1. Going forward, we will assume this unrefined formulation of WMC without loss of generality
+when discussing the semantics of Resin in the form of Reactive Circuits and their online self-adjustments.
+For each target 𝑑𝑚, the respective formula is provided to the RC-based online inference framework as laid out
+in Sec. 3. More specifically, each source and target signal is connected to a DDS framework to exchange data
+with the compiled and adapted RCs.
+
+
+Reactive Knowledge Representation and Asynchronous Reasoning
+•
+1:5
+We have focused on probabilistic inference because it highlights Resin’s utility for continual safety and
+legal checks in robotics tasks. Of course, parameter learning and other inference classes are also relevant,
+e.g., as supported by languages such as ProbLog (Fierens et al. 2015), DeepProbLog (Manhaeve et al. 2018),
+or SLASH (Skryagin, Stammer, et al. 2022). For this reason, we demonstrate in Sec. 3 how RCs generalize to
+any commutative semiring, i.e., how they support tackling other tasks, such as gradients or most probable
+explanations.
+3
+Reactive Circuits
+Our contribution of asynchronous reasoning is built on the properties of the algebraic structures that underlie
+common reasoning tasks, i.e., sum-product type problems such as WMC. Hence, we begin this section by defining
+the abstract algebra needed to support asynchronous reasoning with Reactive Circuits. First, as a basic building
+block, let us consider the monoid.
+Definition 3.1. A monoid is an algebraic structure (𝑅, ◦,𝑒◦) consisting of a set 𝑅and the binary, associative
+operator ◦with neutral element 𝑒◦. For 𝑎,𝑏,𝑐∈𝑅, the equations 𝑎◦(𝑏◦𝑐) = (𝑎◦𝑏) ◦𝑐and 𝑎◦𝑒◦= 𝑒◦◦𝑎= 𝑎
+hold. Further, a commutative monoid supports 𝑎◦𝑏= 𝑏◦𝑎.
+While monoids are insufficient for solving tasks such as WMC, which require two binary operators, we can
+utilize them in the following definition.
+Definition 3.2. A commutative semiring is an algebraic structure (𝑅, ⊕, ⊗,𝑒⊕,𝑒⊗) such that (𝑅, ⊕,𝑒⊕) and
+(𝑅, ⊗,𝑒⊗) each are commutative monoids. Additionally, they require that ⊗left and right distributes over ⊕, i.e.,
+for 𝑎,𝑏,𝑐∈𝑅, it holds that 𝑎⊗(𝑏⊕𝑐) = (𝑎⊗𝑏) ⊕(𝑎⊗𝑐) = (𝑏⊕𝑐) ⊗𝑎.
+As an example, with 𝑅= [0, 1], classic addition and multiplication, an algebraic circuit can express Equation 1
+and thereby facilitate exact inference of a Resin Probability target. Finally, as our further discussions will
+center around computation trees, we must consider the algebraic circuit as a graphical representation of arbitrary
+expressions within the underlying algebraic structure.
+Definition 3.3. An Algebraic Circuit is a Directed Acyclic Graph (DAG) over elements and operators of a
+commutative semiring. The circuit’s nodes are either gates, i.e., 𝑛-ary applications of ⊕or ⊗on their respective
+child nodes, or leaves, which take on values from the underlying structure’s domain 𝑅.
+We now define the operational semantics of asynchronous reasoning. To this end, we introduce a novel,
+adaptive inference structure we call Reactive Circuits (RC). Since we aim to continually update inference results
+in large problems, our approach is to adapt the inference process to minimize the time required to compute the
+target signal. We define Reactive Circuits as follows.
+Definition 3.4. A Reactive Circuit RC is a tuple (F, S, E, M) of nodes F and S, edges E and memorized
+values M. Each node 𝑓𝑖∈F is associated with an AC, each node 𝑠𝑛∈S is a source signal, and each edge in E is
+a directed edge connecting formula and source nodes as a DAG. Furthermore, each formula 𝑓𝑖is associated with
+a memory 𝑚𝑖that stores its output.
+As shown in Fig. 2, RCs are an extension of Algebraic Circuits, where an original formula is distributed into a
+DAG of sub-formulas, maintaining a memorized intermediate result for each. The memory 𝑚𝑖for each node 𝑓𝑖is
+given by evaluating the formula 𝑓𝑖over its children 𝐶(𝑓𝑖):
+𝑚𝑖(𝑡) = 𝑓𝑖
+ {𝑠𝑗(𝑡) | 𝑠𝑗∈𝐶(𝑓𝑖)}, {𝑚𝑘| 𝑚𝑘∈𝐶(𝑓𝑖)} .
+(2)
+Hence, the resulting RC represents a multilinear polynomial over the weights of the stable models J.
+
+
+1:6
+•
+Kohaut, Flade, Eggert, Kersting & Dhami
+1
+# Incoming streams of data
+2
+rain <- source("/rain", Probability).
+3
+clearance <- source("/lidar", Density).
+4
+speed <- source("/imu", Number).
+5
+6
+# Probabilistic logic
+7
+safe if clearance > 10.0 and
+8
+not rain and speed < 20.0.
+9
+safe if clearance > 10.0 and
+10
+rain and speed < 10.0.
+11
+12
+# Target signal of continual interest
+13
+safe -> target("/safety").
+(a) A Resin program
+m2
+m0
+m1
+m4
+m3
+s
+r
+c
+f0
+f2
+f1
+f4
+f3
+(b) The Reactive Circuit
+¬speed
+m1
+m2
+m0
+speed
+f0
+m1
+m2
+m4
+m3
+clearance
+clearance
+f2
+f1
+m4
+m3
+rain
+¬rain ¬rain
+f4
+f3
+(c) The Algebraic Circuits
+Fig. 2. Reactive Circuits enable Asynchronous Reasoning: After compiling a Resin program (a) into an initial Reactive
+Circuit, its structure is adapted over time to facilitate an optimized inference scheme (b) by dividing the original formula into
+memorized sub-formulas according to the volatility of the respective input signals (c). Here, the 𝑠𝑝𝑒𝑒𝑑, 𝑐𝑙𝑒𝑎𝑟𝑎𝑛𝑐𝑒, and 𝑟𝑎𝑖𝑛
+signals are assumed to have a descending volatility, thereby being assigned to separate depths of the RC’s DAG.
+Beyond probabilistic inference for, e.g., Resin programs, the operations on the RC’s DAG we will show in the
+following are independent of the choice of commutative semiring. For a more in-depth discussion on applying
+commutative semirings across a multitude of reasoning tasks, please refer to (Kimmig et al. 2017).
+While our presentation revolves around formulas in Disjunctive Normal Form, i.e., with a single sum over
+product gates in the case of WMC, they can similarly encapsulate more refined formulas, e.g., optimized for size,
+without losing generality. An example program, RC, and internal Algebraic Circuits are illustrated in Fig. 2.
+3.1
+Frequencies of Change
+The core mechanism of RCs is their ability to adapt to the rate of change of their inputs. To formalize this, we
+must first define what constitutes a "meaningful" change that warrants a re-computation.
+Definition 3.5. A Predicate of Change 𝜙is a binary indicator function that determines if a value 𝑣constitutes a
+meaningful update to the value held by signal 𝑠𝑛.
+For example, for a numerical signal, a practical predicate might be to check if the change exceeds a certain
+threshold, i.e., 𝜙(𝑠𝑛(𝑡), 𝑣) = 1 if |𝑠𝑛(𝑡) −𝑣| > 𝜖,𝜖∈R>0. This allows the system to ignore minor sensor noise or
+insignificant fluctuations. The choice of 𝜙introduces a critical trade-off: a lenient predicate (larger 𝜖) reduces
+the computational load but may compromise the exactness of the inference, while a strict predicate (smaller 𝜖)
+ensures higher fidelity at the cost of more frequent updates.
+Given a predicate 𝜙, we can now define the rate of meaningful updates.
+Definition 3.6. The Frequency of Change (FoC) 𝜆𝜙,𝑛(𝑡) ∈R≥0 of a signal 𝑠𝑛is the expected rate of incoming
+messages at time 𝑡that satisfy the predicate 𝜙. The FoC is measured in Hz and is generally non-stationary,
+reflecting the environment’s dynamics.
+The FoC is essentially a filtered version of the raw message arrival rate 𝜆𝑠𝑛(𝑡). Since 𝜙only filters messages
+and never creates new ones, it trivially holds that 𝜆𝜙,𝑛(𝑡) ≤𝜆𝑠𝑛(𝑡) at all times. In the next section, we discuss
+how these non-stationary FoCs are estimated online to inform the circuit’s adaptation strategy.
+
+
+Reactive Knowledge Representation and Asynchronous Reasoning
+•
+1:7
+f0
+m0
+s2
+s3
+f1
+m1
+m2
+s0
+f2
+s1
+6.2Hz
+7.5Hz
+4.1Hz
+3.9Hz
+s2
+s3
+f0
+f1
+m0
+m1
+s0
+s1
+6.2Hz
+5.8Hz
+4.1Hz
+3.9Hz
+s1
+s2
+s3
+f0
+m0
+s0
+0Hz
+0Hz
+0Hz
+0Hz
+Asynchronous Datastreams
+drop(RC, {s1, s2})
+lift(RC, {s3})
+Fig. 3. Asynchronous Inference in Resin via Reactive Circuits: For each inference target of a Resin program, a Reactive
+Circuit (RC) is initialized. Over time, the RC’s structure is adapted to facilitate memorized intermediate results (green)
+and offload sub-formulas of the sum-product problem (yellow), enabling efficient updates based on a partitioning of the
+frequency of new values arriving through the source nodes (blue).
+3.2
+Online Circuit Adaptation
+The key to RC efficiency is dynamically adapting the circuit’s structure to match the time-varying Frequency of
+Change (FoC) of its input signals. This adaptation process involves two main steps: (1) estimating the FoC for
+each signal online, and (2) restructuring the circuit based on these estimates.
+For online FoC estimation, we model the arrival of meaningful updates for each signal as a noisy process. We
+track the time between updates, Δ𝑡𝜙,𝑛= 1/𝜆𝜙,𝑛(𝑡), using a Kalman filter (Kalman 1960). Specifically, we track the
+state x = (Δ𝑡𝜙,𝑛,
+¤
+Δ𝑡𝜙,𝑛)𝑇, representing the inter-arrival time and its rate of change. We assume a linear, constant
+velocity model for state evolution and a direct observation of the inter-arrival time, with system dynamics and
+measurement models defined as:
+F =
+ 1
+𝛿𝑡
+0
+1
+
+and
+H =
+ 1
+0 
+.
+This standard filter configuration, assuming Gaussian noise, allows us to robustly estimate the underlying FoC
+for each source signal from the noisy measurements of time between changes provided by a monotonic clock.
+With the online FoC estimates available, we partition the signals into discrete frequency bands. This is achieved
+by clustering them based on their FoC values. For a given partition width ℎ∈R+, each signal 𝑠𝑛is assigned to a
+cluster 𝑐𝑛(𝑡) such that:
+∀𝑘∈N0 : 𝑘ℎ≤𝜆𝜙,𝑛(𝑡) < (𝑘+ 1)ℎ⇐⇒𝑐𝑛(𝑡) = 𝑘.
+The partition width ℎis a crucial hyper-parameter that, as we show in Sec. 4, governs the trade-off between
+circuit size and computational speedup.
+As a signal’s estimated FoC evolves over time, it may cross a partition boundary, triggering a structural
+adaptation of the RC. This restructuring is performed by the lift and drop operations (see Algorithms 1 and 2 in
+Appendix B), which move sets of signals and the associated computations between different formula nodes of
+the RC’s DAG, as illustrated in Fig. 3. Most critically, these operations are guaranteed to preserve the circuit’s
+semantics, i.e., the value of the target signal computed depending on source signal values.
+Lemma 3.7. Let 𝑟𝑜𝑜𝑡(RC)(𝑡) be the value of the root of the RC’s DAG at time 𝑡. Then, the circuit adaptations lift
+and drop conserve its value, i.e., ∀𝑠∈S : 𝑟𝑜𝑜𝑡(𝑙𝑖𝑓𝑡(RC, {𝑠}))(𝑡) = 𝑟𝑜𝑜𝑡(𝑑𝑟𝑜𝑝(RC, {𝑠}))(𝑡) = 𝑟𝑜𝑜𝑡(RC)(𝑡).
+
+
+1:8
+•
+Kohaut, Flade, Eggert, Kersting & Dhami
+Proof. The correctness of lift and drop stems from the distributive property of ⊗over ⊕in the underlying
+commutative semiring (Definition 3.2). For instance, the identity 𝑎⊗(𝑏⊕𝑐) = (𝑎⊗𝑏) ⊕(𝑎⊗𝑐) corresponds to a
+drop of variable 𝑎when moving from the left-hand side’s structure to the right’s, or a lift of 𝑎when moving from
+right to left. The algorithms apply this principle by restructuring the RC, both by connecting and disconnecting
+signal nodes in the RC itself, and by appropriately altering the individual AC’s associated with the respective
+formula nodes in accordance with Definition 3.2.
+□
+3.3
+Reactive Circuit Evaluation
+Reactive evaluation avoids redundant processing by re-computing only those parts of the circuit affected by an
+incoming signal update. When a source signal 𝑠𝑛receives a meaningful update (i.e., one that satisfies 𝜙), the
+memoized values of its dependent nodes are no longer guaranteed to be correct. We refer to these nodes as
+invalidated. The set of invalidated nodes, denoted 𝐷𝑒𝑝(𝑠𝑛), comprises all formula nodes whose computation
+directly or indirectly depends on 𝑠𝑛and all their ancestors.
+Lemma 3.8. Let 𝑄be a sorted list of indices of invalidated formulas, i.e., formulas which have a descendant 𝑠𝑛for
+which a new value satisfying 𝜙was received. For any 𝑖, 𝑗∈𝑄, if formula 𝑓𝑗is an ancestor of formula 𝑓𝑖, then 𝑗< 𝑖.
+Proof. Formula node indices are assigned via a topological sort of the RC’s DAG (e.g., using a depth-first
+traversal). Thus, when processing invalidated nodes in decreasing order of their indices, a node is always evaluated
+after its dependencies have been updated.
+□
+Hence, updating an RC involves maintaining a sorted queue 𝑄containing the indices of all invalidated formulas
+in 𝐷𝑒𝑝(𝑠𝑛). For each index 𝑖in 𝑄, the corresponding formula 𝑓𝑖is re-evaluated using the memoized values of its
+children, and its own memoized value 𝑚𝑖is updated. Each time a formula and its associated memory are updated,
+the corresponding index is removed from 𝑄. Once the queue is empty, the RC is again in a consistent state. This
+reactive evaluation provides significant computational savings, as formalized below.
+Theorem 3.9. Let 𝜔𝑖be the number of operations to evaluate formula node 𝑓𝑖, and Ω = Í
+𝑖𝜔𝑖be the total
+operations for a full RC evaluation. We then obtain the operation rate for a naive evaluation (re-computing the entire
+RC on any change) 𝜌MAX(𝑡), the rate for a reactive evaluation 𝜌RC(𝑡), and the corresponding efficiency gain 𝜌GAIN(𝑡).
+𝜌MAX(𝑡) =
+∑︁
+𝑛𝜆𝜙,𝑛(𝑡) Ω
+(Full)
+𝜌RC(𝑡) =
+∑︁
+𝑛𝜆𝜙,𝑛(𝑡)
+∑︁
+𝑖∈𝐷𝑒𝑝(𝑠𝑛) 𝜔𝑖
+(Reactive)
+𝜌GAIN(𝑡) = 𝜌MAX(𝑡)/𝜌RC(𝑡).
+(Gain)
+Proof. Correctness is established by ensuring that all invalidated nodes are re-evaluated (completeness) and
+that they are evaluated in an order that respects data dependencies (soundness). Lemma 3.8 guarantees a sound
+topological evaluation order. Completeness is ensured by construction, as 𝐷𝑒𝑝(𝑠𝑛) includes all nodes affected by
+a change in 𝑠𝑛. The semantic preservation of the circuit’s function across adaptations is given by Lemma 3.7. The
+sum of the frequencies 𝜆𝜙,𝑛follows from the superposition principle of independent Poisson processes.
+To prove the performance gain, we compare the terms for 𝜌RC(𝑡) and 𝜌MAX(𝑡). For any signal 𝑠𝑛, the set of its
+dependent nodes 𝐷𝑒𝑝(𝑠𝑛) is a subset of the set of all formula nodes. As the operational cost 𝜔𝑖is non-negative,
+the cost of a partial update is bounded by the cost of a full update:
+∑︁
+𝑖∈𝐷𝑒𝑝(𝑠𝑛)
+𝜔𝑖≤
+∑︁
+𝑗
+𝜔𝑗= Ω.
+Consequently, 𝜌RC(𝑡) ≤𝜌MAX(𝑡), hence 𝜌GAIN(𝑡) ≥1.
+□
+
+
+Reactive Knowledge Representation and Asynchronous Reasoning
+•
+1:9
+3.4
+Example
+Let us consider the case of Weighted Model Counting for exact inference in the following Resin program, i.e., ⊗
+and ⊕are classic multiplication and summation over values in the [0, 1] interval.
+Listing 1: An example Resin program.
+1
+a <- source("/a", Probability).
+2
+b <- source("/b", Probability).
+3
+c <- source("/c", Probability).
+4
+5
+d if a and b and not c.
+6
+d if not a and b and c.
+7
+8
+d -> target("/d").
+The Resin program in Listing 1 is compiled into an Answer Set Program (ASP) to find its stable models. Source
+signals ‘a‘, ‘b‘, and ‘c‘ are treated as choices, while the target ‘d‘ acts as a constraint. The resulting ASP is shown
+in Listing 2.
+Listing 2: The result of compiling Listing 1 for target 𝑑.
+1
+0{a; b; c}3.
+2
+3
+d :- not a, b, c.
+4
+d :- a, b, not c.
+5
+6
+:- not d.
+Solving this ASP yields two answer sets: 𝑗1 = {𝑎,𝑏, ¬𝑐} and 𝑗2 = {¬𝑎,𝑏,𝑐}. The probability of the target is the
+sum of the probabilities of its models:
+𝑃(𝑑) = 𝑃(𝑗1) + 𝑃(𝑗2) = 𝑃(𝑎) · 𝑃(𝑏) · 𝑃(¬𝑐) + 𝑃(¬𝑎) · 𝑃(𝑏) · 𝑃(𝑐).
+At time 𝑡0, the RC is set up to compute 𝑃(𝑑) according to this formula in node 𝑓0. Assume that at 𝑡1, the probability
+of 𝑎changes at a frequency of 5 Hz and the rest at 1 Hz. Meaning, the RC can apply drop(RC, {𝑏,𝑐}) to facilitate
+appropriate internal memorization.
+𝑡0 :
+𝑃(𝑑) = 𝑚0
+𝑚0 = 𝑓0(𝑎,𝑏,𝑐) = 𝑃(𝑎) · 𝑃(𝑏) · 𝑃(¬𝑐) + 𝑃(¬𝑎) · 𝑃(𝑏) · 𝑃(𝑐)
+𝑡1 :
+𝑃(𝑑) = 𝑚0
+𝑚0 = 𝑓0(𝑎,𝑚1,𝑚2) = 𝑃(𝑎) · 𝑚1 + 𝑃(¬𝑎) · 𝑚2
+𝑚1 = 𝑓1(𝑏,𝑐) = 𝑃(𝑏) · 𝑃(¬𝑐)
+𝑚2 = 𝑓2(𝑏,𝑐) = 𝑃(𝑏) · 𝑃(𝑐)
+The original formula had 5 operations (number of · and +) to perform regardless of which input changed. Instead,
+after 𝑡1, 3 operations are performed at 5 Hz when the probability of 𝑎changes. Changes to the probabilities of 𝑏
+and 𝑐still require the original 5 operations, but due to the lower frequency, only at 1 Hz.
+
+
+1:10
+•
+Kohaut, Flade, Eggert, Kersting & Dhami
+0
+200
+400
+600
+800
+1000
+1200
+#Measurements
+0
+10
+20
+30
+FoC / Hz
+Estimated
+True
+1Hz
+2Hz
+3Hz
+4Hz
+5Hz
+6Hz
+7Hz
+8Hz
+9Hz
+10Hz
+Partitioning
+0.0
+0.5
+1.0
+1.5
+Partition MAE
+(a) FoC Estimation
+100
+101
+102
+Speedup
+0
+5
+10
+15
+Mem. Ratio
+FoC PDF
+(1, 1)
+(5, 1)
+(10, 1)
+1Hz
+2Hz
+3Hz
+4Hz
+5Hz
+6Hz
+7Hz
+8Hz
+9Hz
+10Hz
+Partitioning
+1
+4
+7
+10
+Depth
+(b) Reactive Circuit Adaptation
+Fig. 4. Simulation study of FoC estimation and time-dynamic Reactive Circuit properties. Evaluation on asynchronous
+synthetic data reveals that, while the filter can track time-variant frequencies (sampled from𝑈(0, 30) every 20 measurements),
+the clustering accuracy is sensitive to the granularity of the partitioning (a). As the partition size varies, the adapted RC
+exhibits a direct link between depth and memory footprint, whereas speedup displays non-monotonic behavior relative to a
+static baseline (b). Notably, the partition Mean Absolute Error (MAE) is governed by partitioning granularity, and adaptations
+cease entirely when a single partition encompasses all signals.
+4
+Experiments
+Since Resin and RCs are tailored for real-time applications, e.g., ensuring safety constraints for multi-agent systems,
+our experiments investigate the tracking accuracy, time, and space properties when solving reasoning tasks,
+such as WMC, continuously. Specifically, we answer the following questions through synthetic and high-fidelity
+simulation experiments:
+(Q1) Can we accurately track the FoC and obtain a correct source signal partitioning?
+(Q2) How does partitioning impact reactive computation times and circuit size?
+(Q3) How does the frequency adaptation of RCs capture dynamic systems?
+(Q4) What are the gains in computation times for structural adaptation and reactiveness, respectively?
+To answer these questions, we are employing data distribution based on ROS2 and Fast DDS (Macenski et al.
+2022). All experiments are run on an Intel i7-9700K desktop CPU and implemented in Rust (Matsakis and Klock II
+2014), providing a reliable, thread-safe setup for asynchronous data exchange and reasoning with RCs. We have
+aimed to choose optimal compilation settings for both baseline and adapted RC runs.
+4.1
+Tracking Frequencies of Change
+To address Q1, we employ a Kalman filter as described in Sec. 3. Fig. 4a shows how the filter accurately tracks a
+non-stationary FoC, jumping every 20 measurements to a new, uniformly distributed frequency. Furthermore, we
+present the mean absolute error (MAE) of the partitioning, i.e., the number of bins by which the estimated FoC
+deviates from its true position. This demonstrates that the partitioning granularity dictates the resulting MAE: a
+small bin size corresponds to more mispartitioning, and vice versa. Sensible filter tuning is required to reduce
+overshoot and ensure stability.
+
+
+Reactive Knowledge Representation and Asynchronous Reasoning
+•
+1:11
+(a) Parking
+(b) Travel
+0
+200
+0
+200
+0
+200
+Frequency of Change / Hz
+0
+200
+0
+200
+0
+60
+0
+200
+0
+60 0
+60
+Simulation Time / s
+0
+60 0
+60 0
+60
+(c) Frequencies
+Fig. 5. Simulated Unmanned Aircraft System traffic over suburban environment: Randomized journeys are triggered
+for each UAS, leading them to depart from and return to the common parking area (a) and to repeatedly enter each other’s
+airspaces (b). Meanwhile, the Frequencies of Change of the pairwise distances are tracked (c) via individual Kalman filter
+processes, showing how the volatility of the signals is time-dynamic, peaking when random journeys lead to similar areas or
+when returning to the parking zone.
+Listing 3: Continual safety assertion in Resin: By estimating pairwise distances between individual UASs as
+illustrated in Fig. 5, a Resin program can continually assert the safety within the drone network.
+1
+# Estimated pairwise distances
+2
+distance(drone_1, drone_2) <- source(
+3
+"/drone1_drone2", Density
+4
+).
+5
+distance(drone_1, drone_3) <- source(
+6
+"/drone1_drone3", Density
+7
+).
+8
+...
+9
+10
+# The situation becomes unsafe if drones enter each other's airspace,
+11
+# i.e., closer than 25 meters
+12
+unsafe if distance(X, Y) < 25.
+13
+14
+# We continually provide the `unsafe` atom as target signal via a single RC
+15
+unsafe -> target("/safety").
+4.2
+Frequency Partitioning of Reactive Circuits
+We resolve Q2 by (i) drawing synthetic FoCs from a set of Gaussian distributions and (ii) breaking down results for
+a range of partitioning parameters, i.e., the partition width ℎas described in Sec. 3. To demonstrate RC properties
+in isolation, we solve a generated WMC problem over 105 models, each with a combination of 103 sources
+uniformly chosen from a set of 2 × 103 overall signals. Here, we provide ground-truth FoCs and partitioning
+to the circuit adaptation routine. Furthermore, the reactive execution scheme is employed, i.e., memorization
+between signal updates is utilized to reduce the number of operations per second, as stated in 𝜌𝑅𝐶.
+Fig. 4b shows the resulting speedup, added memory requirements, and number of layers across settings. More
+fine-granular frequency partitions (i) increase the memory footprint and depth of the circuit and (ii) reduce
+computation times when compared to baseline (non-adapted) performance. Hence, the adaptations have a direct
+trade-off between size and performance, with additional memory allocation corresponding to faster inference.
+
+
+1:12
+•
+Kohaut, Flade, Eggert, Kersting & Dhami
+0
+10
+20
+30
+40
+50
+60
+0
+10
+20
+30
+40
+#Sources
+Layer 1
+Layer 2
+0
+600
+1200
+1800
+Simulation Time / s
+0
+10
+20
+30
+40
+#Sources
+(a) Frequency adaptation over UAS traffic
+0
+10
+20
+30
+40
+50
+60
+10
+6
+10
+4
+10
+2
+Runtime / s
+Flat
+Reactive
+Adapted
+0
+600
+1200
+1800
+Simulation Time / s
+10
+6
+10
+4
+10
+2
+Runtime / s
+(b) Reactive safety assertions
+Fig. 6. Ablation study of frequency adaptation and performance in UAS traffic scenarios. As a drone swarm performs
+randomized journeys, the RC redistributes sources based on the estimated FoCs. A two-layer partitioning effectively captures
+the distinction between static and dynamic sources (a), where the signal count in the first layer directly correlates with the
+system runtime. This adaptive partitioning facilitates significant performance gains (b); while the adapted circuit achieves
+high speedups through knowledge compilation alone, the reactive execution via memorization of frequency-separated
+formula slices yields multiple orders of magnitude in speedup, as shown on the logarithmic scale.
+4.3
+Rapid and Reactive Safety Assertions in Advanced Air Mobility
+To answer Q3, we employ AirSim (Shah et al. 2017) as presented in Fig. 5, a high-fidelity physics simulation for
+aerial and ground-based vehicles. In our setup, seven Unmanned Aircraft Systems (UAS) undertake randomized
+journeys across a suburban environment. Each trajectory is obtained via simulated Inertial Navigation Systems,
+yielding locations over time as 2D Gaussian estimates. Similarly, the pairwise distance between all drones is
+computed and shared across the DDS. The employed Resin (see Listing 3) receives each pairwise distance and
+defines a target signal unsafe, which is satisfied under any combination of drones flying closer than 25 m.
+Answering Q3, we show that RCs successfully capture and adapt to the application’s dynamics. Fig. 6a shows
+the result: as the drones maneuver, the estimated FoCs of the various distance signals fluctuate (visualized in
+Fig. 5 (c)). In response, the RC dynamically redistributes the corresponding signal nodes between two layers
+(groups of nodes at the same distance from the root), effectively segregating high-frequency (dynamic) signals
+from low-frequency (quasi-static) ones. Even with this simple two-layer partitioning, the experiment clearly
+demonstrates the circuit’s plasticity and its ability to mirror the system’s changing temporal characteristics.
+We address Q4 within the same simulation setup we employ to answer Q3. The resulting WMC problem of
+the target signal involves 42 source signal value streams (each datastream and its negation) and, due to any
+combination of nearby flying drones constituting an unsafe state, 221 −1 models. Fig. 6b presents our ablation
+study of the runtime for this WMC problem, comparing three approaches. The ’flat’ baseline evaluates the original
+sum-product problem, representing a naive full re-computation (𝜌MAX). The ’adapted’ curve also performs a
+full re-computation on each update, but on a circuit that has been structurally optimized via our lift and drop
+operations; the speedup here demonstrates the benefit of frequency-guided knowledge compilation alone. Finally,
+the ’reactive’ curve shows the full potential of RCs, combining structural adaptation with partial re-computation
+of only the invalidated circuit parts. This reactive evaluation, corresponding to 𝜌RC from Theorem 3.9, yields
+speedups of several orders of magnitude over the baseline by avoiding redundant computations.
+
+
+Reactive Knowledge Representation and Asynchronous Reasoning
+•
+1:13
+5
+Related Work
+5.1
+Neuro-symbolic AI
+The field of logic programming, initiated with the development of Prolog (Colmerauer and Roussel 1993),
+has given rise to powerful paradigms for knowledge representation and reasoning. Among these, Answer Set
+Programming (ASP) has become a dominant approach for declarative problem solving, based on the stable model
+semantics (Gelfond and Lifschitz 1988). In parallel, to address the inherent uncertainties found in real-world
+applications such as robotics (Thrun 2002), Probabilistic Logic Programming emerged as a key paradigm (Raedt,
+Kersting, et al. 2016). This paradigm, with systems like Bayesian Logic Programs (Kersting and Raedt 2008)
+and ProbLog (Fierens et al. 2015; Raedt, Kimmig, et al. 2007), enables probabilistic inference over discrete and
+later extended to hybrid domains (Kumar et al. 2023; Nitti et al. 2016). The integration of deep learning has
+further expanded this field, leading to neuro-symbolic systems such as DeepProbLog (Manhaeve et al. 2018) and
+SLASH (Skryagin, Stammer, et al. 2022) that support end-to-end learning by combining neural networks with
+formal logic. These approaches are vital for autonomous agents that require safe and reliable decision-making
+and action planning (Antanas et al. 2019; Broeck et al. 2010; Moldovan et al. 2011).
+Our work builds upon this foundation by introducing Resin, a probabilistic logic programming language
+designed for distributed systems with asynchronous data streams, and Reactive Circuits, which provide an
+adaptive execution model to optimize continual inference.
+5.2
+Circuits and Tractable Inference
+A key approach to achieving tractable inference is to compile probabilistic models into computation graphs, often
+called circuits. Probabilistic Circuits are a prominent class of such models, offering inference times linear in the
+circuit size (Choi et al. 2020; Poon and Domingos 2011; Sánchez-Cauce et al. 2022). This family includes Arithmetic
+Circuits, which are widely used for probabilistic inference (Darwiche 2003), and their generalization, Algebraic
+Circuits, which support a broader range of tasks by operating over any commutative semiring (Derkinderen and
+Raedt 2020; Kimmig et al. 2017). The efficiency of these circuits heavily depends on their structure, and significant
+research has focused on techniques for structural optimizations (Darwiche 2004; Darwiche and Marquis 2002;
+Muise et al. 2012; Peharz et al. 2020; Sümer et al. 2007).
+Our work extends this paradigm by introducing Reactive Circuits (RC) that build on Algebraic Circuits as a
+highly generalized reasoning foundation. Instead of creating a single, static circuit, RCs perform a continuous,
+frequency-guided online knowledge compilation, dynamically restructuring the computation to exploit the
+heterogeneous update rates of input signals.
+5.3
+Reactive and Event-driven Systems
+Our work draws inspiration from reactive and event-driven systems. In such systems, e.g., Functional Reactive
+Programming (Elliott and Hudak 1997; Wan and Hudak 2000), data flows propagate changes automatically
+through a computation graph, with updated inputs leading to updated outputs (Salvaneschi et al. 2014) and
+learning (Solowjow and Trimpe 2020). We extend this paradigm to runtime-efficient weighted first-order logic in
+cyber-physical systems (Kang et al. 2012), presenting the first syntax and semantics for reactive and asynchronous
+reasoning. To this end, our approach shares principles with event-triggered systems that compartmentalize and
+memoize computations (Bagaev et al. 2023; Bhatotia et al. 2011).
+In contrast to searching for a single computation model at the beginning or considering only the original
+computation graph for minimization, RCs observe the Frequency of Change (FoC) in their inputs to trigger
+incremental, reversible structural refinements. This dynamic, event-driven adaptation of the computation graph
+is what distinguishes RCs from traditional, static models such as Algebraic Circuits and makes them highly
+practical for continual reasoning.
+
+
+1:14
+•
+Kohaut, Flade, Eggert, Kersting & Dhami
+6
+Conclusion
+In this work, we address the challenge of the high cost of continual inference for autonomous agents in dy-
+namic environments. We introduce a novel reactive knowledge representation framework comprising two core
+contributions: Resin, an asynchronous probabilistic programming language, and Reactive Circuits (RCs), an
+adaptive inference structure. Resin provides a high-level, declarative language for modeling continuous reasoning
+over asynchronous data streams, bridging probabilistic logic and reactive programming. RCs, in turn, provide
+an efficient and exact execution model by dynamically restructuring the underlying algebraic computations to
+mirror the volatility of the input signals.
+The efficiency of RCs stems from their ability to partition computations based on the estimated Frequency of
+Change of input signals. By memoizing stable intermediate results and only re-evaluating parts of the model
+affected by new information, our approach drastically reduces redundant calculations. Our experiments, conducted
+in a high-fidelity drone swarm simulation, show the effectiveness of this reactive evaluation, achieving speedups
+of several orders of magnitude over traditional, non-adaptive inference. This gain highlights the power of aligning
+computational effort with the environment’s temporal dynamics, though it introduces a trade-off between speed
+and memory footprint.
+Future work may focus on enhancing the adaptability and scope of Reactive Circuits. For instance, next steps
+may involve integrating heterogeneous computation models into RC’s formula nodes, e.g., depending on the
+size of the respective sub-formula. Looking further, one may explore integrating RCs with a wider range of
+probabilistic and neural models and leverage more active interactions, e.g., by reading frequencies and requesting
+upstream models at optimized time intervals. Overall, we believe our work paves the way for a new class of agile
+and efficient neuro-symbolic systems capable of real-time reasoning in complex, dynamic worlds.
+Acknowledgments
+Simon Kohaut gratefully acknowledges the financial support from the Honda Research Institute Europe (HRI-EU).
+The Eindhoven University of Technology authors received support from their Department of Mathematics and
+Computer Science and the Eindhoven Artificial Intelligence Systems Institute. This work was supported by the
+Konrad Zuse School of Excellence in Learning and Intelligent Systems (ELIZA). This work has benefited from
+the Cluster of Excellence "Reasonable AI" funded by the German Research Foundation (DFG) under Germany’s
+Excellence Strategy— EXC-3057. All emojis used in the figures were designed by OpenMoji under the CC BY-SA
+4.0 license.
+References
+L. Antanas, P. Moreno, M. Neumann, R. P. de Figueiredo, K. Kersting, J. Santos-Victor, and L. D. Raedt. 2019. “Semantic and geometric
+reasoning for robotic grasping: a probabilistic logic approach.” Auton. Robots, 43, 6, 1393–1418. doi:10.1007/S10514-018-9784-8.
+D. Bagaev, A. Podusenko, and B. de Vries. 2023. “RxInfer: A Julia package for reactive real-time Bayesian inference.” J. Open Source Softw., 8,
+86, 5161. doi:10.21105/JOSS.05161.
+P. Bhatotia, A. Wieder, R. Rodrigues, U. A. Acar, and R. Pasquini. 2011. “Incoop: MapReduce for incremental computations.” In: ACM Symposium
+on Cloud Computing in conjunction with SOSP 2011, SOCC ’11, Cascais, Portugal, October 26-28, 2011. Ed. by J. S. Chase and A. E. Abbadi.
+ACM, 7. doi:10.1145/2038916.2038923.
+G. V. den Broeck, I. Thon, M. van Otterlo, and L. D. Raedt. 2010. “DTProbLog: A Decision-Theoretic Probabilistic Prolog.” In: Proceedings of the
+Twenty-Fourth AAAI Conference on Artificial Intelligence, AAAI 2010, Atlanta, Georgia, USA, July 11-15, 2010. Ed. by M. Fox and D. Poole.
+AAAI Press, 1217–1222. doi:10.1609/AAAI.V24I1.7755.
+Y. Choi, A. Vergari, and G. Van den Broeck. 2020. Probabilistic circuits: A unifying framework for tractable probabilistic models. (2020).
+A. Colmerauer and P. Roussel. 1993. “The Birth of Prolog.” In: History of Programming Languages Conference (HOPL-II), Preprints, Cambridge,
+Massachusetts, USA, April 20-23, 1993. Ed. by J. A. N. Lee and J. E. Sammet. ACM, 37–52. doi:10.1145/154766.155362.
+A. Darwiche. 2003. “A differential approach to inference in Bayesian networks.” J. ACM, 50, 3, 280–305. doi:10.1145/765568.765570.
+
+
+Reactive Knowledge Representation and Asynchronous Reasoning
+•
+1:15
+A. Darwiche. 2004. “New Advances in Compiling CNF into Decomposable Negation Normal Form.” In: Proceedings of the 16th Eureopean
+Conference on Artificial Intelligence, ECAI’2004, including Prestigious Applicants of Intelligent Systems, PAIS 2004, Valencia, Spain, August
+22-27, 2004. Ed. by R. L. de Mántaras and L. Saitta. IOS Press, 328–332.
+A. Darwiche and P. Marquis. 2002. “A Knowledge Compilation Map.” J. Artif. Intell. Res., 17, 229–264. doi:10.1613/JAIR.989.
+V. Derkinderen and L. D. Raedt. 2020. “Algebraic Circuits for Decision Theoretic Inference and Learning.” In: ECAI 2020 - 24th European
+Conference on Artificial Intelligence, 29 August-8 September 2020, Santiago de Compostela, Spain, August 29 - September 8, 2020 - Including
+10th Conference on Prestigious Applications of Artificial Intelligence (PAIS 2020) (Frontiers in Artificial Intelligence and Applications). Ed. by
+G. D. Giacomo, A. Catalá, B. Dilkina, M. Milano, S. Barro, A. Bugarín, and J. Lang. Vol. 325. IOS Press, 2569–2576. doi:10.3233/FAIA200392.
+C. Elliott and P. Hudak. 1997. “Functional Reactive Animation.” In: Proceedings of the 1997 ACM SIGPLAN International Conference on Functional
+Programming (ICFP ’97), Amsterdam, The Netherlands, June 9-11, 1997. Ed. by S. L. P. Jones, M. Tofte, and A. M. Berman. ACM, 263–273.
+doi:10.1145/258948.258973.
+D. Fierens, G. V. den Broeck, J. Renkens, D. S. Shterionov, B. Gutmann, I. Thon, G. Janssens, and L. D. Raedt. 2015. “Inference and learning in
+probabilistic logic programs using weighted Boolean formulas.” Theory Pract. Log. Program., 15, 3, 358–401. doi:10.1017/S1471068414000076.
+M. Gebser, R. Kaminski, B. Kaufmann, and T. Schaub. 2019. “Multi-shot ASP solving with clingo.” Theory Pract. Log. Program., 19, 1, 27–82.
+doi:10.1017/S1471068418000054.
+M. Gelfond and V. Lifschitz. 1988. “The Stable Model Semantics for Logic Programming.” In: Logic Programming, Proceedings of the Fifth
+International Conference and Symposium, Seattle, Washington, USA, August 15-19, 1988 (2 Volumes). Ed. by R. A. Kowalski and K. A. Bowen.
+MIT Press, 1070–1080.
+R. E. Kalman. 1960. “A new approach to linear filtering and prediction problems.” J. Basic Engineering, 82, 35–45.
+W. Kang, K. Kapitanova, and S. H. Son. 2012. “RDDS: A Real-Time Data Distribution Service for Cyber-Physical Systems.” IEEE Trans. Ind.
+Informatics, 8, 2, 393–405. doi:10.1109/TII.2012.2183878.
+K. Kersting and L. D. Raedt. 2008. “Basic Principles of Learning Bayesian Logic Programs.” In: Probabilistic Inductive Logic Programming -
+Theory and Applications. Lecture Notes in Computer Science. Vol. 4911. Ed. by L. D. Raedt, P. Frasconi, K. Kersting, and S. H. Muggleton.
+Springer, 189–221. doi:10.1007/978-3-540-78652-8\_7.
+A. Kimmig, G. V. den Broeck, and L. D. Raedt. 2017. “Algebraic model counting.” J. Appl. Log., 22, 46–62. doi:10.1016/J.JAL.2016.11.031.
+N. Kumar, O. Kuzelka, and L. D. Raedt. 2023. “First-Order Context-Specific Likelihood Weighting in Hybrid Probabilistic Logic Programs.” J.
+Artif. Intell. Res., 77, 683–735. doi:10.1613/JAIR.1.13657.
+S. Macenski, T. Foote, B. Gerkey, C. Lalancette, and W. Woodall. 2022. “Robot Operating System 2: Design, architecture, and uses in the wild.”
+Science Robotics, 7, 66, eabm6074. doi:10.1126/scirobotics.abm6074.
+R. Manhaeve, S. Dumancic, A. Kimmig, T. Demeester, and L. D. Raedt. 2018. “DeepProbLog: Neural Probabilistic Logic Programming.” In:
+Advances in Neural Information Processing Systems 31: Annual Conference on Neural Information Processing Systems 2018, NeurIPS 2018,
+December 3-8, 2018, Montréal, Canada. Ed. by S. Bengio, H. M. Wallach, H. Larochelle, K. Grauman, N. Cesa-Bianchi, and R. Garnett,
+3753–3763. https://proceedings.neurips.cc/paper/2018/hash/dc5d637ed5e62c36ecb73b654b05ba2a-Abstract.html.
+N. D. Matsakis and F. S. Klock II. 2014. “The rust language.” In: ACM SIGAda Ada Letters 3. Vol. 34. ACM, 103–104.
+B. Moldovan, M. van Otterlo, L. D. Raedt, P. Moreno, and J. Santos-Victor. 2011. “Statistical Relational Learning of Object Affordances for
+Robotic Manipulation.” In: Latest Advances in Inductive Logic Programming, ILP 2011, Late Breaking Papers, Windsor Great Park, UK, July 31 -
+August 3, 2011. Ed. by S. H. Muggleton and H. Watanabe. Imperial College Press / World Scientific, 95–103. doi:10.1142/9781783265091\_0012.
+C. J. Muise, S. A. McIlraith, J. C. Beck, and E. I. Hsu. 2012. “Dsharp: Fast d-DNNF Compilation with sharpSAT.” In: Advances in Artificial
+Intelligence - 25th Canadian Conference on Artificial Intelligence, Canadian AI 2012, Toronto, ON, Canada, May 28-30, 2012. Proceedings
+(Lecture Notes in Computer Science). Ed. by L. Kosseim and D. Inkpen. Vol. 7310. Springer, 356–361. doi:10.1007/978-3-642-30353-1\_36.
+K. P. Murphy. 2002. Dynamic bayesian networks: representation, inference and learning. University of California, Berkeley.
+D. Nitti, T. D. Laet, and L. D. Raedt. 2016. “Probabilistic logic programming for hybrid relational domains.” Mach. Learn., 103, 3, 407–449.
+doi:10.1007/S10994-016-5558-8.
+G. Pardo-Castellote. 2003. “OMG Data-Distribution Service: Architectural Overview.” In: 23rd International Conference on Distributed Computing
+Systems Workshops (ICDCS 2003 Workshops), 19-22 May 2003, Providence, RI, USA. IEEE Computer Society, 200–206. doi:10.1109/ICDCSW.2
+003.1203555.
+J. Pearl. 1989. Probabilistic reasoning in intelligent systems - networks of plausible inference. Morgan Kaufmann series in representation and
+reasoning. Morgan Kaufmann.
+R. Peharz, S. Lang, A. Vergari, K. Stelzner, A. Molina, M. Trapp, G. V. den Broeck, K. Kersting, and Z. Ghahramani. 2020. “Einsum Networks:
+Fast and Scalable Learning of Tractable Probabilistic Circuits.” In: Proceedings of the 37th International Conference on Machine Learning,
+ICML 2020, 13-18 July 2020, Virtual Event (Proceedings of Machine Learning Research). Vol. 119. PMLR, 7563–7574. http://proceedings.mlr
+.press/v119/peharz20a.html.
+H. Poon and P. M. Domingos. 2011. “Sum-product networks: A new deep architecture.” In: IEEE International Conference on Computer Vision
+Workshops, ICCV 2011 Workshops, Barcelona, Spain, November 6-13, 2011. IEEE Computer Society, 689–690. doi:10.1109/ICCVW.2011.6130310.
+
+
+1:16
+•
+Kohaut, Flade, Eggert, Kersting & Dhami
+L. D. Raedt, K. Kersting, S. Natarajan, and D. Poole. 2016. Statistical Relational Artificial Intelligence: Logic, Probability, and Computation.
+Synthesis Lectures on Artificial Intelligence and Machine Learning. Morgan & Claypool Publishers. isbn: 978-3-031-00022-5. doi:10.2200
+/S00692ED1V01Y201601AIM032.
+L. D. Raedt, A. Kimmig, and H. Toivonen. 2007. “ProbLog: A Probabilistic Prolog and Its Application in Link Discovery.” In: IJCAI 2007,
+Proceedings of the 20th International Joint Conference on Artificial Intelligence, Hyderabad, India, January 6-12, 2007. Ed. by M. M. Veloso,
+2462–2467. http://ijcai.org/Proceedings/07/Papers/396.pdf.
+G. Salvaneschi, G. Hintz, and M. Mezini. 2014. “REScala: bridging between object-oriented and functional style in reactive applications.”
+In: 13th International Conference on Modularity, MODULARITY ’14, Lugano, Switzerland, April 22-26, 2014. Ed. by W. Binder, E. Ernst,
+A. Peternier, and R. Hirschfeld. ACM, 25–36. doi:10.1145/2577080.2577083.
+R. Sánchez-Cauce, I. París, and F. J. Díez. 2022. “Sum-Product Networks: A Survey.” IEEE Trans. Pattern Anal. Mach. Intell., 44, 7, 3821–3839.
+doi:10.1109/TPAMI.2021.3061898.
+S. Shah, D. Dey, C. Lovett, and A. Kapoor. 2017. “AirSim: High-Fidelity Visual and Physical Simulation for Autonomous Vehicles.” In: Field
+and Service Robotics, Results of the 11th International Conference, FSR 2017, Zurich, Switzerland, 12-15 September 2017 (Springer Proceedings
+in Advanced Robotics). Ed. by M. Hutter and R. Siegwart. Vol. 5. Springer, 621–635. doi:10.1007/978-3-319-67361-5\_40.
+A. Skryagin, D. Ochs, D. S. Dhami, and K. Kersting. 2023. “Scalable Neural-Probabilistic Answer Set Programming.” J. Artif. Intell. Res., 78,
+579–617. doi:10.1613/JAIR.1.15027.
+A. Skryagin, W. Stammer, D. Ochs, D. S. Dhami, and K. Kersting. 2022. “Neural-Probabilistic Answer Set Programming.” In: Proceedings of the
+19th International Conference on Principles of Knowledge Representation and Reasoning, KR 2022, Haifa, Israel, July 31 - August 5, 2022. Ed. by
+G. Kern-Isberner, G. Lakemeyer, and T. Meyer. https://proceedings.kr.org/2022/48/.
+F. Solowjow and S. Trimpe. 2020. “Event-triggered learning.” Autom., 117, 109009. doi:10.1016/J.AUTOMATICA.2020.109009.
+Ö. Sümer, U. A. Acar, A. Ihler, and R. R. Mettu. 2007. “Efficient Bayesian Inference for Dynamically Changing Graphs.” In: Advances in Neural
+Information Processing Systems 20, Proceedings of the Twenty-First Annual Conference on Neural Information Processing Systems, Vancouver,
+British Columbia, Canada, December 3-6, 2007. Ed. by J. C. Platt, D. Koller, Y. Singer, and S. T. Roweis. Curran Associates, Inc., 1441–1448.
+https://proceedings.neurips.cc/paper/2007/hash/8757150decbd89b0f5442ca3db4d0e0e-Abstract.html.
+S. Thrun. 2002. “Probabilistic robotics.” Commun. ACM, 45, 3, 52–57. doi:10.1145/504729.504754.
+Z. Wan and P. Hudak. 2000. “Functional reactive programming from first principles.” In: Proceedings of the 2000 ACM SIGPLAN Conference on
+Programming Language Design and Implementation (PLDI), Vancouver, Britith Columbia, Canada, June 18-21, 2000. Ed. by M. S. Lam. ACM,
+242–252. doi:10.1145/349299.349331.
+Z. Yang, A. Ishay, and J. Lee. 2020. “NeurASP: Embracing Neural Networks into Answer Set Programming.” In: Proceedings of the Twenty-Ninth
+International Joint Conference on Artificial Intelligence, IJCAI 2020. Ed. by C. Bessiere. ijcai.org, 1755–1762. doi:10.24963/IJCAI.2020/243.
+
+
+Reactive Knowledge Representation and Asynchronous Reasoning
+•
+1:17
+A
+Resin Grammar
+In the following, we provide the grammar of the Resin asynchronous probabilistic programming language in
+Backus-Naur form.
+– Program Structure –
+⟨program⟩::= ⟨statement⟩| ⟨statement⟩⟨program⟩
+⟨statement⟩::= ⟨source_decl⟩| ⟨logic_rule⟩| ⟨target_decl⟩| ⟨comment⟩
+– Asynchronous Datastreams –
+⟨source_decl⟩::= ⟨id⟩"<- source(" ⟨path⟩", " ⟨type⟩")."
+⟨target_decl⟩::= ⟨id⟩" -> target(" ⟨path⟩")."
+⟨type⟩::= "Probability" | "Density" | "Number" | "Boolean"
+– First-Order Logic –
+⟨clause⟩::= ⟨head⟩" if " ⟨body⟩"."
+⟨head⟩::= ⟨atom⟩
+⟨body⟩::= ⟨literal⟩| ⟨body⟩" and " ⟨literal⟩
+⟨literal⟩::= ⟨atom⟩| "not " ⟨atom⟩
+⟨atom⟩::= ⟨predicate⟩| ⟨comparison⟩
+– Expressions & Terms –
+⟨comparison⟩::= ⟨term⟩⟨rel_op⟩⟨term⟩
+⟨predicate⟩::= ⟨id⟩"(" ⟨arg_list⟩")" | ⟨id⟩
+⟨arg_list⟩::= ⟨term⟩| ⟨term⟩", " ⟨arg_list⟩
+⟨term⟩::= ⟨variable⟩| ⟨id⟩| ⟨number⟩| ⟨predicate⟩
+– Tokens –
+⟨rel_op⟩::= ">" | "<" | "==" | ">=" | "<="
+⟨variable⟩::= [𝐴−𝑍][𝑎−𝑧𝐴−𝑍0 −9_]∗
+⟨id⟩::= [𝑎−𝑧][𝑎−𝑧𝐴−𝑍0 −9_]∗
+⟨path⟩::= "¨" [𝑎−𝑧𝐴−𝑍0 −9_/] ∗"¨"
+⟨comment⟩::= "# " (any characters)
+
+
+1:18
+•
+Kohaut, Flade, Eggert, Kersting & Dhami
+B
+Reactive Circuit Algorithms
+In the following, we provide the lift and drop algorithms employed for online adaptation of Reactive Circuits.
+Algorithm 1: Lift applied to Reactive Circuit RC and set of signals S𝑙
+1: for 𝑠∈S𝑙do
+⊲For each signal to lift
+2:
+for 𝑓𝑖∈FRC do
+⊲For each formula in the RC
+3:
+if 𝑠∈𝑐ℎ𝑖𝑙𝑑𝑟𝑒𝑛(𝑓𝑖) then
+⊲Move dependencies on 𝑠to parent nodes
+4:
+if 𝑝𝑎𝑟𝑒𝑛𝑡𝑠(𝑓𝑖) is empty then
+⊲Create a new parent if none exists
+5:
+Add parent node 𝑓𝑗with formula 𝑓𝑗(𝑠,𝑚𝑖) = 𝑠· 𝑚𝑖to FRC
+6:
+Add edges (𝑠, 𝑓𝑗) and (𝑓𝑖, 𝑓𝑗) to ERC
+7:
+𝑚𝑗←𝑚𝑖
+8:
+else
+9:
+for 𝑓𝑗∈𝑝𝑎𝑟𝑒𝑛𝑡𝑠(𝑓𝑖) do
+⊲Else, multiply all parents with 𝑠
+10:
+Add edge (𝑠, 𝑓𝑗) to ERC and multiply 𝑚𝑖in formula 𝑓𝑗with 𝑠
+11:
+end for
+12:
+end if
+13:
+Remove edge (𝑠, 𝑓𝑖) from ERC and 𝑠from formula 𝑓𝑖
+14:
+𝑚𝑖←𝑚𝑖/ 𝑠
+15:
+end if
+16:
+end for
+17: end for
+Algorithm 2: Drop applied on Reactive Circuit RC and set of signals S𝑑
+1: for 𝑠∈S𝑑do
+⊲For each signal to drop
+2:
+for 𝑓𝑖∈FRC do
+⊲For each formula in the RC
+3:
+if 𝑠∈𝑐ℎ𝑖𝑙𝑑𝑟𝑒𝑛(𝑓𝑖) then
+⊲Move dependencies on 𝑠to child nodes
+4:
+if 𝑐ℎ𝑖𝑙𝑑𝑟𝑒𝑛(𝑓𝑖) \ 𝑠is empty then
+⊲Create a new child if none exists
+5:
+for each ⊗node in 𝑓𝑖that connects to 𝑠do
+6:
+Add child node 𝑓𝑗with formula 𝑓𝑗(𝑠) = 𝑠to FRC
+7:
+Add edges (𝑠, 𝑓𝑗) and (𝑓𝑗, 𝑓𝑖) to ERC
+8:
+𝑚𝑗←𝑠
+9:
+Substitute respective 𝑠in formula 𝑓𝑖with 𝑚𝑗
+10:
+end for
+11:
+else
+12:
+for 𝑓𝑗∈𝑐ℎ𝑖𝑙𝑑𝑟𝑒𝑛(𝑓𝑖) do
+⊲Else, multiply all child formulas with 𝑠
+13:
+Add edge (𝑠, 𝑓𝑗) to ERC and multiply formula 𝑓𝑖with 𝑠
+14:
+end for
+15:
+end if
+16:
+Remove edge (𝑠, 𝑓𝑖) from ERC and 𝑠from formula 𝑓𝑖
+17:
+end if
+18:
+end for
+19: end for
+Received DD MM 2026; accepted DD MM 2026

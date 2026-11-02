@@ -1,0 +1,850 @@
+Automated Planning for Optimal Data Pipeline
+Instantiation
+Leonardo Rosa Amadoe,a,*, Adriano Vogela,b,1, Dalvan Grieblera, Gabriel Paludo Licksc, Eric Simond and
+Felipe Meneguzzie,a
+aPontifical Catholic University of Rio Grande do Sul, Brazil
+bJohannes Kepler University Linz, Austria
+cSapienza University of Rome, Italy
+dSAP Labs, France
+eUniversity of Aberdeen, Scotland
+Abstract.
+Data pipeline frameworks provide abstractions for im-
+plementing sequences of data-intensive transformation operators, au-
+tomating the deployment and execution of such transformations in a
+cluster. Deploying a data pipeline, however, requires computing re-
+sources to be allocated in a data center, ideally minimizing the over-
+head for communicating data and executing operators in the pipeline
+while considering each operator’s execution requirements. In this pa-
+per, we model the problem of optimal data pipeline deployment as
+planning with action costs, where we propose heuristics aiming to
+minimize total execution time. Experimental results indicate that the
+heuristics can outperform the baseline deployment and that a heuris-
+tic based on connections outperforms other strategies.
+1
+Introduction
+A recent report from the European Commission forecasts an in-
+crease to 8.4 million data professionals in the EU27 by 2025, with
+1.8 million positions to be added in the period between 2020 and
+2025, leading to a shortage of approximately 484,000 positions [5].
+The shortage of highly trained human resources calls for data pro-
+cessing platforms accessible to a broader category of users (the so-
+called citizen data scientists) having strong data expertise, moder-
+ate statistics training, and low expertise in programming and dis-
+tributed computing [3, 18]. Several recent technology trends ac-
+knowledge this situation through the development of data pipeline
+frameworks [17, 15, 1, 22, 21, 16] relying on a flow-based program-
+ming model [14].
+In these frameworks, the goal is to enable non-technical experts
+(aka citizen data scientists) to quickly build, debug, and maintain
+high-quality data pipelines at scale within a cloud cluster by provid-
+ing high-level abstractions in their programming model. Since users
+design data pipelines, and are not assumed to comprehend the un-
+derlying engine that deploys and executes the pipeline, the resulting
+data pipelines (graphs) derive a non-optimal allocation of resources
+to execute it. Thus, data pipeline engines must provide optimization
+techniques to assure an optimal usage of computing resources in a
+∗Corresponding Author. Email: leonardo.amado@abdn.ac.uk.
+1 Work done while affiliated with the Pontifical Catholic University of Rio
+Grande do Sul (PUCRS).
+distributed system and minimize data-intensive communication costs
+during graph execution.
+The problem of optimizing a pipeline execution is similar to the
+task of constraint optimization [12], which has been a focus of re-
+search on automated planning. Indeed, research in that area has fo-
+cused on developing algorithms to compute optimized solutions for
+optimization problems with constraints, leading to fast and reliable
+algorithms [11]. With such a research background, we develop a
+model for automated planning algorithms that use heuristic search
+and state-dependent action costs to solve the problem of optimally
+allocating computation tasks to the worker nodes of a distributed sys-
+tem for executing a data pipeline. We evaluate our optimization meth-
+ods using the pipeline engine of the SAP Data Intelligence commer-
+cial product 2, called VFlow 3, which adopts a flow-based program-
+ming model, and whose execution model is based on a distributed
+Kubernetes container orchestration platform.
+This work provides two main technical contributions: I) We model
+several optimization methods that determine how the operators of a
+data pipeline should be deployed on the worker nodes of Kubernetes
+clusters; II) We perform an experimental analysis of the proposed ap-
+proaches with a real-world industry data pipeline processing system,
+report our findings and indicate directions for future performance im-
+provement.
+We organize this article as follows. Section 2 provides an overview
+of automated planning and data pipelines. In Section 3, we model the
+elements and constraints of deploying data pipelines and comput-
+ing plans. Then, in Section 4 we describe the approaches to pipeline
+grouping for reducing the total execution time. Section 5 explains our
+experimental methodology that compares the results of the heuristic
+approaches against solutions from a random baseline approach on
+various workloads. Section 6 shows our empirical performance re-
+sults for the different approaches using pipelines with a sequential or
+parallel topology in which we vary the number of special operators
+and the computational load. Finally, Section 7 summarizes our key
+contributions and points toward future work.
+2 https://www.sap.com/products/technology-platform/data-intelligence.html
+3 https://api.sap.com/api/vflow/overview
+arXiv:2503.12626v1  [cs.AI]  16 Mar 2025
+
+
+2
+Background
+This section introduces the formal background upon which our ap-
+plication relies. We start with a formalization of Automated Plan-
+ning and the elements of problems in this formalism in Section 2.1.
+Section 2.2 then formalize data pipelines and how their definition
+relates to deployment in an underlying high performance infrastruc-
+ture. This allows us to formalize the pipeline optimization problem
+of Section 3.
+2.1
+Automated Planning
+We leverage automated planning techniques to drive the optimiza-
+tion. Automated planning is a sub-area of Artificial Intelligence con-
+cerned with finding sequences or policies of actions (i.e., plans) able
+to transition an agent from a given initial state to a desirable goal
+state [9, 6, Ch. 1]. A classical planning problem can be described
+as one of graph search, in which the nodes in the graph represent
+states, edges represent transitions between states that are caused by
+applying an action at a state. The solution to a planning problem
+is a sequence of actions (edges) that forms a path to traverse this
+graph from a unique initial state to any one of the goal states. Do-
+main experts seldom define such graphs explicitly, but rather use a
+logic-based description language (which we define later) to induce
+the actual search graph. This allows graphs with huge state-spaces
+to be defined compactly. In what follows we adopt the planning ter-
+minology from Ghallab et al. [10] to represent states and actions in
+planning domain problems.
+The most fundamental part of a classical planning task is the plan-
+ning domain. A planning domain is a formal description of the dy-
+namics of an environment in which an agent acts. Definition 1 for-
+malizes a planning domain.
+Definition 1 (Planning Domain). A planning domain Ξ consists
+of a pair ⟨F, A⟩, which specifies the knowledge of the domain, and
+comprises: a finite set of facts F, i.e., a set of ground instantiated
+predicates, defining the environment state properties; and a finite set
+of actions A, which is technically a set of ground instantiated oper-
+ators, representing the actions that can be performed in the environ-
+ment.
+States s ⊆F consist of facts from a planning domain indicat-
+ing properties that are true at any moment in time and follow the
+closed world assumption so that any fact not included in a state is
+false. Conditions or formulas in our formalism comprise positive
+and negated facts (f, ¬ f) representing an implicit conjunctive for-
+mula indicating what must be true (alternatively, false) in a state. The
+positive part of a condition c (pos(c)) comprises the positive facts,
+and the negated part of a condition neg(c) comprises the negated
+facts. We say a state s supports a condition c, s |= c (alterna-
+tively, c is valid in s), if and only if all positive facts are present
+in s, and all negated facts are absent in s, i.e., s |= c if and only if
+(s∪pos(c) = s)∧(s∩neg(c) = ∅). An action a ∈A is represented
+by a tuple o = ⟨pre(a), eff(a), cost(a)⟩containing the precondi-
+tions pre(a), the effects eff(a), and a non-negative cost cost(a), in-
+dicating possible transitions between states.
+The transition of a state s into a new state s′ using an action a is
+represented as the transition function s′ = γ(s, a). The transition is
+valid iff s |= pre(a), and s′ = (s ∪pos(eff(a))) −neg(eff(a)).
+A planning task (or planning instance) is the formal description
+of a task to be solved in a given planning domain. Planning tasks
+comprise a planning domain Ξ and a planning problem. A planning
+problem describes the finite set of objects of the environment, the
+initial state from which the planning problem starts, and the goal
+state which an agent desires to achieve.
+Definition 2 (Planning Instance). A planning task is a tuple Π =
+⟨Ξ, I, G⟩, in which I is an initial state, G is a goal condition, and Ξ
+is a planning domain.
+The solution for a planning task, which we call a plan, is a se-
+quence of actions that an agent can perform in a planning domain to
+achieve the goal state G from the initial state I. Definition 3 formal-
+izes the notion of a plan and an optimal plan.
+Definition 3 (Plan). A plan π for a planning task Π is a sequence
+of actions π = ⟨a1, . . . , an⟩that induces a sequence of states
+⟨s0, s1, . . . , sn⟩such that I = s0 |= pre(a1), sn |= G and that ev-
+ery state si ∈π is such that si−1 |= pre(ai) and si = γ(si−1, ai).
+The cost of a plan is the sum of the cost all of its actions such that
+cost(π) =
+n
+X
+i=1
+cost(ai). We say a plan is optimal, denoted π*, if its
+cost is minimal, that is, if no other plan π has cost(π) < cost(π*).
+Note that Definition 3 allows for multiple optimal plans, which
+may have the same cost, and are thus equivalently optimal. Mod-
+ern planners use the Planning Domain Definition Language (PDDL)
+as a standardized domain and problem representation medium [8].
+PDDL encodes a number of expressive planning formalisms, such
+as STRIPS-style [7] planning tasks. For simplicity, most planning
+formalizations assume that every action in A has cost 1, so that the
+optimal plan is the plan with the smallest number of actions. Here,
+we define actions with varying costs that depend on the state of the
+environment, where the environment considered in this work relates
+to the configurations of a platform to run data pipelines.
+2.2
+Designing and deploying data pipelines
+In the flow-based programming model [14], a data pipeline corre-
+sponds to a type of application that processes large amounts of data
+and produces results promptly. We refer to processing as the ca-
+pacity of data pipelines to ingest, transform, and output data with
+high throughput and low latency [13]. At the design level, the data
+pipelines considered in this article are graphs in which nodes are op-
+erators and edges represent the flow of data, following the flow-based
+programming paradigm [14]. Operators4 are responsible for perform-
+ing operations with data. Operators can be written using different
+programming languages using a Software Development Kit (SDK)
+provided by the data pipeline framework, formalized as Definition 4.
+Definition 4 (SDK). Let S be the set of all SDKs made available
+by the pipeline engine. An SDK S ∈S provides a programming
+environment and runtime specific to a programming language, with
+tools such as an API for the user to program operators and interact
+with the pipeline framework. Thus, the data pipeline framework can
+provide SDKs for developing operators in Java, Python, Go, etc.
+Implementations of operators can differ in requirements that need
+to be satisfied by the runtime system in order to be executable, and
+tags associated with an operator encode these requirements. Defini-
+tion 5 formalizes the notion of a tag.
+4 Note that we explicitly make a distinction between operators (i.e., elements
+of the data pipeline formalism) and actions (i.e., state transformation func-
+tions in the planning formalism)
+
+
+Definition 5 (Tag). Let T be the set of all possible tags defined by
+the user. A tag t ∈T denotes a requirement that has to be satisfied
+for an operator to be executable, i.e. a specific library or package
+(possibly a specific version of each).
+Definition 6 brings together Definitions 4 and 5 into the formal
+operator within a pipeline.
+Definition 6 (Operator). A pipeline operator O = ⟨id, S, T⟩com-
+prises an identification id, the SDK S ∈S it is developed with, and
+a set of tags T ⊆T that it requires in order to execute.
+The runtime environment in which an operator must be executed is
+set by creating a Docker image (later called OS image) [23], which is
+is a lightweight way to package code, run-time and all dependencies,
+and by associating tags to the OS image that reflect the characteristics
+of the environment. Definition 7 formalizes the notion of an image in
+terms of the tag requirements from Definition 5.
+Definition 7 (Image). An image I ⊆T is a set of tags that the
+image specification supports, representing a possible grouping for
+operators’ tags satisfied by the image.
+A designer of a data pipeline can then tag an operator to indi-
+cate the runtime environment required for its execution. By default,
+when deploying a data pipeline for execution, the execution frame-
+work searches for an OS image whose tags match all the required tags
+of the operators in the data pipeline. In this case, all operators become
+part of a default “group”. Operators in a group are deployed as a con-
+tainer running in a Kubernetes Pod [2]: they share the libraries and
+packages available in the environment defined by the containerized
+OS image. Definition 8 formalizes such matching of tags to images
+as a group.
+Definition 8 (Group). Let G be the set of groups in a data pipeline
+and O be the set of operators in a data pipeline. A group G ∈G then
+is a tuple ⟨OG,I⟩, where OG⊆O is the set of operators in the group
+and I ∈I is the image associated to the group. Since all operators
+have to be grouped, explicitly or implicitly, the intersection between
+operators in each group has to be empty, i.e. OG1 ∩OG2 = ∅for all
+Gi ∈G.
+However, when the execution framework cannot find a single
+matching OS image, the user must manually group operators accord-
+ing to their required tags until the remaining non grouped operators
+can be matched by a single OS image. Alternatively, in order to have
+control over which requirements a user needs for specific tasks, users
+can manually group operators and create an OS image specific to the
+grouped operators. Finally, we bring together the notion of an unde-
+ployed Data Pipeline incorporating the elements from Definitions 4–
+6 in Definition 9.
+Definition 9 (Data Pipeline). Let E = ⟨Oi, Oj⟩be an edge tuple
+representing the directed connection between two operators Oi and
+Oj. A data pipeline then is a tuple D = ⟨G, E⟩, containing the spec-
+ified groups and edges between all operators.
+Figure 1 exemplifies a data pipeline with operators grouped using
+different requirements, specified by tags. Here, the data pipeline is
+executable if the runtime framework has at least two images I1 and
+I2, such that ⟨t1, t2, t3, t5⟩⊆I1 and ⟨t1, t3, t4⟩⊆I2.
+3
+The pipeline optimization problem
+At design level, data pipelines are graphs in which nodes correspond
+to operators and edges represent the flow of data. There may be mul-
+Group 2
+Group 1
+O1
+SDK1
+(t1, t2)
+O2
+SDK1
+(t1, t3)
+O3
+SDK2
+(t3, t5)
+O4
+SDK1
+(t1, t2)
+O5
+SDK1
+(t1, t4)
+Figure 1: Data pipeline illustration at design level
+tiple concrete implementations of data pipelines5 and many open
+source systems do, including Flink [4], Storm and others. In this
+work, we focus specifically on the implementation provided in the
+VFlow engine where operators perform computing operations with
+data. Operators in VFlow can be written using different programming
+languages using SDKs provided by the data pipeline framework.
+Given a data pipeline D from Definition 9, with a set of connected
+operators, we must find the optimal grouping configuration, in terms
+of total execution time, which satisfies the constraints imposed by
+the operator tags T. It is therefore an optimization problem under
+constraints, where the constraints are the tags of operators, which
+must match the tags of an OS image to belong to the same group.
+The runtime environment in which operators execute can be set by
+creating groups of operators. These runtime environments are exe-
+cuting on container images (e.g., Docker images) where each group
+ideally has the same image associated to it. This allows the operators
+of the same group share resources, libraries, and packages available
+in that environment. In order to have control over which requirements
+a user needs for specific tasks, Users can manually group operators
+and create an image specific to the grouped operators. In the default
+group, VFlow associates available images and stock images that are
+tailored to the basic requirements of each SDK. In case operators are
+not explicitly grouped by users they belong to an implicit group such
+that the pipeline framework automatically associates an image to it
+using the available images and stock images that are tailored to basic
+requirements of each SDK.
+4
+Automating operator grouping
+In this section, we detail four optimization methods: two greedy ap-
+proaches and one approach based on deriving specific costs. As a
+baseline, we define a random approach that optimizes the pipeline
+by selecting random images and adding random operators. We use
+PDDL to create descriptions of state-space search problems involv-
+ing a variety of domains independently of the underlying AI search
+engine, enabling us to solve the problem of Definition 2. Such flexi-
+bility, coupled with the number of efficient planning software avail-
+able [20, 19], allows us to prototype a number of optimization strate-
+gies for grouping in order to achieve desirable deployment proper-
+ties.
+In order to generate an optimized graph, we provide two such spec-
+ifications to a PDDL planner such as ENHSP [11], and the resulting
+5 We refer to data pipelines as graphs and use the term interchangeably.
+
+
+Planner
+(ENHSP)
+PDDL
+DOMAIN
+(STRATEGY
+X)
+PDDL
+PROBLEM
+(GRAPH)
+PLAN
+(Optimized
+using X)
+Figure 2: Planner workflow.
+plan can then be translated into an optimized graph. We illustrate this
+workflow in Figure 2.
+4.1
+Connection heuristic
+The connection greedy approach prioritizes the creation of groups
+with a minimum number of intergroup communication links. To en-
+code this approach using PDDL, we use different weights for in-
+tragroup and intergroup communication, respectively 5 and 20. We
+assign a medium cost for instantiating groups, since creating many
+groups will lead to more intergroup connections. Figure 3a exempli-
+fies a solution using this approach, where the number of intergroup
+OPERATOR_1
+OPERATOR_2
+OPERATOR_3
+OPERATOR_4
+OPERATOR_5
+OPERATOR_6
+OPERATOR_7
+OPERATOR_8
+OPERATOR_9
+Group 1
+Group 2
+(a) Connection Heuristic.
+OPERATOR_1
+OPERATOR_2
+OPERATOR_3
+OPERATOR_4
+OPERATOR_5
+OPERATOR_6
+OPERATOR_7
+OPERATOR_8
+OPERATOR_9
+Group 1
+Group 2
+(b) Node Heuristic.
+Figure 3: Proposed heuristics.
+F(n)
+F(n + fs)
+F(n + 2fs)
+F(n)
+F(n + fs)
+F(n + 2fs)
+F(n)
+F(n + fs)
+F(n + 2fs)
+Generator
+(a) Fibonacci step parameter in a parallel graph.
+JSON to
+PDDL
+Planner
+(ENHSP)
+PLAN to
+JSON
+Graph
+(JSON)
+Plan
+Optimized
+Graph
+(JSON)
+BERT
+Pipeline Optimizer
+CLUSTER
+(VFLOW)
+(b) Pipeline optimizer framework.
+Figure 4: Fibonacci and pipeline optimizer.
+communication links is only one and two operator groups are created.
+4.2
+Node heuristic
+The node approach prioritizes the creation of groups with as many
+nodes as possible, greedily searching for groups with a larger num-
+ber of operators. To encode this approach using PDDL, we use the
+same weights for intragroup and intergroup communication, respec-
+tively 5. We assign a very high cost for instantiating groups, which
+forces the planner to search for configurations with a very small num-
+ber of groups. Figure 3b illustrates an example of a solution using
+this heuristic. As we can see, this solution ignores the number of in-
+tergroup connections, leading to two groups with many intergroup
+connections.
+4.3
+Random baseline
+The random baseline approach groups operators by randomly select-
+ing an image from the list of available images and then grouping
+all operators satisfied by the selected image, if there are any. This
+algorithm randomly selects images and groups operators until no op-
+erators are left to be grouped. This process of randomly selecting
+groups works as follows. First, we randomly select an available im-
+age capable of executing operators based on the available tags of this
+image. Second, we select all n operators that can run using this im-
+age. Third, if the number of operators is greater than 0, we randomly
+compute a number from the range [1, n], which defines how many of
+these possible operators our new group will contain. Finally, we gen-
+erate a new group with the selected operators and repeat this process
+until all operators are assigned to a group.
+
+
+5
+Evaluation methodology
+The evaluation of our solution requires that we design different ex-
+amples of data pipelines and generate a synthetic workload that in-
+cur substantive computing. We instantiate data pipelines following
+the two most common types of patterns that users design: sequential
+and parallel executions. As a workload choice, we choose the com-
+putation of Fibonacci sequences, which allows us to parameterize the
+amount of work that needs to be computed by an operator by defining
+the size of the sequence. We detail these in the following sections.
+5.1
+Workload configuration
+In order to evaluate the grouping methods, we use two patterns of
+synthetic data pipelines built from the same operator which com-
+putes the nth number of the Fibonacci sequence and sends it to the
+next operator. This operator allows us to control the processing time
+of a data pipeline. The two patterns of data pipelines, illustrated in
+Figure 5, are as follows:
+1. a topology representing sequential computation steps;
+2. a topology representing independent and concurrent paths of se-
+quential computation steps.
+We define two parameters to generate pipeline optimization prob-
+lems with varying degrees of complexity. These parameters are:
+number of special tags (later called special_ops) and Fibonacci
+step.
+The special tag represents operators with specific library require-
+ments beyond what is included in the standard images associated
+with operators in each sub-engine. Those necessitate specific images
+to be run in VFlow. By default, all operators have default "golang"
+tags, and all images have the default tag. In addition to the default tag
+"golang", we create three distinct special tags (spt-1, spt-2, and spt-
+3), where each special tag belongs to a single specific image. When
+the parameter "special_ops" has the value n, then n randomly se-
+lected operators will receive a special tag. If n ≤3, then all the op-
+erators with special tags will have distinct tags between (spt-1, spt-2,
+spt-3). Otherwise, two operators can have the same special tag. For
+example, if n = 4, two operators will have the special tag spt-1.
+The goal of the special tag is to increase the complexity of the op-
+timization problem. By default, all generated pipelines already con-
+tain one special tag to ensure the problem cannot be trivially solved
+by including all operators in a single group. As the number of special
+tags increases, the problem of grouping the operator becomes more
+difficult.
+The Fibonacci step is an application parameter related to increas-
+ing the n values. The n value starts as 5 (the fifth element of the
+Fibonacci sequence) and the Fibonacci step ranges from 2 to 4. As
+this parameter increases, the overall execution time of the graph in-
+creases steeply. Figure 4a illustrates the propagation of the Fibonacci
+step parameter in a parallel topology, where F(n) is the algorithm
+that computes the nth element of the sequence, and fs is the Fi-
+bonacci step parameter. The same logic of an individual line of the
+parallel topology is applied to the linear topology pipeline.
+The pipelines consist of 14 operators, where 12 are computing op-
+erators, one is a generator, and one is a terminator. The first operator
+is a generator, which sets up the workload for the other operators.
+The generator sends a message to all connected operators, sending
+the n (5 as default) value for the Fibonacci operator. This message
+is sent 5 times, to ensure continuous communication throughout the
+OPERATOR_1
+OPERATOR_2
+OPERATOR_3
+(a) Single line
+OPERATOR_1
+OPERATOR_2
+OPERATOR_3
+OPERATOR_4
+OPERATOR_5
+OPERATOR_6
+OPERATOR_7
+OPERATOR_8
+OPERATOR_9
+OPERATOR_0
+(b) Parallel lines
+Figure 5: Graph topologies used in evaluation.
+execution of the operator. The generator is connected with a termi-
+nator operator, which signals the end of the execution of the pipeline
+once all other operators finish. Finally, the other twelve operators are
+Fibonacci operators, which receive a message with the n value and
+compute the nth element of the Fibonacci sequence. After comput-
+ing the sequence, each operator sends a message to the next one with
+n + Fibonaccistep, which will set up the execution of the next op-
+erator.
+5.2
+Experiment Execution
+To optimize data pipelines, we set up a framework to measure our
+experiments, which comprises the following processes:
+• a parser to convert vFlow graphs into a planning task in PDDL;
+• a numeric planner to compute a grouping strategy to optimize
+the parsed pipeline, yielding a PDDL-based plan; and
+• a converter to interpret this PDDL plan into a vFlow graph, which
+is executed in an installation of VFLow and extracts performance
+metrics, e.g., execution time.
+VFlow includes a profiling tool to evaluate the performance of the de-
+signed approaches, which allows us to collect data on three metrics:
+setup time, execution time, and total time. The setup time measures
+how long it took to prepare the environment; execution time tracks
+how long the pipeline took to execute after the setup phase. The total
+time is the setup time plus the execution time.
+Figure 4b illustrates the architecture of our approach. VFlow ex-
+ports data pipeline graphs in JSON format, which serves as the
+medium of communication between VFlow and our optimizer. A
+graph described in JSON is sent to a converter, which converts JSON
+to a planning description language, PDDL. The PDDL has two files,
+the domain, and problem. The domain is where we define the opti-
+mization strategy (the ones we detailed in Section 5.1), dictating how
+we optimize the given pipeline. The problem comprises the details of
+the given graph, detailing the operators (as black boxes) that are go-
+ing to run, how they are connected forming the topology of the given
+graph, and the necessary tags to run each operator. With these files we
+execute the planner, ENHSP [19], which outputs a plan. The plan is
+the optimization steps, which define the number of groups and which
+specific images are going to be used to optimized the graph. We then
+
+
+ 0
+ 20
+ 40
+ 60
+ 80
+ 100
+ 120
+ 140
+Conn
+Node
+Random
+Default
+Time (s)
+Linear Graph with fibo_step = 1 and special_ops = 2
+Setup
+Execution
+Total
+(a) Line topology. Step = 1, sp-ops = 2.
+ 0
+ 20
+ 40
+ 60
+ 80
+ 100
+ 120
+ 140
+Conn
+Node
+Random
+Default
+Time (s)
+Linear Graph with fibo_step = 1 and special_ops = 4
+Setup
+Execution
+Total
+(b) Line topology. Step = 1, sp-ops = 4.
+ 0
+ 50
+ 100
+ 150
+ 200
+ 250
+ 300
+ 350
+ 400
+Conn
+Node
+Random
+Default
+Time (s)
+Linear Graph with fibo_step = 3 and special_ops = 4
+Setup
+Execution
+Total
+(c) Line topology. Step = 3, sp-ops = 4.
+Figure 6: Experiment results for Line topology.
+use a converter to convert the plan (sequence of optimization steps)
+to a JSON description of the optimized graph, which runs using the
+VFlow profiler.
+ 0
+ 50
+ 100
+ 150
+ 200
+ 250
+ 300
+Conn
+Node
+Random
+Default
+Time (s)
+Parallel Graph with fibo_step = 1 and special_ops = 2
+Setup
+Execution
+Total
+(a) Parallel. Step = 1, sp-ops = 2.
+ 0
+ 20
+ 40
+ 60
+ 80
+ 100
+ 120
+ 140
+Conn
+Node
+Random
+Default
+Time (s)
+Parallel Graph with fibo_step = 1 and special_ops = 4
+Setup
+Execution
+Total
+(b) Parallel. Step = 1, sp-ops = 4.
+ 0
+ 100
+ 200
+ 300
+ 400
+ 500
+Conn
+Node
+Random
+Default
+Time (s)
+Parallel Graph with fibo_step = 3 and special_ops = 4
+Setup
+Execution
+Total
+(c) Parallel. Step = 3, sp-ops = 4.
+Figure 7: Parallel topology experiments
+6
+Experimental results
+In the following, we show the quantitative results we obtained from
+running our experimental evaluation. We first describe the experi-
+
+
+mental environment in which we deployed the data pipelines, and
+follow by a description of the results obtained for each topology of
+graphs that we generated, i.e. line and parallel.
+6.1
+Experimental setup
+The experiments are executed in a virtualized cloud cluster composed
+of two worker nodes. Docker containers using the Centos-72 image
+run within the worker nodes, where the containers are organized in
+pods managed by Kubernetes (version 1.19.13).
+To evaluate our approaches, we run each graph five times to ac-
+count for variations in the cluster’s performance. We distinguish the
+measurements of the first execution (cold start) from the other exe-
+cutions (warm starts). As metrics, we compute the mean setup time,
+execution time, and total time discussed in the previous section.
+We compare our approaches (connection, node, and random) to
+the default baseline that has no grouping assuming that all operators
+are run in a single group. For line topology experiments, it represents
+an optimum grouping, as all operators are sequential and in the same
+image. For parallel topology experiments, the default baseline runs
+all operators in a single group, which prevents them to benefit from
+the parallelism of the topology. Note that it would be impossible to
+run the graphs with only one image due if the special tags were real
+software constraints, so the default baseline is not a viable strategy
+outside of this evaluation scenario. Considering this, we include it
+as a method for comparison, highlighting the effects of having no
+groups in different scenarios.
+6.2
+Line topology
+Our first batch of experiments uses the line topology with sequential
+operators. We vary the parameters described in Section 5.1, running
+nine distinct baseline graphs, and optimizing each graph using all
+four approaches, resulting in 36 graphs. Figures 6a, 6b, 6c show the
+average results in milliseconds for all approaches, dividing these re-
+sults into Setup, Execution, and Total time. Results from these exper-
+iments show that the heuristics provide performance gains, mainly
+in terms of setup time. Figures 6b and 6c show that the connection
+based heuristics also achieved performance gains in execution time.
+Such results indicate that planning heuristics are effective at optimiz-
+ing stream processing applications.
+6.3
+Parallel topology
+The experiments with parallel lines topology use three lines of four
+operators. We vary the parameters described in Section 5.1, running
+nine distinct baseline graphs with the same procedure we did for the
+line topology. Figures 7a, 7b, and 7c show the results obtained for
+three distinct combinations of parameters. Figure 7b shows the ran-
+dom approach performing well, even outperforming some heuristics
+in execution time. The random approach creates more groups, which
+increases the graph’s setup time. Hence, the approaches’ contrast in
+the total time is insignificant if we consider the standard deviation.
+However, as the execution time is often longer with higher work-
+loads, in some cases, the execution speed-up can compensate the
+higher time for setup.
+Figures 8a and 8b show the results for the first execution of two
+parameters configuration. As we can see, the setup time for the first
+execution is much higher, which impacts the performance of the ran-
+dom approach when the workload is small (Fibonacci step = 1). As
+the workload increases, execution time gains outweigh setup time
+losses.
+ 0
+ 50
+ 100
+ 150
+ 200
+ 250
+ 300
+Conn
+Node
+Random
+Default
+Time (s)
+Parallel Graph with fibo_step = 1 and special_ops = 2
+Setup
+Execution
+Total
+(a) Step = 1, special-ops = 2.
+ 0
+ 50
+ 100
+ 150
+ 200
+ 250
+ 300
+Conn
+Node
+Random
+Default
+Time (s)
+Parallel Graph with fibo_step = 2 and special_ops = 2
+Setup
+Execution
+Total
+(b) Step = 2, special-ops = 2.
+Figure 8: Parallel topology experiments, only first execution.
+7
+Results discussion and closing remarks
+The connection heuristic approach overall had better results. How-
+ever, although with a high standard deviation, the random strategy
+with more groups has the best results for the parallel topology. We
+believe that this happens because the random approach created many
+groups that are capable of executing the processing steps in parallel.
+Moreover, the results show that more groups for the line topology
+do not improve the total execution time. The connection strategy,
+although consistently good in the line topology, does not consider
+possible parallel executions.
+Our results show that the usage of AI techniques can improve the
+setup and execution time of pipelines by optimizing the grouping
+of operators. In this work, our optimization goal was the total exe-
+cution time. In the future, other desirable evaluation metrics can be
+included, such as the infrastructure cost of running a graph (which
+includes the number of pods used) or the resilience of the deployed
+graph.
+A hybrid strategy could also be explored to optimize each line of
+the parallel topology individually. In future work, we could evalu-
+ate grouping strategies based on TCO metrics that measure the total
+performance time per dollar (on a given cloud platform).
+
+
+Acknowledgements
+We are grateful for the financial support and computing resources
+from SAP Labs.
+References
+[1] H. Bergius. NoFlo: Flow-based programming for JavaScript, November
+2022. URL https://noflojs.org/.
+[2] D. Bernstein. Containers and cloud: From LXC to Docker to Kuber-
+netes. IEEE Cloud Computing, 1(3):81–84, 2014.
+[3] B. Burns. Designing Distributed Systems: Patterns and Paradigms for
+Scalable, Reliable Services. O’Reilly Media, Inc., 2018.
+[4] P. Carbone, A. Katsifodimos, S. Ewen, V. Markl, S. Haridi, and
+K. Tzoumas. Apache Flink™- Stream and Batch Processing in a Single
+Engine. IEEE Data Engineering Bulletin, 2015.
+[5] G. Cattaneo, G. M. Tochtermann, M. Glennon, C. La Croce, and
+C. Mitta. The European Data Market Monitoring Tool. Luxembourg:
+Publications Office of the European Union, 2020.
+[6] K. Chowdhary. Fundamentals of artificial intelligence. Springer, 2020.
+[7] R. Fikes and N. Nilsson. STRIPS: A New Approach to the Application
+of Theorem Proving to Problem Solving. Artificial Intelligence, 2(3-4):
+189–208, 1971.
+[8] M. Fox and D. Long. PDDL2. 1: An extension to PDDL for expressing
+temporal planning domains. Journal of Artificial Intelligence Research,
+2003.
+[9] H. Geffner and B. Bonet. A Concise Introduction to Models and Meth-
+ods for Automated Planning, volume 7. A Concise Introduction to Mod-
+els and Methods for Automated Planning, 3 edition, 2013.
+[10] M. Ghallab, D. S. Nau, and P. Traverso. Automated Planning and Act-
+ing. Elsevier, 1st edition, 2016. ISBN 978-1107037274. 368p.
+[11] P. Haslum, N. Lipovetzky, D. Magazzeni, and C. Muise. An Introduction
+to the Planning Domain Definition Language, volume 13. Morgan &
+Claypool Publishers, 3 edition, Apr. 2019.
+[12] M. Hirzel, R. Soulé, S. Schneider, B. Gedik, and R. Grimm. A Catalog
+of Stream Processing Optimizations. ACM Computing Surveys, 46(4):
+46, April 2014.
+[13] F. Hueske and V. Kalavri. Stream processing with Apache Flink: fun-
+damentals, implementation, and operation of streaming applications.
+O’Reilly Media, 2019.
+[14] M. J.P. Flow-based programming: A New Approach to Application De-
+velopment. Van Nostrand Reinhold, New York, NY, USA, 1994.
+[15] T. Mahapatra and C. Prehofer. Graphical Flow-based Spark Program-
+ming. Journal of Big Data, 2020.
+[16] OpenJS Foundation.
+Node-RED, November 2022.
+URL https://
+nodered.org/.
+[17] A. Paleyes, C. Cabrera, and L. Lawrence. Towards better data discov-
+ery and collection with flow-based programming. In Proceedings of the
+35th International Conference on Neural Information Processing Sys-
+tems, Sydney, Australia, 2021.
+[18] M. Pi Puig, J. M. Paniego, S. Medina, S. Rodríguez Eguren, L. Libutti,
+J. Lanciotti, J. D. Antueno, C. Estrebou, F. Chichizola, and L. D. Giusti.
+Intelligent distributed system for energy efficient control. In Conference
+on Cloud Computing and Big Data, pages 51–60. Springer, 2019.
+[19] E. Scala. Expressive numeric heuristic search planner (enhsp-20), 2020.
+URL https://gitlab.com/enricos83/ENHSP-Public/-/tree/enhsp-20.
+[20] E. Scala, P. Haslum, and S. Thiébaux. Heuristics for Numeric Planning
+via Subgoaling. In International Joint Conference on Artificial Intelli-
+gence, 2016.
+[21] P. Schweizer.
+Flowpipe, November 2022.
+URL https://github.com/
+PaulSchweizer/flowpipe.
+[22] TouK.
+Nussnacker, November 2022.
+URL https://nussknacker.io/
+documentation/about/Overview.
+[23] J. Turnbull. The Docker Book: Containerization Is the New Virtualiza-
+tion. James Turnbull, 2014.
